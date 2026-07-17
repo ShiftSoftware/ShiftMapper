@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="ShiftMapper.Sample/ShiftMapper.Sample.csproj" />
+  <Project Path="ShiftMapper/ShiftMapper.csproj" />
+</Solution>

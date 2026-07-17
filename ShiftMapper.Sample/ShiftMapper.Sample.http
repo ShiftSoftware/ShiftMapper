@@ -1,0 +1,6 @@
+@ShiftMapper.Sample_HostAddress = http://localhost:5125
+
+GET {{ShiftMapper.Sample_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
