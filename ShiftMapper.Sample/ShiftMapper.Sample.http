@@ -1,6 +1,64 @@
-@ShiftMapper.Sample_HostAddress = http://localhost:5125
+@HostAddress = http://localhost:5125
 
-GET {{ShiftMapper.Sample_HostAddress}}/weatherforecast/
+### 0. Service info — lists the available endpoints
+GET {{HostAddress}}/
 Accept: application/json
 
-###
+### 1. List products (helper) — use this to find product ids for creating an invoice
+#    Each product carries its brand and stock.
+GET {{HostAddress}}/api/products
+Accept: application/json
+
+### 2. List all invoices — full graph: invoice -> lines -> product -> brand + stock
+GET {{HostAddress}}/api/invoices
+Accept: application/json
+
+### 3. Get a single invoice by id — full graph
+GET {{HostAddress}}/api/invoices/1
+Accept: application/json
+
+### 4. Create an invoice
+#    Only product id + quantity are sent; the server snapshots the current price.
+#    The response is the created invoice with the full related graph.
+POST {{HostAddress}}/api/invoices
+Content-Type: application/json
+
+{
+  "customerName": "Layla Ibrahim",
+  "customerEmail": "layla.ibrahim@example.com",
+  "lines": [
+    { "productId": 2, "quantity": 1 },
+    { "productId": 10, "quantity": 2 },
+    { "productId": 23, "quantity": 4 }
+  ]
+}
+
+### 5. Get the invoice that was just created (id 4 on a fresh database)
+GET {{HostAddress}}/api/invoices/4
+Accept: application/json
+
+### 6. Not found — asking for an invoice that does not exist returns 404
+GET {{HostAddress}}/api/invoices/9999
+Accept: application/json
+
+### 7. Validation — empty lines returns 400
+POST {{HostAddress}}/api/invoices
+Content-Type: application/json
+
+{
+  "customerName": "No Lines",
+  "customerEmail": "no.lines@example.com",
+  "lines": []
+}
+
+### 8. Validation — unknown product id returns 400
+POST {{HostAddress}}/api/invoices
+Content-Type: application/json
+
+{
+  "customerName": "Bad Product",
+  "customerEmail": "bad.product@example.com",
+  "lines": [
+    { "productId": 99999, "quantity": 1 }
+  ]
+}

@@ -1,41 +1,45 @@
+using Microsoft.EntityFrameworkCore;
+using ShiftMapper.Sample.Data;
+using ShiftMapper.Sample.Endpoints;
+
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
+// --- Services ---------------------------------------------------------------
+var connectionString = builder.Configuration.GetConnectionString("Default")
+    ?? @"Server=.\SQLEXPRESS;Database=ShiftMapperSample;Trusted_Connection=True;TrustServerCertificate=True";
+
+builder.Services.AddDbContext<AppDbContext>(options => options.UseSqlServer(connectionString));
+
+// Indent the JSON response so it is easy to read while learning.
+builder.Services.ConfigureHttpJsonOptions(options =>
+{
+    options.SerializerOptions.WriteIndented = true;
+});
+
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
+// --- Apply migrations (creates the database + seed data) on startup ---------
+// Database.Migrate() creates the "ShiftMapperSample" database on the local
+// SQL Server Express instance if it is missing and applies any pending EF Core
+// migrations, including the HasData seed rows. Create a new migration after
+// changing the model with:  dotnet ef migrations add <Name>
+// To reset from scratch:      dotnet ef database drop -f   (then run again)
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    db.Database.Migrate();
+}
+
+// --- HTTP pipeline ----------------------------------------------------------
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
 }
 
-app.UseHttpsRedirection();
-
-var summaries = new[]
-{
-    "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
-};
-
-app.MapGet("/weatherforecast", () =>
-{
-    var forecast = Enumerable.Range(1, 5).Select(index =>
-        new WeatherForecast
-        (
-            DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
-            Random.Shared.Next(-20, 55),
-            summaries[Random.Shared.Next(summaries.Length)]
-        ))
-        .ToArray();
-    return forecast;
-})
-.WithName("GetWeatherForecast");
+app.MapHomeEndpoints();
+app.MapInvoiceEndpoints();
+app.MapProductEndpoints();
 
 app.Run();
-
-internal record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
-{
-    public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
-}
