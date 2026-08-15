@@ -5,7 +5,17 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
 	  <NoWarn>$(NoWarn);NU1903;NU1608</NoWarn>
+    <!-- Writes the generated files to disk under Generated/ so you can actually
+         READ what ShiftMapper produced. Purely a learning aid. -->
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+    <CompilerGeneratedFilesOutputPath>Generated</CompilerGeneratedFilesOutputPath>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Those emitted files are only for reading. Without this they would be
+         compiled a second time and every type would be "already defined". -->
+    <Compile Remove="Generated/**" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.10" />
@@ -21,7 +31,15 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Normal reference: gives us the IShiftMapper / MapperConfiguration types at runtime. -->
     <ProjectReference Include="..\ShiftMapper\ShiftMapper.csproj" />
+
+    <!-- Analyzer reference: the generator is loaded BY THE COMPILER, not shipped with
+         the app. OutputItemType="Analyzer" is what makes it a source generator, and
+         ReferenceOutputAssembly="false" keeps its DLL out of our output folder. -->
+    <ProjectReference Include="..\ShiftMapper.Generator\ShiftMapper.Generator.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
   </ItemGroup>
 
 </Project>

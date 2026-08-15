@@ -9,6 +9,14 @@ Accept: application/json
 GET {{HostAddress}}/api/products
 Accept: application/json
 
+### 1b. Brands — mapped by the ShiftMapper GENERATED mapper (CreateMap<Brand, BrandDto>)
+GET {{HostAddress}}/api/brands
+Accept: application/json
+
+### 1c. Stocks — also mapped by the generated mapper (CreateMap<Stock, StockDto>)
+GET {{HostAddress}}/api/stocks
+Accept: application/json
+
 ### 2. List all invoices — full graph: invoice -> lines -> product -> brand + stock
 GET {{HostAddress}}/api/invoices
 Accept: application/json

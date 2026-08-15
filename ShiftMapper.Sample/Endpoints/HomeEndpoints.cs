@@ -17,6 +17,8 @@ public static class HomeEndpoints
                 "GET  /api/invoices",
                 "GET  /api/invoices/{id}",
                 "POST /api/invoices",
+                "GET  /api/brands   (uses the ShiftMapper-generated mapper)",
+                "GET  /api/stocks   (uses the ShiftMapper-generated mapper)",
             }
         }))
         .WithName("Home")

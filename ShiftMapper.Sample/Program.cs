@@ -1,6 +1,8 @@
 using Microsoft.EntityFrameworkCore;
 using ShiftMapper.Sample.Data;
+using ShiftMapper.Sample.Dtos;
 using ShiftMapper.Sample.Endpoints;
+using ShiftMapper.Sample.Entities;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -14,6 +16,17 @@ builder.Services.AddDbContext<AppDbContext>(options => options.UseSqlServer(conn
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
     options.SerializerOptions.WriteIndented = true;
+});
+
+// --- ShiftMapper -------------------------------------------------------------
+// Each CreateMap line below is read by the ShiftMapper SOURCE GENERATOR at compile
+// time. For every pair it writes a real mapping method into this project, then
+// registers an IShiftMapper you can inject anywhere.
+// Try it: add a CreateMap line, rebuild, and look in Generated/ to see it appear.
+builder.Services.AddShiftMapper(config =>
+{
+    config.CreateMap<Brand, BrandDto>();
+    config.CreateMap<Stock, StockDto>();
 });
 
 builder.Services.AddOpenApi();
@@ -41,5 +54,9 @@ if (app.Environment.IsDevelopment())
 app.MapHomeEndpoints();
 app.MapInvoiceEndpoints();
 app.MapProductEndpoints();
+
+// These two use the ShiftMapper-generated IShiftMapper.
+app.MapBrandEndpoints();
+app.MapStockEndpoints();
 
 app.Run();
