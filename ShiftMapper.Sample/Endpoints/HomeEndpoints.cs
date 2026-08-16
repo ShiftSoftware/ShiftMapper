@@ -17,8 +17,10 @@ public static class HomeEndpoints
                 "GET  /api/invoices",
                 "GET  /api/invoices/{id}",
                 "POST /api/invoices",
-                "GET  /api/brands   (uses the ShiftMapper-generated mapper)",
-                "GET  /api/stocks   (uses the ShiftMapper-generated mapper)",
+                "GET  /api/brands      (EXTENSION form: brand.Map<BrandDto>(mapper))",
+                "GET  /api/brands/{id} (EXTENSION form, updates an existing DTO)",
+                "GET  /api/stocks      (INSTANCE form: mapper.Map<StockDto>(stock))",
+                "GET  /api/stocks/{id} (INSTANCE form, updates an existing DTO)",
             }
         }))
         .WithName("Home")

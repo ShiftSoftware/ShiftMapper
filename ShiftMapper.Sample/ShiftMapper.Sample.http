@@ -9,12 +9,23 @@ Accept: application/json
 GET {{HostAddress}}/api/products
 Accept: application/json
 
-### 1b. Brands — mapped by the ShiftMapper GENERATED mapper (CreateMap<Brand, BrandDto>)
+### 1b. Brands — GENERATED extension, brand.Map<BrandDto>(mapper) creates a new DTO
 GET {{HostAddress}}/api/brands
 Accept: application/json
 
-### 1c. Stocks — also mapped by the generated mapper (CreateMap<Stock, StockDto>)
+### 1b2. One brand — the other overload, brand.Map(existingDto, mapper) copies onto an
+#     object that already exists. "updatedInPlace" proves it is the same instance, and
+#     "mapperDependency" proves AppMapper really is a DI service with a dependency.
+GET {{HostAddress}}/api/brands/1
+Accept: application/json
+
+### 1c. Stocks — same generated maps, but called DIRECTLY on the mapper instance
+#     (mapper.Map<StockDto>(stock)) instead of through the extension method.
 GET {{HostAddress}}/api/stocks
+Accept: application/json
+
+### 1c2. One stock — the instance form of the update overload, mapper.Map(stock, existing)
+GET {{HostAddress}}/api/stocks/1
 Accept: application/json
 
 ### 2. List all invoices — full graph: invoice -> lines -> product -> brand + stock
