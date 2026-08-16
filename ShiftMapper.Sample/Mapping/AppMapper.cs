@@ -38,9 +38,25 @@ public partial class AppMapper : ShiftMapperBase
     {
         _logger = logger;
 
-        // Declare the maps. Try it: add a line, rebuild, and look in Generated/.
+        // These two map cleanly: every destination property has a source property with
+        // the same name and the same type, so they build with no warnings.
+        // Try it: add a line, rebuild, and look in Generated/ to see the new methods.
         CreateMap<Brand, BrandDto>();
         CreateMap<Stock, StockDto>();
+
+        // This one does NOT map cleanly, on purpose — it is the live demonstration of the
+        // build-time warnings. Building produces exactly two, both pointing at this line:
+        //
+        //   SM0001  InvoiceLineDto.LineTotal  — InvoiceLine has no LineTotal; the DTO
+        //                                       computes it, so there is nothing to copy.
+        //   SM0002  InvoiceLineDto.Product    — both sides HAVE a Product, but the types
+        //                                       differ (Product vs ProductDto), and nested
+        //                                       mapping is not supported yet.
+        //
+        // The map is still generated for the three properties that DO line up (Id,
+        // Quantity, UnitPrice) — ShiftMapper does what it can and tells you the rest.
+        // Delete this line and the warnings go away.
+        CreateMap<InvoiceLine, InvoiceLineDto>();
     }
 
     /// <summary>Proof that constructor injection works on this class.</summary>

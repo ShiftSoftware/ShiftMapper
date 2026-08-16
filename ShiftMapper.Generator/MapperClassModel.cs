@@ -18,8 +18,12 @@ internal sealed class MapperClassModel
         string className,
         string fullyQualifiedName,
         bool isPublic,
-        ImmutableArray<MapModel> maps)
+        ImmutableArray<MapModel> maps,
+        MapperSkipReason skipReason = MapperSkipReason.None,
+        LocationInfo? location = null)
     {
+        SkipReason = skipReason;
+        Location = location;
         NamespaceName = namespaceName;
         ContainingTypes = containingTypes;
         ClassName = className;
@@ -49,6 +53,15 @@ internal sealed class MapperClassModel
 
     /// <summary>The maps declared by CreateMap calls inside this declaration.</summary>
     public ImmutableArray<MapModel> Maps { get; }
+
+    /// <summary>
+    /// Set when the class derives from ShiftMapperBase but nothing can be generated for it.
+    /// Reported as SM0005 rather than left silent.
+    /// </summary>
+    public MapperSkipReason SkipReason { get; }
+
+    /// <summary>Where the class is declared, so SM0005 points at the right line.</summary>
+    public LocationInfo? Location { get; }
 
     /// <summary>
     /// Unique, identifier-safe id for this mapper, used for the generated file name and

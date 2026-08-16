@@ -19,4 +19,12 @@
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" PrivateAssets="all" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Analyzer release tracking: a changelog of our diagnostic ids (SM0001, ...).
+         Roslyn reads these as AdditionalFiles. Without them RS2008 asks us to enable
+         release tracking; once enabled, RS2000/RS2001 flag ids missing from the list. -->
+    <AdditionalFiles Include="AnalyzerReleases.Shipped.md" />
+    <AdditionalFiles Include="AnalyzerReleases.Unshipped.md" />
+  </ItemGroup>
+
 </Project>

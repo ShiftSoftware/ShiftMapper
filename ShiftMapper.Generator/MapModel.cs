@@ -22,8 +22,14 @@ internal sealed class MapModel
         bool isDestinationValueType,
         bool canConstructDestination,
         ImmutableArray<string> propertyNames,
-        ImmutableArray<string> writablePropertyNames)
+        ImmutableArray<string> writablePropertyNames,
+        ImmutableArray<UnmappedProperty> unmappedProperties,
+        string destinationName,
+        LocationInfo? location)
     {
+        UnmappedProperties = unmappedProperties;
+        DestinationName = destinationName;
+        Location = location;
         SourceType = sourceType;
         DestinationType = destinationType;
         SourceName = sourceName;
@@ -74,6 +80,15 @@ internal sealed class MapModel
     /// the <c>init</c>-only ones, which would be CS8852 in the update overload.
     /// </summary>
     public ImmutableArray<string> WritablePropertyNames { get; }
+
+    /// <summary>Destination properties we had to skip — each becomes a build warning.</summary>
+    public ImmutableArray<UnmappedProperty> UnmappedProperties { get; }
+
+    /// <summary>Simple name of the destination type, e.g. <c>BrandDto</c>, used in messages.</summary>
+    public string DestinationName { get; }
+
+    /// <summary>Where the CreateMap call is, so warnings point at the right line.</summary>
+    public LocationInfo? Location { get; }
 
     /// <summary>Identifies this map so duplicate registrations can be collapsed.</summary>
     public string Key => SourceType + "->" + DestinationType;

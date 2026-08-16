@@ -98,17 +98,21 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         if (baseClass is null || !DerivesFrom(classSymbol, baseClass))
             return null;
 
-        // We add a second `partial` part to this class, so every part of it — and every
-        // type it is nested inside — has to be partial too, or our part would declare a
-        // different type instead of extending theirs.
-        if (!IsPartial(classSymbol) || !AllContainersArePartial(classSymbol))
-            return null;
-
-        // A generic mapper cannot work with this design: the extension methods would need
-        // to carry the mapper's type parameters, which changes the calling syntax. Skip it
-        // rather than emit code that does not compile.
-        if (classSymbol.IsGenericType || classSymbol.ContainingType is { IsGenericType: true })
-            return null;
+        // From here on the class is clearly MEANT to be a mapper, so anything we cannot
+        // handle is reported (SM0005) rather than dropped without a word.
+        MapperSkipReason skipReason = GetSkipReason(classSymbol);
+        if (skipReason != MapperSkipReason.None)
+        {
+            return new MapperClassModel(
+                namespaceName: null,
+                containingTypes: ImmutableArray<string>.Empty,
+                className: classSymbol.Name,
+                fullyQualifiedName: classSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+                isPublic: false,
+                maps: ImmutableArray<MapModel>.Empty,
+                skipReason: skipReason,
+                location: LocationInfo.CreateFrom(classDeclaration.Identifier.Parent ?? classDeclaration));
+        }
 
         var maps = ImmutableArray.CreateBuilder<MapModel>();
         var seen = new HashSet<string>();
@@ -144,6 +148,34 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             isPublic: IsEffectivelyPublic(classSymbol),
             maps: maps.ToImmutable());
     }
+
+    /// <summary>
+    /// Whether we can add a generated part to this class at all. We write a second
+    /// `partial` declaration, so the class and every type it is nested inside must be
+    /// partial; and a generic mapper cannot work with the extension-method shape, because
+    /// the extensions would have to carry the mapper's type parameters.
+    /// </summary>
+    private static MapperSkipReason GetSkipReason(INamedTypeSymbol classSymbol)
+    {
+        if (classSymbol.IsGenericType || classSymbol.ContainingType is { IsGenericType: true })
+            return MapperSkipReason.Generic;
+
+        if (!IsPartial(classSymbol))
+            return MapperSkipReason.NotPartial;
+
+        if (!AllContainersArePartial(classSymbol))
+            return MapperSkipReason.ContainerNotPartial;
+
+        return MapperSkipReason.None;
+    }
+
+    /// <summary>Human wording for <see cref="MapperSkipReason"/>, used in SM0005.</summary>
+    private static string DescribeSkipReason(MapperSkipReason reason) => reason switch
+    {
+        MapperSkipReason.NotPartial => "it is not declared partial, so no code can be added to it",
+        MapperSkipReason.ContainerNotPartial => "a type it is nested inside is not declared partial",
+        _ => "generic mapper classes are not supported",
+    };
 
     /// <summary>
     /// Walks the whole base chain, so a mapper that inherits an intermediate base of your
@@ -225,8 +257,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         if (semanticModel.GetSymbolInfo(destinationSyntax, cancellationToken).Symbol is not INamedTypeSymbol destinationType)
             return null;
 
-        (ImmutableArray<string> all, ImmutableArray<string> writable) =
-            FindMatchingProperties(sourceType, destinationType);
+        PropertyAnalysis analysis = FindMatchingProperties(sourceType, destinationType);
 
         return new MapModel(
             sourceType: sourceType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
@@ -237,8 +268,34 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             isSourceValueType: sourceType.IsValueType,
             isDestinationValueType: destinationType.IsValueType,
             canConstructDestination: CanConstruct(destinationType),
-            propertyNames: all,
-            writablePropertyNames: writable);
+            propertyNames: analysis.All,
+            writablePropertyNames: analysis.Writable,
+            unmappedProperties: analysis.Unmapped,
+            destinationName: destinationType.Name,
+            location: LocationInfo.CreateFrom(createMap));
+    }
+
+    /// <summary>The result of comparing one source type against one destination type.</summary>
+    private readonly struct PropertyAnalysis
+    {
+        public PropertyAnalysis(
+            ImmutableArray<string> all,
+            ImmutableArray<string> writable,
+            ImmutableArray<UnmappedProperty> unmapped)
+        {
+            All = all;
+            Writable = writable;
+            Unmapped = unmapped;
+        }
+
+        /// <summary>Settable while constructing, init-only included.</summary>
+        public ImmutableArray<string> All { get; }
+
+        /// <summary>Still assignable after construction.</summary>
+        public ImmutableArray<string> Writable { get; }
+
+        /// <summary>Skipped properties the developer can act on — each becomes a warning.</summary>
+        public ImmutableArray<UnmappedProperty> Unmapped { get; }
     }
 
     /// <summary>
@@ -253,7 +310,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// everything settable at construction time (init-only included), and the subset that
     /// can still be assigned afterwards.
     /// </summary>
-    private static (ImmutableArray<string> All, ImmutableArray<string> Writable) FindMatchingProperties(
+    private static PropertyAnalysis FindMatchingProperties(
         INamedTypeSymbol sourceType,
         INamedTypeSymbol destinationType)
     {
@@ -269,6 +326,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
         var all = ImmutableArray.CreateBuilder<string>();
         var writable = ImmutableArray.CreateBuilder<string>();
+        var unmapped = ImmutableArray.CreateBuilder<UnmappedProperty>();
         var seen = new HashSet<string>();
 
         foreach (IPropertySymbol destinationProperty in GetProperties(destinationType))
@@ -278,29 +336,61 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             if (!seen.Add(destinationProperty.Name))
                 continue;
 
-            // The setter must not merely EXIST — the generated code has to be able to call
-            // it. A get-only or non-public setter is out of reach (CS0272).
             IMethodSymbol? setter = destinationProperty.SetMethod;
-            if (setter is null || setter.DeclaredAccessibility != Accessibility.Public)
+
+            // No setter at all means a computed or get-only property. That is a deliberate
+            // choice by whoever wrote the DTO, so we stay quiet about it.
+            if (setter is null)
                 continue;
 
-            if (!sourceProperties.TryGetValue(destinationProperty.Name, out IPropertySymbol? sourceProperty))
+            // A setter that exists but cannot be called LOOKS mappable, so it is worth a
+            // word — generated code lives outside the type and would hit CS0272.
+            if (setter.DeclaredAccessibility != Accessibility.Public)
+            {
+                unmapped.Add(new UnmappedProperty(
+                    destinationProperty.Name,
+                    UnmappedReason.SetterNotAccessible,
+                    ShortTypeName(destinationProperty.Type),
+                    sourcePropertyType: null));
                 continue;
+            }
+
+            if (!sourceProperties.TryGetValue(destinationProperty.Name, out IPropertySymbol? sourceProperty))
+            {
+                unmapped.Add(new UnmappedProperty(
+                    destinationProperty.Name,
+                    UnmappedReason.NoSourceProperty,
+                    ShortTypeName(destinationProperty.Type),
+                    sourcePropertyType: null));
+                continue;
+            }
 
             // Same type required — no conversions in this first version.
             if (!SymbolEqualityComparer.Default.Equals(sourceProperty.Type, destinationProperty.Type))
+            {
+                unmapped.Add(new UnmappedProperty(
+                    destinationProperty.Name,
+                    UnmappedReason.TypeMismatch,
+                    ShortTypeName(destinationProperty.Type),
+                    ShortTypeName(sourceProperty.Type)));
                 continue;
+            }
 
             all.Add(destinationProperty.Name);
 
             // `init` accessors are legal inside an object initializer but nowhere else,
-            // so they can be created but never refreshed in place (CS8852).
+            // so they can be created but never refreshed in place (CS8852). That is not a
+            // warning — the create method handles them fine — just a documented remark.
             if (!setter.IsInitOnly)
                 writable.Add(destinationProperty.Name);
         }
 
-        return (all.ToImmutable(), writable.ToImmutable());
+        return new PropertyAnalysis(all.ToImmutable(), writable.ToImmutable(), unmapped.ToImmutable());
     }
+
+    /// <summary>Readable type name for warning messages, e.g. <c>List&lt;InvoiceLine&gt;</c>.</summary>
+    private static string ShortTypeName(ITypeSymbol type) =>
+        type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
 
     /// <summary>
     /// Can we create this type with <c>new T { ... }</c>? We need a non-abstract class or
@@ -392,6 +482,17 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         {
             MapperClassModel first = parts.First();
 
+            // SM0005 — the class is a mapper but nothing could be generated for it.
+            if (first.SkipReason != MapperSkipReason.None)
+            {
+                context.ReportDiagnostic(Diagnostic.Create(
+                    DiagnosticDescriptors.MapperSkipped,
+                    first.Location?.ToLocation(),
+                    first.ClassName,
+                    DescribeSkipReason(first.SkipReason)));
+                continue;
+            }
+
             // Maps may be declared in any part of the class; gather them all.
             var merged = ImmutableArray.CreateBuilder<MapModel>();
             var seen = new HashSet<string>();
@@ -404,13 +505,73 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                 }
             }
 
+            ImmutableArray<MapModel> maps = merged.ToImmutable();
+
+            // Tell the developer about everything we could not map. These show up in the
+            // Error List / build output exactly like compiler warnings, because that is
+            // precisely what they are.
+            ReportSkippedProperties(context, maps);
+
             Emit(context, new MapperClassModel(
                 first.NamespaceName,
                 first.ContainingTypes,
                 first.ClassName,
                 first.FullyQualifiedName,
                 first.IsPublic,
-                merged.ToImmutable()));
+                maps));
+        }
+    }
+
+    /// <summary>
+    /// Turns every skipped property, and every destination we cannot construct, into a real
+    /// build warning pointing at the CreateMap call that asked for the map.
+    /// </summary>
+    private static void ReportSkippedProperties(SourceProductionContext context, ImmutableArray<MapModel> maps)
+    {
+        foreach (MapModel map in maps)
+        {
+            Location? location = map.Location?.ToLocation();
+
+            // SM0004 — we cannot write `new TDestination { ... }`, so there is no create method.
+            if (!map.CanConstructDestination)
+            {
+                context.ReportDiagnostic(Diagnostic.Create(
+                    DiagnosticDescriptors.CannotConstructDestination,
+                    location,
+                    map.DestinationName));
+            }
+
+            foreach (UnmappedProperty unmapped in map.UnmappedProperties)
+            {
+                Diagnostic diagnostic = unmapped.Reason switch
+                {
+                    // SM0001: nothing on the source is called this.
+                    UnmappedReason.NoSourceProperty => Diagnostic.Create(
+                        DiagnosticDescriptors.NoSourceProperty,
+                        location,
+                        map.DestinationName,
+                        unmapped.PropertyName,
+                        map.SourceName),
+
+                    // SM0003: it looks assignable, but the setter cannot be called.
+                    UnmappedReason.SetterNotAccessible => Diagnostic.Create(
+                        DiagnosticDescriptors.SetterNotAccessible,
+                        location,
+                        map.DestinationName,
+                        unmapped.PropertyName),
+
+                    // SM0002: same name on both sides, but the types are not the same.
+                    _ => Diagnostic.Create(
+                        DiagnosticDescriptors.TypeMismatch,
+                        location,
+                        map.DestinationName,
+                        unmapped.PropertyName,
+                        unmapped.SourcePropertyType,
+                        unmapped.DestinationPropertyType),
+                };
+
+                context.ReportDiagnostic(diagnostic);
+            }
         }
     }
 
