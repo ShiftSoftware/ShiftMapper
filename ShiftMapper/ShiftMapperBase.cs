@@ -17,7 +17,8 @@ namespace ShiftMapper;
 ///         _currency = currency;           // ordinary constructor injection
 ///
 ///         CreateMap&lt;Brand, BrandDto&gt;();   // declare your maps here
-///         CreateMap&lt;Stock, StockDto&gt;();
+///         CreateMap&lt;Stock, StockDto&gt;()     // chain ReverseMap for both directions
+///             .ReverseMap();
 ///     }
 /// }
 /// </code>
@@ -76,8 +77,15 @@ public abstract class ShiftMapperBase
     /// pair down in ordinary C#. The ShiftMapper source generator READS these calls at
     /// COMPILE time and, for each one, writes a real mapping method into your class. So it
     /// is best understood as a marker the generator looks for.
+    ///
+    /// The returned <see cref="MapExpression{TSource, TDestination}"/> is what lets you chain
+    /// <see cref="MapExpression{TSource, TDestination}.ReverseMap"/> to get the opposite
+    /// direction as well. Ignoring the return value is perfectly normal.
+    ///
+    /// <code>
+    /// CreateMap&lt;Brand, BrandDto&gt;();                 // Brand -> BrandDto
+    /// CreateMap&lt;Stock, StockDto&gt;().ReverseMap();     // Stock -> StockDto AND back
+    /// </code>
     /// </summary>
-    protected void CreateMap<TSource, TDestination>()
-    {
-    }
+    protected MapExpression<TSource, TDestination> CreateMap<TSource, TDestination>() => default;
 }

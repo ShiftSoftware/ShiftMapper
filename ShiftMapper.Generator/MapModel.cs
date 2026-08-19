@@ -25,8 +25,10 @@ internal sealed class MapModel
         ImmutableArray<string> writablePropertyNames,
         ImmutableArray<UnmappedProperty> unmappedProperties,
         string destinationName,
-        LocationInfo? location)
+        LocationInfo? location,
+        bool isReverse)
     {
+        IsReverse = isReverse;
         UnmappedProperties = unmappedProperties;
         DestinationName = destinationName;
         Location = location;
@@ -89,6 +91,14 @@ internal sealed class MapModel
 
     /// <summary>Where the CreateMap call is, so warnings point at the right line.</summary>
     public LocationInfo? Location { get; }
+
+    /// <summary>
+    /// True when this map was not written out by hand but added by a chained
+    /// <c>ReverseMap()</c>. Only the diagnostics care: an unmapped property is routine in
+    /// this direction (SM0006) and surprising in the one the developer actually typed
+    /// (SM0001). Everything downstream treats a reverse map as an ordinary map.
+    /// </summary>
+    public bool IsReverse { get; }
 
     /// <summary>Identifies this map so duplicate registrations can be collapsed.</summary>
     public string Key => SourceType + "->" + DestinationType;

@@ -17,7 +17,8 @@ namespace ShiftMapper.Generator;
 /// THE BIG PICTURE — it runs in three steps, every time you type:
 ///   1. FIND      : look for classes that derive from ShiftMapperBase.
 ///   2. UNDERSTAND: read the CreateMap&lt;A, B&gt; calls inside each one and work out
-///                  which properties of A and B line up.
+///                  which properties of A and B line up. A call with .ReverseMap() chained
+///                  onto it yields two maps, the second with the types swapped.
 ///   3. WRITE     : for each mapper emit (a) the other half of that partial class, with
 ///                  instance Map methods, and (b) extension methods that delegate to it.
 ///
@@ -125,12 +126,13 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             if (createMap is null)
                 continue;
 
-            MapModel? map = BuildMapModel(context.SemanticModel, createMap, cancellationToken);
-            if (map is null)
-                continue;
-
-            if (seen.Add(map.Key))
-                maps.Add(map);
+            // One CreateMap normally means one map — but a chained ReverseMap() means two.
+            foreach (MapModel map in BuildMapModels(
+                         context.SemanticModel, createMap, FindReverseMapName(invocation), cancellationToken))
+            {
+                if (seen.Add(map.Key))
+                    maps.Add(map);
+            }
         }
 
         // Containing types, outermost first, so the emitted part can reproduce the nesting.
@@ -239,12 +241,42 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     }
 
     /// <summary>
-    /// Resolves the two type arguments of one CreateMap call and works out which of their
-    /// properties can be copied.
+    /// Looks for a <c>ReverseMap()</c> chained onto a CreateMap call and returns the name
+    /// node it was written at — used both as the yes/no answer and as the place to point
+    /// SM0006 at, so the message lands on the <c>.ReverseMap()</c> the developer typed
+    /// rather than on the CreateMap in front of it.
+    ///
+    /// It walks the WHOLE chain rather than only looking one link ahead, so ReverseMap keeps
+    /// working when other refinements are added between it and CreateMap later on.
     /// </summary>
-    private static MapModel? BuildMapModel(
+    private static SimpleNameSyntax? FindReverseMapName(InvocationExpressionSyntax createMap)
+    {
+        for (SyntaxNode node = createMap; ;)
+        {
+            // Each link of the chain looks like `<node>.Something(...)`. Anything else ends
+            // it — including <node> being an ARGUMENT of the member access rather than its
+            // target, which would be a different expression altogether.
+            if (node.Parent is not MemberAccessExpressionSyntax memberAccess || memberAccess.Expression != node)
+                return null;
+
+            if (memberAccess.Parent is not InvocationExpressionSyntax invocation)
+                return null;
+
+            if (memberAccess.Name.Identifier.ValueText == "ReverseMap")
+                return memberAccess.Name;
+
+            node = invocation;
+        }
+    }
+
+    /// <summary>
+    /// Resolves the two type arguments of one CreateMap call into the map (or maps) it asks
+    /// for: the one that was written, plus the opposite one when ReverseMap is chained on.
+    /// </summary>
+    private static IEnumerable<MapModel> BuildMapModels(
         SemanticModel semanticModel,
         GenericNameSyntax createMap,
+        SimpleNameSyntax? reverseMapName,
         CancellationToken cancellationToken)
     {
         TypeSyntax sourceSyntax = createMap.TypeArgumentList.Arguments[0];
@@ -252,11 +284,39 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
         // Ask the compiler: what type does the text "Brand" actually refer to here?
         if (semanticModel.GetSymbolInfo(sourceSyntax, cancellationToken).Symbol is not INamedTypeSymbol sourceType)
-            return null;
+            yield break;
 
         if (semanticModel.GetSymbolInfo(destinationSyntax, cancellationToken).Symbol is not INamedTypeSymbol destinationType)
-            return null;
+            yield break;
 
+        yield return BuildMapModel(sourceType, destinationType, LocationInfo.CreateFrom(createMap), isReverse: false);
+
+        if (reverseMapName is null)
+            yield break;
+
+        // The reverse is analysed from scratch with the types swapped, NOT derived from the
+        // forward map. Property matching is not symmetric: a destination property with no
+        // counterpart is skipped in one direction and may be perfectly mappable in the other.
+        //
+        // Its diagnostics point at `.ReverseMap()` rather than at CreateMap, because that is
+        // the code responsible for them.
+        yield return BuildMapModel(
+            destinationType,
+            sourceType,
+            LocationInfo.CreateFrom(reverseMapName) ?? LocationInfo.CreateFrom(createMap),
+            isReverse: true);
+    }
+
+    /// <summary>
+    /// Works out which properties can be copied for ONE direction, and packages the answer
+    /// with everything else the emitter needs to know about the two types.
+    /// </summary>
+    private static MapModel BuildMapModel(
+        INamedTypeSymbol sourceType,
+        INamedTypeSymbol destinationType,
+        LocationInfo? location,
+        bool isReverse)
+    {
         PropertyAnalysis analysis = FindMatchingProperties(sourceType, destinationType);
 
         return new MapModel(
@@ -272,7 +332,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             writablePropertyNames: analysis.Writable,
             unmappedProperties: analysis.Unmapped,
             destinationName: destinationType.Name,
-            location: LocationInfo.CreateFrom(createMap));
+            location: location,
+            isReverse: isReverse);
     }
 
     /// <summary>The result of comparing one source type against one destination type.</summary>
@@ -545,9 +606,13 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             {
                 Diagnostic diagnostic = unmapped.Reason switch
                 {
-                    // SM0001: nothing on the source is called this.
+                    // SM0001: nothing on the source is called this. The same situation in a
+                    // reverse map is SM0006 instead — informational, because mapping back to
+                    // a richer type is expected to leave properties behind.
                     UnmappedReason.NoSourceProperty => Diagnostic.Create(
-                        DiagnosticDescriptors.NoSourceProperty,
+                        map.IsReverse
+                            ? DiagnosticDescriptors.NoSourcePropertyInReverseMap
+                            : DiagnosticDescriptors.NoSourceProperty,
                         location,
                         map.DestinationName,
                         unmapped.PropertyName,
@@ -740,6 +805,9 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
         foreach (MapModel map in destinations)
         {
+            if (map.IsReverse)
+                sb.AppendLine($"{indent}        //{OriginNote(map)}");
+
             sb.AppendLine($"{indent}        if (typeof(TDestination) == typeof({map.DestinationType}))");
             sb.AppendLine($"{indent}        {{");
             sb.AppendLine($"{indent}            var destination = new {map.DestinationType}");
@@ -773,7 +841,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// </summary>
     private static void AppendUpdateOverload(StringBuilder sb, string indent, MapModel map)
     {
-        sb.AppendLine($"{indent}    /// <summary>Copies a {map.SourceName} onto an existing <paramref name=\"destination\"/> and returns it.</summary>");
+        sb.AppendLine($"{indent}    /// <summary>Copies a {map.SourceName} onto an existing <paramref name=\"destination\"/> and returns it.{OriginNote(map)}</summary>");
         AppendInitOnlyRemark(sb, $"{indent}    ", map);
         sb.AppendLine($"{indent}    {AccessibilityOf(map.IsSourcePublic, map.IsDestinationPublic)} {map.DestinationType} Map({map.SourceType} source, {map.DestinationType} destination)");
         sb.AppendLine($"{indent}    {{");
@@ -806,7 +874,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// <summary>Writes <c>brand.Map(dto, mapper)</c>, forwarding to the instance.</summary>
     private static void AppendUpdateExtension(StringBuilder sb, MapperClassModel model, MapModel map)
     {
-        sb.AppendLine($"        /// <summary>Copies this {map.SourceName} onto an existing <paramref name=\"destination\"/> and returns it.</summary>");
+        sb.AppendLine($"        /// <summary>Copies this {map.SourceName} onto an existing <paramref name=\"destination\"/> and returns it.{OriginNote(map)}</summary>");
         AppendInitOnlyRemark(sb, "        ", map);
         sb.AppendLine($"        {AccessibilityOf(model.IsPublic, map.IsSourcePublic, map.IsDestinationPublic)} static {map.DestinationType} Map(this {map.SourceType} source, {map.DestinationType} destination, {model.FullyQualifiedName} mapper)");
         sb.AppendLine("        {");
@@ -843,6 +911,13 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
         sb.AppendLine($"{indent}/// <remarks>Not copied because they are init-only and can only be set when the object is created: {string.Join(", ", initOnly)}.</remarks>");
     }
+
+    /// <summary>
+    /// Marks the maps nobody typed out, so the generated file makes sense to read: a
+    /// BrandDto -> Brand method is otherwise a puzzle when only Brand -> BrandDto appears
+    /// in the mapper's constructor.
+    /// </summary>
+    private static string OriginNote(MapModel map) => map.IsReverse ? " Added by ReverseMap()." : string.Empty;
 
     /// <summary>Strips the global:: prefix so a type reads nicely inside a message.</summary>
     private static string Readable(string fullyQualifiedType) =>

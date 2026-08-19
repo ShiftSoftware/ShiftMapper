@@ -7,10 +7,15 @@ namespace ShiftMapper.Generator;
 /// *definition* of a warning (its id, wording and severity); a <see cref="Diagnostic"/> is
 /// one actual occurrence of it, attached to a location in your code.
 ///
-/// The ids are what you use to silence a rule, e.g. in a .csproj:
+/// The ids are what you use to silence a rule, in a .csproj:
 ///   &lt;NoWarn&gt;$(NoWarn);SM0001&lt;/NoWarn&gt;
-/// or per-project in .editorconfig:
-///   dotnet_diagnostic.SM0001.severity = none
+/// and to promote one, the same way:
+///   &lt;WarningsAsErrors&gt;$(WarningsAsErrors);SM0002&lt;/WarningsAsErrors&gt;
+///
+/// NOTE — .editorconfig does NOT work on these. A `dotnet_diagnostic.SM0001.severity` entry
+/// retunes diagnostics that come from an ANALYZER; ours come from a SOURCE GENERATOR, and
+/// the compiler treats those like its own CS diagnostics. They honour NoWarn and
+/// WarningsAsErrors, and ignore analyzer config entirely.
 /// </summary>
 internal static class DiagnosticDescriptors
 {
@@ -61,6 +66,30 @@ internal static class DiagnosticDescriptors
         description: "ShiftMapper builds the destination with an object initializer, so it needs a " +
                      "public parameterless constructor. Positional records, abstract types and " +
                      "interfaces cannot be created this way.");
+
+    /// <summary>
+    /// SM0006 — the SM0001 case, but for the map that <c>ReverseMap()</c> added.
+    ///
+    /// Same situation, deliberately quieter. A DTO is normally a SUBSET of its entity, so
+    /// mapping back always leaves entity-only properties untouched — navigation collections,
+    /// audit columns, keys the client never sends. Reporting each of those as a warning would
+    /// make ReverseMap unusable on exactly the shape it exists to serve, so this is
+    /// informational: visible in the IDE and under `dotnet build -v d`, silent in a normal build.
+    ///
+    /// If you want these enforced, map the DTO to a type you own end-to-end instead — an
+    /// informational diagnostic cannot be promoted to a warning from outside the generator.
+    /// </summary>
+    public static readonly DiagnosticDescriptor NoSourcePropertyInReverseMap = new(
+        id: "SM0006",
+        title: "Destination property is not mapped by the reverse map",
+        messageFormat: "ShiftMapper: the reverse map leaves '{0}.{1}' unmapped because '{2}' has no readable property named '{1}'",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Info,
+        isEnabledByDefault: true,
+        description: "The property keeps its default value when mapping back. This is expected when " +
+                     "the destination is richer than the source, which is the usual reason to call " +
+                     "ReverseMap in the first place. Being informational, it shows in the IDE and in a " +
+                     "detailed build log (-v d), and is not counted as a build warning.");
 
     /// <summary>SM0005 — the whole mapper produced nothing.</summary>
     public static readonly DiagnosticDescriptor MapperSkipped = new(

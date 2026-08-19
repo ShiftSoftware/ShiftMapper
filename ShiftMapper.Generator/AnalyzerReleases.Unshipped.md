@@ -11,3 +11,4 @@ SM0002 | ShiftMapper | Warning | Destination property is not mapped because the 
 SM0003 | ShiftMapper | Warning | Destination property is not mapped because its setter is not public
 SM0004 | ShiftMapper | Warning | Destination type has no public parameterless constructor
 SM0005 | ShiftMapper | Warning | No mapping code was generated for a ShiftMapperBase-derived class
+SM0006 | ShiftMapper | Info | Reverse map leaves a destination property unmapped

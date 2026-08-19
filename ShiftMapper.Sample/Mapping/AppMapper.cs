@@ -29,6 +29,9 @@ namespace ShiftMapper.Sample.Mapping;
 /// var dto = mapper.Map&lt;BrandDto&gt;(brand);   // instance
 /// var dto = brand.Map&lt;BrandDto&gt;(mapper);   // extension
 /// </code>
+///
+/// Chaining <c>.ReverseMap()</c> onto a CreateMap registers the opposite direction too, so
+/// one line gives you entity-to-DTO and DTO-to-entity. StockEndpoints uses both.
 /// </summary>
 public partial class AppMapper : ShiftMapperBase
 {
@@ -42,7 +45,24 @@ public partial class AppMapper : ShiftMapperBase
         // the same name and the same type, so they build with no warnings.
         // Try it: add a line, rebuild, and look in Generated/ to see the new methods.
         CreateMap<Brand, BrandDto>();
-        CreateMap<Stock, StockDto>();
+
+        // Same map, plus the way back — one line, both directions:
+        //
+        //   StockDto dto   = mapper.Map<StockDto>(stock);
+        //   Stock    stock = mapper.Map<Stock>(dto);
+        //
+        // The reverse is not a mirror of the forward map; it is worked out on its own by
+        // the same rule. Stock has a Products navigation list that StockDto does not, so
+        // mapping back cannot fill it. That is reported as SM0006 — INFO, not a warning,
+        // because a DTO being a subset of its entity is the normal reason to reverse a map
+        // at all. See it with `dotnet build -v d`, or in the IDE's Error List with
+        // informational messages shown:
+        //
+        //   AppMapper.cs(60,38): info SM0006: the reverse map leaves 'Stock.Products'
+        //   unmapped because 'StockDto' has no readable property named 'Products'
+        //
+        // Note it points at .ReverseMap(), not at CreateMap — that is the code responsible.
+        CreateMap<Stock, StockDto>().ReverseMap();
 
         // This one does NOT map cleanly, on purpose — it is the live demonstration of the
         // build-time warnings. Building produces exactly two, both pointing at this line:

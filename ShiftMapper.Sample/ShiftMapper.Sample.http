@@ -28,6 +28,50 @@ Accept: application/json
 GET {{HostAddress}}/api/stocks/1
 Accept: application/json
 
+### 1c3. Create a stock — THE REVERSE MAP. Every request above maps entity -> DTO; this one
+#     goes the other way, StockDto -> Stock, and that direction exists only because the
+#     AppMapper constructor chains ReverseMap onto the map:
+#
+#         CreateMap<Stock, StockDto>().ReverseMap();
+#
+#     Remove the .ReverseMap() and this endpoint stops compiling — mapper.Map<Stock>(dto)
+#     would have no method to bind to.
+#
+#     Watch the response: "id" comes back as 5, not the 999 sent below. The map copies Id
+#     like any other matching property; the endpoint then resets it so the database assigns
+#     the real one. The mapper does not know what a key is — that is the endpoint's job.
+#
+#     What you CANNOT see here is just as instructive: the Stock that was saved has an empty
+#     Products list, because StockDto has nothing to fill a navigation collection from. It is
+#     absent from the response only because StockDto has no Products either. The build says
+#     so at compile time instead, as SM0006 — info rather than a warning, since a DTO being
+#     a subset of its entity is the normal shape of mapping one back onto an entity.
+POST {{HostAddress}}/api/stocks
+Content-Type: application/json
+
+{
+  "id": 999,
+  "name": "Duhok Distribution Centre",
+  "city": "Duhok",
+  "code": "DHK-DC"
+}
+
+### 1c4. Read back what 1c3 created (id 5 on a fresh database) — round trip complete:
+#     StockDto -> Stock on the way in, Stock -> StockDto on the way out, both generated
+#     from that single CreateMap line.
+GET {{HostAddress}}/api/stocks/5
+Accept: application/json
+
+### 1c5. Validation — a stock with no name returns 400 before any mapping happens
+POST {{HostAddress}}/api/stocks
+Content-Type: application/json
+
+{
+  "name": "",
+  "city": "Nowhere",
+  "code": "NON-E"
+}
+
 ### 2. List all invoices — full graph: invoice -> lines -> product -> brand + stock
 GET {{HostAddress}}/api/invoices
 Accept: application/json
