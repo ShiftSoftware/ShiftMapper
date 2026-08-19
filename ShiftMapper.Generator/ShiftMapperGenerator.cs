@@ -38,6 +38,18 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     private const string BaseClassMetadataName = "ShiftMapper.ShiftMapperBase";
 
     /// <summary>
+    /// Full name of the handle CreateMap returns, and so the type ReverseMap must be
+    /// declared on. The `2 suffix is how metadata spells "takes two type parameters".
+    ///
+    /// These two names are the generator's entire contract with the runtime library. They
+    /// have to be strings: a generator reasons about the USER's compilation, which is a
+    /// different assembly world from its own, and GetTypeByMetadataName is the door between
+    /// them. Referencing the runtime library to get at nameof would not help — CreateMap is
+    /// protected, so nameof cannot even see it without making it public.
+    /// </summary>
+    private const string MapExpressionMetadataName = "ShiftMapper.MapExpression`2";
+
+    /// <summary>
     /// The single namespace every generated extension class lives in. It is globally
     /// imported, so it deliberately contains nothing but ShiftMapper's own classes.
     /// </summary>
@@ -115,6 +127,11 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                 location: LocationInfo.CreateFrom(classDeclaration.Identifier.Parent ?? classDeclaration));
         }
 
+        // Null when the referenced ShiftMapper runtime predates MapExpression. ReverseMap
+        // simply goes unrecognised in that case rather than the generator falling over.
+        INamedTypeSymbol? mapExpression = context.SemanticModel.Compilation
+            .GetTypeByMetadataName(MapExpressionMetadataName);
+
         var maps = ImmutableArray.CreateBuilder<MapModel>();
         var seen = new HashSet<string>();
 
@@ -122,13 +139,18 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         // the same class arrive as their own model and are merged later.
         foreach (InvocationExpressionSyntax invocation in classDeclaration.DescendantNodes().OfType<InvocationExpressionSyntax>())
         {
-            GenericNameSyntax? createMap = GetCreateMapName(invocation);
+            GenericNameSyntax? createMap = GetCreateMapName(
+                context.SemanticModel, invocation, baseClass, cancellationToken);
+
             if (createMap is null)
                 continue;
 
             // One CreateMap normally means one map — but a chained ReverseMap() means two.
             foreach (MapModel map in BuildMapModels(
-                         context.SemanticModel, createMap, FindReverseMapName(invocation), cancellationToken))
+                         context.SemanticModel,
+                         createMap,
+                         FindReverseMapName(context.SemanticModel, invocation, mapExpression, cancellationToken),
+                         cancellationToken))
             {
                 if (seen.Add(map.Key))
                     maps.Add(map);
@@ -224,8 +246,17 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// <summary>
     /// Recognises <c>CreateMap&lt;A, B&gt;()</c> and <c>config.CreateMap&lt;A, B&gt;()</c>,
     /// returning the generic name part so the type arguments can be read.
+    ///
+    /// The name alone is NOT enough. Plenty of libraries have a method called CreateMap, and
+    /// a mapper class is free to call one; generating a map from somebody else's method is
+    /// silently wrong code the developer never asked for. So the name is only a filter, and
+    /// the answer comes from asking the compiler what the call actually binds to.
     /// </summary>
-    private static GenericNameSyntax? GetCreateMapName(InvocationExpressionSyntax invocation)
+    private static GenericNameSyntax? GetCreateMapName(
+        SemanticModel semanticModel,
+        InvocationExpressionSyntax invocation,
+        INamedTypeSymbol baseClass,
+        CancellationToken cancellationToken)
     {
         GenericNameSyntax? name = invocation.Expression switch
         {
@@ -234,10 +265,42 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             _ => null,
         };
 
-        if (name is null || name.Identifier.ValueText != "CreateMap")
+        // Cheap syntax tests first. Nearly every invocation in a file fails them, and each
+        // one we reject here is a symbol lookup we never have to pay for.
+        if (name is null
+            || name.Identifier.ValueText != "CreateMap"
+            || name.TypeArgumentList.Arguments.Count != 2)
+        {
             return null;
+        }
 
-        return name.TypeArgumentList.Arguments.Count == 2 ? name : null;
+        return IsDeclaredOn(semanticModel, invocation, baseClass, cancellationToken) ? name : null;
+    }
+
+    /// <summary>
+    /// Whether an invocation binds to a method declared on <paramref name="expectedType"/> —
+    /// the check that separates OUR CreateMap/ReverseMap from any other method that happens
+    /// to share the name.
+    ///
+    /// Comparison is against the ORIGINAL DEFINITION on both sides. The bound symbol is a
+    /// constructed method on a constructed type (ReverseMap on MapExpression&lt;Brand,
+    /// BrandDto&gt;), which is never equal to the open MapExpression&lt;,&gt; we looked up.
+    ///
+    /// A call that does not bind at all — half-typed code, a destination type that does not
+    /// exist yet — returns false, so nothing is generated from it until it compiles.
+    /// </summary>
+    private static bool IsDeclaredOn(
+        SemanticModel semanticModel,
+        InvocationExpressionSyntax invocation,
+        INamedTypeSymbol expectedType,
+        CancellationToken cancellationToken)
+    {
+        if (semanticModel.GetSymbolInfo(invocation, cancellationToken).Symbol is not IMethodSymbol method)
+            return false;
+
+        return SymbolEqualityComparer.Default.Equals(
+            method.ContainingType?.OriginalDefinition,
+            expectedType.OriginalDefinition);
     }
 
     /// <summary>
@@ -249,8 +312,15 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// It walks the WHOLE chain rather than only looking one link ahead, so ReverseMap keeps
     /// working when other refinements are added between it and CreateMap later on.
     /// </summary>
-    private static SimpleNameSyntax? FindReverseMapName(InvocationExpressionSyntax createMap)
+    private static SimpleNameSyntax? FindReverseMapName(
+        SemanticModel semanticModel,
+        InvocationExpressionSyntax createMap,
+        INamedTypeSymbol? mapExpression,
+        CancellationToken cancellationToken)
     {
+        if (mapExpression is null)
+            return null;
+
         for (SyntaxNode node = createMap; ;)
         {
             // Each link of the chain looks like `<node>.Something(...)`. Anything else ends
@@ -262,8 +332,12 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             if (memberAccess.Parent is not InvocationExpressionSyntax invocation)
                 return null;
 
-            if (memberAccess.Name.Identifier.ValueText == "ReverseMap")
+            // Same rule as CreateMap: the name gets it looked at, the symbol decides.
+            if (memberAccess.Name.Identifier.ValueText == "ReverseMap"
+                && IsDeclaredOn(semanticModel, invocation, mapExpression, cancellationToken))
+            {
                 return memberAccess.Name;
+            }
 
             node = invocation;
         }

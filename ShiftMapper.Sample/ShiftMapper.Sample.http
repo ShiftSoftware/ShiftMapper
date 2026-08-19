@@ -35,7 +35,6 @@ POST {{HostAddress}}/api/stocks
 Content-Type: application/json
 
 {
-  "id": 999,
   "name": "Duhok Distribution Centre",
   "city": "Duhok",
   "code": "DHK-DC"
