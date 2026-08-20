@@ -27,6 +27,7 @@ public class AppDbContext : DbContext
         {
             b.Property(x => x.Name).HasMaxLength(100).IsRequired();
             b.Property(x => x.Country).HasMaxLength(100);
+            b.Property(x => x.ISOCode).HasMaxLength(2);
         });
 
         modelBuilder.Entity<Stock>(s =>

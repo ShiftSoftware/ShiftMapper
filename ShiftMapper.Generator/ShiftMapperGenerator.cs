@@ -49,6 +49,9 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// </summary>
     private const string MapExpressionMetadataName = "ShiftMapper.MapExpression`2";
 
+    /// <summary>Full name of the per-map options object handed to the configure lambda.</summary>
+    private const string MapOptionsMetadataName = "ShiftMapper.MapOptions";
+
     /// <summary>
     /// The single namespace every generated extension class lives in. It is globally
     /// imported, so it deliberately contains nothing but ShiftMapper's own classes.
@@ -132,6 +135,14 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         INamedTypeSymbol? mapExpression = context.SemanticModel.Compilation
             .GetTypeByMetadataName(MapExpressionMetadataName);
 
+        INamedTypeSymbol? mapOptions = context.SemanticModel.Compilation
+            .GetTypeByMetadataName(MapOptionsMetadataName);
+
+        // Resolved once per declaration, from the class symbol, so an override living in
+        // another part of a partial mapper still counts.
+        bool? classDefaultCaseSensitive = ReadClassDefaultCaseSensitive(
+            context.SemanticModel.Compilation, classSymbol, baseClass, mapOptions, cancellationToken);
+
         var maps = ImmutableArray.CreateBuilder<MapModel>();
         var seen = new HashSet<string>();
 
@@ -148,8 +159,11 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             // One CreateMap normally means one map — but a chained ReverseMap() means two.
             foreach (MapModel map in BuildMapModels(
                          context.SemanticModel,
+                         invocation,
                          createMap,
                          FindReverseMapName(context.SemanticModel, invocation, mapExpression, cancellationToken),
+                         mapOptions,
+                         classDefaultCaseSensitive,
                          cancellationToken))
             {
                 if (seen.Add(map.Key))
@@ -349,12 +363,22 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// </summary>
     private static IEnumerable<MapModel> BuildMapModels(
         SemanticModel semanticModel,
+        InvocationExpressionSyntax invocation,
         GenericNameSyntax createMap,
         SimpleNameSyntax? reverseMapName,
+        INamedTypeSymbol? mapOptions,
+        bool? classDefaultCaseSensitive,
         CancellationToken cancellationToken)
     {
         TypeSyntax sourceSyntax = createMap.TypeArgumentList.Arguments[0];
         TypeSyntax destinationSyntax = createMap.TypeArgumentList.Arguments[1];
+
+        // PRECEDENCE, innermost first: this map's own lambda, then the mapper's
+        // ConfigureDefaults, then ShiftMapper's default of case-insensitive.
+        bool? declared = ReadCaseSensitive(
+            semanticModel, FirstArgument(invocation), mapOptions, cancellationToken);
+
+        bool caseSensitive = declared ?? classDefaultCaseSensitive ?? false;
 
         // Ask the compiler: what type does the text "Brand" actually refer to here?
         if (semanticModel.GetSymbolInfo(sourceSyntax, cancellationToken).Symbol is not INamedTypeSymbol sourceType)
@@ -363,7 +387,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         if (semanticModel.GetSymbolInfo(destinationSyntax, cancellationToken).Symbol is not INamedTypeSymbol destinationType)
             yield break;
 
-        yield return BuildMapModel(sourceType, destinationType, LocationInfo.CreateFrom(createMap), isReverse: false);
+        yield return BuildMapModel(sourceType, destinationType, LocationInfo.CreateFrom(createMap), isReverse: false, caseSensitive: caseSensitive);
 
         if (reverseMapName is null)
             yield break;
@@ -374,11 +398,124 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         //
         // Its diagnostics point at `.ReverseMap()` rather than at CreateMap, because that is
         // the code responsible for them.
+        // The reverse map inherits the forward map's settings unless ReverseMap states its
+        // own — writing the option once on CreateMap and getting both directions is the
+        // least surprising reading of `CreateMap(...).ReverseMap()`.
+        bool? reverseDeclared = ReadCaseSensitive(
+            semanticModel, FirstArgument(FindInvocation(reverseMapName)), mapOptions, cancellationToken);
+
         yield return BuildMapModel(
             destinationType,
             sourceType,
             LocationInfo.CreateFrom(reverseMapName) ?? LocationInfo.CreateFrom(createMap),
-            isReverse: true);
+            isReverse: true,
+            caseSensitive: reverseDeclared ?? caseSensitive);
+    }
+
+    /// <summary>The configure lambda passed to a call, or null when it was left off.</summary>
+    private static SyntaxNode? FirstArgument(InvocationExpressionSyntax? invocation) =>
+        invocation?.ArgumentList.Arguments.Count > 0
+            ? invocation.ArgumentList.Arguments[0].Expression
+            : null;
+
+    /// <summary>Walks back up from a method name to the invocation that used it.</summary>
+    private static InvocationExpressionSyntax? FindInvocation(SimpleNameSyntax? name) =>
+        name?.Parent?.Parent as InvocationExpressionSyntax;
+
+    /// <summary>Underlying value of <c>PropertyMatching.CaseSensitive</c>.</summary>
+    private const int CaseSensitiveValue = 1;
+
+    /// <summary>
+    /// Reads the options a configure lambda sets, e.g. the <c>o =&gt; o.Matching = ...</c> in
+    /// <c>CreateMap&lt;A, B&gt;(o =&gt; o.Matching = PropertyMatching.CaseSensitive)</c>.
+    ///
+    /// Returns null for "said nothing", which is what lets precedence work: an unset option
+    /// falls through to the mapper's defaults instead of overwriting them with a default of
+    /// its own.
+    ///
+    /// Scanning for ASSIGNMENTS rather than for one specific shape means both lambda forms
+    /// work — the expression body above and a block body setting several options — and it is
+    /// the same routine that reads ConfigureDefaults. Future options plug in here by name.
+    /// </summary>
+    private static bool? ReadCaseSensitive(
+        SemanticModel semanticModel,
+        SyntaxNode? scope,
+        INamedTypeSymbol? mapOptions,
+        CancellationToken cancellationToken)
+    {
+        if (scope is null || mapOptions is null)
+            return null;
+
+        bool? result = null;
+
+        foreach (AssignmentExpressionSyntax assignment in scope.DescendantNodesAndSelf().OfType<AssignmentExpressionSyntax>())
+        {
+            // The name gets it looked at; the symbol decides. Assigning some other object's
+            // Matching property must not be mistaken for configuring a map.
+            if (semanticModel.GetSymbolInfo(assignment.Left, cancellationToken).Symbol is not IPropertySymbol property
+                || property.Name != "Matching"
+                || !SymbolEqualityComparer.Default.Equals(property.ContainingType, mapOptions))
+            {
+                continue;
+            }
+
+            Optional<object?> value = semanticModel.GetConstantValue(assignment.Right, cancellationToken);
+
+            // A non-constant expression cannot be read at compile time. Leaving it unset
+            // falls back to the documented default rather than guessing.
+            if (value is { HasValue: true, Value: int matching })
+                result = matching == CaseSensitiveValue;
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Reads the mapper-wide defaults from an overridden <c>ConfigureDefaults</c>.
+    ///
+    /// Resolved from the class SYMBOL, not from the declaration we happen to be looking at,
+    /// so it does not matter which file of a partial mapper the override sits in. That also
+    /// means the body may live in a different syntax tree, hence the second semantic model.
+    /// </summary>
+    private static bool? ReadClassDefaultCaseSensitive(
+        Compilation compilation,
+        INamedTypeSymbol classSymbol,
+        INamedTypeSymbol baseClass,
+        INamedTypeSymbol? mapOptions,
+        CancellationToken cancellationToken)
+    {
+        if (mapOptions is null)
+            return null;
+
+        foreach (ISymbol member in classSymbol.GetMembers("ConfigureDefaults"))
+        {
+            if (member is not IMethodSymbol method || !OverridesMethodOn(method, baseClass))
+                continue;
+
+            foreach (SyntaxReference reference in method.DeclaringSyntaxReferences)
+            {
+                SyntaxNode syntax = reference.GetSyntax(cancellationToken);
+                SemanticModel model = compilation.GetSemanticModel(syntax.SyntaxTree);
+
+                bool? value = ReadCaseSensitive(model, syntax, mapOptions, cancellationToken);
+                if (value is not null)
+                    return value;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>Whether a method overrides one declared on <paramref name="expectedType"/>.</summary>
+    private static bool OverridesMethodOn(IMethodSymbol method, INamedTypeSymbol expectedType)
+    {
+        for (IMethodSymbol? current = method; current is not null; current = current.OverriddenMethod)
+        {
+            if (SymbolEqualityComparer.Default.Equals(current.ContainingType?.OriginalDefinition, expectedType))
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -389,9 +526,10 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         INamedTypeSymbol sourceType,
         INamedTypeSymbol destinationType,
         LocationInfo? location,
-        bool isReverse)
+        bool isReverse,
+        bool caseSensitive)
     {
-        PropertyAnalysis analysis = FindMatchingProperties(sourceType, destinationType);
+        PropertyAnalysis analysis = FindMatchingProperties(sourceType, destinationType, caseSensitive);
 
         return new MapModel(
             sourceType: sourceType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
@@ -414,8 +552,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     private readonly struct PropertyAnalysis
     {
         public PropertyAnalysis(
-            ImmutableArray<string> all,
-            ImmutableArray<string> writable,
+            ImmutableArray<PropertyPair> all,
+            ImmutableArray<PropertyPair> writable,
             ImmutableArray<UnmappedProperty> unmapped)
         {
             All = all;
@@ -424,10 +562,10 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         }
 
         /// <summary>Settable while constructing, init-only included.</summary>
-        public ImmutableArray<string> All { get; }
+        public ImmutableArray<PropertyPair> All { get; }
 
         /// <summary>Still assignable after construction.</summary>
-        public ImmutableArray<string> Writable { get; }
+        public ImmutableArray<PropertyPair> Writable { get; }
 
         /// <summary>Skipped properties the developer can act on — each becomes a warning.</summary>
         public ImmutableArray<UnmappedProperty> Unmapped { get; }
@@ -447,20 +585,37 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// </summary>
     private static PropertyAnalysis FindMatchingProperties(
         INamedTypeSymbol sourceType,
-        INamedTypeSymbol destinationType)
+        INamedTypeSymbol destinationType,
+        bool caseSensitive)
     {
         // Index the source's readable properties by name so lookups are easy.
         // GetProperties yields the most-derived declaration first, so the first entry we
         // keep for a name is the one that would actually win at runtime.
-        var sourceProperties = new Dictionary<string, IPropertySymbol>();
+        var sourceProperties = new Dictionary<string, IPropertySymbol>(StringComparer.Ordinal);
         foreach (IPropertySymbol property in GetProperties(sourceType))
         {
             if (property.GetMethod is not null && !sourceProperties.ContainsKey(property.Name))
                 sourceProperties[property.Name] = property;
         }
 
-        var all = ImmutableArray.CreateBuilder<string>();
-        var writable = ImmutableArray.CreateBuilder<string>();
+        // A second index for the fallback, built from the FIRST one so that shadowing has
+        // already been resolved. A bucket holds more than one entry only when the source
+        // really does declare names differing solely by case, e.g. both Id and ID.
+        Dictionary<string, List<IPropertySymbol>>? byIgnoreCase = null;
+        if (!caseSensitive)
+        {
+            byIgnoreCase = new Dictionary<string, List<IPropertySymbol>>(StringComparer.OrdinalIgnoreCase);
+            foreach (IPropertySymbol property in sourceProperties.Values)
+            {
+                if (!byIgnoreCase.TryGetValue(property.Name, out List<IPropertySymbol>? bucket))
+                    byIgnoreCase[property.Name] = bucket = new List<IPropertySymbol>();
+
+                bucket.Add(property);
+            }
+        }
+
+        var all = ImmutableArray.CreateBuilder<PropertyPair>();
+        var writable = ImmutableArray.CreateBuilder<PropertyPair>();
         var unmapped = ImmutableArray.CreateBuilder<UnmappedProperty>();
         var seen = new HashSet<string>();
 
@@ -490,14 +645,42 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                 continue;
             }
 
+            // THE MATCHING ORDER. An exact match is always tried first, in BOTH modes.
+            // That ordering is the whole point: a type carrying both Id and ID has each of
+            // them find its own exact counterpart before any fallback is considered, so the
+            // two can never be mistaken for one another.
             if (!sourceProperties.TryGetValue(destinationProperty.Name, out IPropertySymbol? sourceProperty))
             {
-                unmapped.Add(new UnmappedProperty(
-                    destinationProperty.Name,
-                    UnmappedReason.NoSourceProperty,
-                    ShortTypeName(destinationProperty.Type),
-                    sourcePropertyType: null));
-                continue;
+                List<IPropertySymbol>? candidates = null;
+                byIgnoreCase?.TryGetValue(destinationProperty.Name, out candidates);
+
+                // Several source names differ only by case and none of them matched exactly,
+                // so there is no right answer. Guessing would silently pick one of the
+                // developer's properties at random, so we map nothing and say why.
+                if (candidates is { Count: > 1 })
+                {
+                    unmapped.Add(new UnmappedProperty(
+                        destinationProperty.Name,
+                        UnmappedReason.AmbiguousCaseInsensitiveMatch,
+                        ShortTypeName(destinationProperty.Type),
+                        sourcePropertyType: null,
+                        candidates: string.Join(", ", candidates.Select(c => c.Name).OrderBy(n => n, StringComparer.Ordinal))));
+                    continue;
+                }
+
+                if (candidates is { Count: 1 })
+                {
+                    sourceProperty = candidates[0];
+                }
+                else
+                {
+                    unmapped.Add(new UnmappedProperty(
+                        destinationProperty.Name,
+                        UnmappedReason.NoSourceProperty,
+                        ShortTypeName(destinationProperty.Type),
+                        sourcePropertyType: null));
+                    continue;
+                }
             }
 
             // Same type required — no conversions in this first version.
@@ -511,13 +694,16 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                 continue;
             }
 
-            all.Add(destinationProperty.Name);
+            // Each side is spelled as its OWN type declares it, which is what makes a
+            // case-insensitive match emit `destination.Sku = source.SKU`.
+            var pair = new PropertyPair(destinationProperty.Name, sourceProperty.Name);
+            all.Add(pair);
 
             // `init` accessors are legal inside an object initializer but nowhere else,
             // so they can be created but never refreshed in place (CS8852). That is not a
             // warning — the create method handles them fine — just a documented remark.
             if (!setter.IsInitOnly)
-                writable.Add(destinationProperty.Name);
+                writable.Add(pair);
         }
 
         return new PropertyAnalysis(all.ToImmutable(), writable.ToImmutable(), unmapped.ToImmutable());
@@ -698,6 +884,16 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                         location,
                         map.DestinationName,
                         unmapped.PropertyName),
+
+                    // SM0007: the case-insensitive fallback found several candidates and
+                    // there was no exact match to settle it.
+                    UnmappedReason.AmbiguousCaseInsensitiveMatch => Diagnostic.Create(
+                        DiagnosticDescriptors.AmbiguousCaseInsensitiveMatch,
+                        location,
+                        map.DestinationName,
+                        unmapped.PropertyName,
+                        map.SourceName,
+                        unmapped.Candidates),
 
                     // SM0002: same name on both sides, but the types are not the same.
                     _ => Diagnostic.Create(
@@ -886,9 +1082,9 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             sb.AppendLine($"{indent}        {{");
             sb.AppendLine($"{indent}            var destination = new {map.DestinationType}");
             sb.AppendLine($"{indent}            {{");
-            foreach (string property in map.PropertyNames)
+            foreach (PropertyPair property in map.PropertyNames)
             {
-                sb.AppendLine($"{indent}                {property} = source.{property},");
+                sb.AppendLine($"{indent}                {property.Destination} = source.{property.Source},");
             }
             sb.AppendLine($"{indent}            }};");
             sb.AppendLine();
@@ -922,9 +1118,9 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         AppendNullGuard(sb, $"{indent}        ", "source", map.IsSourceValueType);
         AppendNullGuard(sb, $"{indent}        ", "destination", map.IsDestinationValueType);
 
-        foreach (string property in map.WritablePropertyNames)
+        foreach (PropertyPair property in map.WritablePropertyNames)
         {
-            sb.AppendLine($"{indent}        destination.{property} = source.{property};");
+            sb.AppendLine($"{indent}        destination.{property.Destination} = source.{property.Source};");
         }
 
         sb.AppendLine();
@@ -979,7 +1175,12 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// </summary>
     private static void AppendInitOnlyRemark(StringBuilder sb, string indent, MapModel map)
     {
-        var initOnly = map.PropertyNames.Where(p => !map.WritablePropertyNames.Contains(p)).ToList();
+        var writable = new HashSet<string>(map.WritablePropertyNames.Select(p => p.Destination), StringComparer.Ordinal);
+        var initOnly = map.PropertyNames
+            .Where(p => !writable.Contains(p.Destination))
+            .Select(p => p.Destination)
+            .ToList();
+
         if (initOnly.Count == 0)
             return;
 

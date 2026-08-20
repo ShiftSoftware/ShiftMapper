@@ -37,5 +37,18 @@ public readonly struct MapExpression<TSource, TDestination>
     /// Returns the reverse map's own handle, so it reads naturally in a chain. Reversing
     /// twice simply gets you back where you started and registers nothing new.
     /// </summary>
-    public MapExpression<TDestination, TSource> ReverseMap() => default;
+    /// <param name="configure">
+    /// Optional settings for the REVERSE map only. Leave it off and the reverse map inherits
+    /// whatever the forward <c>CreateMap</c> was configured with, which is almost always what
+    /// you want; pass it to differ.
+    ///
+    /// <code>
+    /// CreateMap&lt;Stock, StockDto&gt;(o =&gt; o.Matching = PropertyMatching.CaseSensitive)
+    ///     .ReverseMap();                                    // reverse is case-sensitive too
+    ///
+    /// CreateMap&lt;Stock, StockDto&gt;()
+    ///     .ReverseMap(o =&gt; o.Matching = PropertyMatching.CaseSensitive);   // only the reverse
+    /// </code>
+    /// </param>
+    public MapExpression<TDestination, TSource> ReverseMap(Action<MapOptions>? configure = null) => default;
 }

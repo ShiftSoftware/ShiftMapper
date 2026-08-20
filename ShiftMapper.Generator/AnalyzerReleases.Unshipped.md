@@ -12,3 +12,4 @@ SM0003 | ShiftMapper | Warning | Destination property is not mapped because its 
 SM0004 | ShiftMapper | Warning | Destination type has no public parameterless constructor
 SM0005 | ShiftMapper | Warning | No mapping code was generated for a ShiftMapperBase-derived class
 SM0006 | ShiftMapper | Info | Reverse map leaves a destination property unmapped
+SM0007 | ShiftMapper | Warning | Destination property matches several source properties when case is ignored

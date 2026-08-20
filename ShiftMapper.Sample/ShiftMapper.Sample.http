@@ -9,7 +9,9 @@ Accept: application/json
 GET {{HostAddress}}/api/products
 Accept: application/json
 
-### 1b. Brands — GENERATED extension, brand.Map<BrandDto>(mapper) creates a new DTO
+### 1b. Brands — GENERATED extension, brand.Map<BrandDto>(mapper) creates a new DTO.
+#     Note "isoCode" in the response: the entity spells it ISOCode and the DTO spells it
+#     IsoCode, so this is case-insensitive matching working end to end, through the database.
 GET {{HostAddress}}/api/brands
 Accept: application/json
 

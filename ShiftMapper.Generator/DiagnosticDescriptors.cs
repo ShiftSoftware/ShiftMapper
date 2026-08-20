@@ -91,6 +91,25 @@ internal static class DiagnosticDescriptors
                      "ReverseMap in the first place. Being informational, it shows in the IDE and in a " +
                      "detailed build log (-v d), and is not counted as a build warning.");
 
+    /// <summary>
+    /// SM0007 — the case-insensitive fallback found several candidates.
+    ///
+    /// Only reachable under <c>PropertyMatching.CaseInsensitive</c>, and only when there was
+    /// no exact match to settle it: the source carries two properties whose names differ
+    /// only by case, so either could be meant. Picking one silently would be a coin toss
+    /// with the developer's data, so nothing is mapped and the choice is handed back.
+    /// </summary>
+    public static readonly DiagnosticDescriptor AmbiguousCaseInsensitiveMatch = new(
+        id: "SM0007",
+        title: "Destination property matches more than one source property when case is ignored",
+        messageFormat: "ShiftMapper: '{0}.{1}' is not mapped because '{2}' has several properties matching '{1}' when case is ignored ({3})",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "Rename one of the source properties, give the destination the exact name of " +
+                     "the one you want, or pass PropertyMatching.CaseSensitive to turn the " +
+                     "fallback off for this map.");
+
     /// <summary>SM0005 — the whole mapper produced nothing.</summary>
     public static readonly DiagnosticDescriptor MapperSkipped = new(
         id: "SM0005",

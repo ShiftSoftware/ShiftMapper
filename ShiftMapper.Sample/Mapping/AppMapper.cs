@@ -41,9 +41,23 @@ public partial class AppMapper : ShiftMapperBase
     {
         _logger = logger;
 
-        // These two map cleanly: every destination property has a source property with
-        // the same name and the same type, so they build with no warnings.
-        // Try it: add a line, rebuild, and look in Generated/ to see the new methods.
+        // Maps cleanly, and demonstrates CASE-INSENSITIVE MATCHING along the way.
+        //
+        // Brand carries the column as ISOCode — acronym casing, the way an EF entity
+        // mirroring a database column usually looks. BrandDto spells it IsoCode. There is no
+        // exact match for that name, so the default PropertyMatching.CaseInsensitive falls
+        // back to ignoring case and generates:
+        //
+        //   IsoCode = source.ISOCode
+        //
+        // Every other property still matches exactly, and exact always wins first — so a
+        // type carrying both Id and ID would map each to its own counterpart, never swap them.
+        //
+        // See the other mode: change this line to
+        //     CreateMap<Brand, BrandDto>(o => o.Matching = PropertyMatching.CaseSensitive);
+        // and the fallback switches off, so IsoCode stops mapping and the build reports
+        //     SM0001: 'BrandDto.IsoCode' is not mapped because 'Brand' has no readable
+        //             property named 'IsoCode'
         CreateMap<Brand, BrandDto>();
 
         // Same map, plus the way back — one line, both directions:

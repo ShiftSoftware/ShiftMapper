@@ -11,6 +11,12 @@ internal enum UnmappedReason
 
     /// <summary>The property exists on both sides, but its setter is not public.</summary>
     SetterNotAccessible,
+
+    /// <summary>
+    /// Case-insensitive matching found MORE than one source property differing only by
+    /// case, so there is no single right answer and the generator refuses to guess.
+    /// </summary>
+    AmbiguousCaseInsensitiveMatch,
 }
 
 /// <summary>
@@ -23,13 +29,21 @@ internal sealed class UnmappedProperty
         string propertyName,
         UnmappedReason reason,
         string destinationPropertyType,
-        string? sourcePropertyType)
+        string? sourcePropertyType,
+        string? candidates = null)
     {
         PropertyName = propertyName;
         Reason = reason;
         DestinationPropertyType = destinationPropertyType;
         SourcePropertyType = sourcePropertyType;
+        Candidates = candidates;
     }
+
+    /// <summary>
+    /// For <see cref="UnmappedReason.AmbiguousCaseInsensitiveMatch"/>, the competing source
+    /// property names as the developer wrote them, e.g. <c>"Id, ID"</c>. Null otherwise.
+    /// </summary>
+    public string? Candidates { get; }
 
     public string PropertyName { get; }
 

@@ -87,5 +87,36 @@ public abstract class ShiftMapperBase
     /// CreateMap&lt;Stock, StockDto&gt;().ReverseMap();     // Stock -> StockDto AND back
     /// </code>
     /// </summary>
-    protected MapExpression<TSource, TDestination> CreateMap<TSource, TDestination>() => default;
+    /// <param name="configure">
+    /// Optional per-map settings. Anything you set here overrides
+    /// <see cref="ConfigureDefaults"/> for this map only.
+    ///
+    /// <code>
+    /// CreateMap&lt;Brand, BrandDto&gt;();                                          // Sku finds SKU
+    /// CreateMap&lt;Brand, BrandDto&gt;(o =&gt; o.Matching = PropertyMatching.CaseSensitive);
+    /// </code>
+    /// </param>
+    protected MapExpression<TSource, TDestination> CreateMap<TSource, TDestination>(
+        Action<MapOptions>? configure = null) => default;
+
+    /// <summary>
+    /// Sets the defaults every map in THIS mapper starts from. Override it when a whole
+    /// mapper wants different behaviour, instead of repeating the same option on every
+    /// <c>CreateMap</c> call:
+    ///
+    /// <code>
+    /// protected override void ConfigureDefaults(MapOptions options)
+    ///     =&gt; options.Matching = PropertyMatching.CaseSensitive;
+    /// </code>
+    ///
+    /// Precedence runs innermost-first: whatever a <c>CreateMap</c> (or <c>ReverseMap</c>)
+    /// lambda sets wins, then this, then ShiftMapper's own defaults.
+    ///
+    /// Like the rest of the declaration API this never runs — the generator reads it at
+    /// compile time. It is also read across ALL parts of a partial mapper, so it does not
+    /// matter which file you put it in.
+    /// </summary>
+    protected virtual void ConfigureDefaults(MapOptions options)
+    {
+    }
 }

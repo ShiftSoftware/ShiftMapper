@@ -21,8 +21,8 @@ internal sealed class MapModel
         bool isSourceValueType,
         bool isDestinationValueType,
         bool canConstructDestination,
-        ImmutableArray<string> propertyNames,
-        ImmutableArray<string> writablePropertyNames,
+        ImmutableArray<PropertyPair> propertyNames,
+        ImmutableArray<PropertyPair> writablePropertyNames,
         ImmutableArray<UnmappedProperty> unmappedProperties,
         string destinationName,
         LocationInfo? location,
@@ -75,13 +75,13 @@ internal sealed class MapModel
     /// Properties we can set while CONSTRUCTING the object. Includes <c>init</c>-only
     /// properties, which are perfectly legal inside an object initializer.
     /// </summary>
-    public ImmutableArray<string> PropertyNames { get; }
+    public ImmutableArray<PropertyPair> PropertyNames { get; }
 
     /// <summary>
     /// Properties we can still assign AFTER construction — i.e. everything above except
     /// the <c>init</c>-only ones, which would be CS8852 in the update overload.
     /// </summary>
-    public ImmutableArray<string> WritablePropertyNames { get; }
+    public ImmutableArray<PropertyPair> WritablePropertyNames { get; }
 
     /// <summary>Destination properties we had to skip — each becomes a build warning.</summary>
     public ImmutableArray<UnmappedProperty> UnmappedProperties { get; }
