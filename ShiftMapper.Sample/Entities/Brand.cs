@@ -19,6 +19,17 @@ public class Brand
 
     public int FoundedYear { get; set; }
 
+    /// <summary>
+    /// Free-form labels for the brand, e.g. "premium", "audio". A plain
+    /// <see cref="List{T}"/> of strings, which EF Core stores as a single JSON column — no
+    /// join table, because these are values rather than related entities.
+    ///
+    /// It is here to demonstrate COLLECTION mapping: the DTO declares the same property as an
+    /// <c>IReadOnlyList&lt;string&gt;</c>, and ShiftMapper bridges the two shapes by itself.
+    /// See <see cref="Dtos.BrandDto.Tags"/>.
+    /// </summary>
+    public List<string> Tags { get; set; } = new();
+
     // Navigation: every product that carries this brand.
     public List<Product> Products { get; set; } = new();
 }

@@ -34,6 +34,10 @@ public static class MappingExtensions
         // ValueConverter.ToInvariantString(source.FoundedYear), which is the same answer
         // with the culture decided in one place instead of on every line.
         FoundedYear = brand.FoundedYear.ToString(CultureInfo.InvariantCulture),
+        // List<string> -> IReadOnlyList<string>. Assigning brand.Tags straight across would
+        // COMPILE — a List is an IReadOnlyList — and would hand the DTO a read-only window
+        // onto a list the entity can still change underneath it. ShiftMapper copies instead.
+        Tags = brand.Tags.ToList(),
     };
 
     public static StockDto ToDto(this Stock stock) => new()

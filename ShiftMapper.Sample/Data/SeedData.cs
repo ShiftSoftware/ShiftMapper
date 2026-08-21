@@ -19,14 +19,14 @@ public static class SeedData
     public static void Apply(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<Brand>().HasData(
-            new Brand { Id = 1, Name = "Apple", Country = "United States", FoundedYear = 1976, ISOCode = "US" },
-            new Brand { Id = 2, Name = "Samsung", Country = "South Korea", FoundedYear = 1938, ISOCode = "KR" },
-            new Brand { Id = 3, Name = "Sony", Country = "Japan", FoundedYear = 1946, ISOCode = "JP" },
-            new Brand { Id = 4, Name = "Dell", Country = "United States", FoundedYear = 1984, ISOCode = "US" },
-            new Brand { Id = 5, Name = "LG", Country = "South Korea", FoundedYear = 1958, ISOCode = "KR" },
-            new Brand { Id = 6, Name = "Logitech", Country = "Switzerland", FoundedYear = 1981, ISOCode = "CH" },
-            new Brand { Id = 7, Name = "Anker", Country = "China", FoundedYear = 2011, ISOCode = "CN" },
-            new Brand { Id = 8, Name = "Bose", Country = "United States", FoundedYear = 1964, ISOCode = "US" }
+            new Brand { Id = 1, Name = "Apple", Country = "United States", FoundedYear = 1976, ISOCode = "US", Tags = ["premium", "mobile", "audio"] },
+            new Brand { Id = 2, Name = "Samsung", Country = "South Korea", FoundedYear = 1938, ISOCode = "KR", Tags = ["mobile", "displays"] },
+            new Brand { Id = 3, Name = "Sony", Country = "Japan", FoundedYear = 1946, ISOCode = "JP", Tags = ["audio", "imaging"] },
+            new Brand { Id = 4, Name = "Dell", Country = "United States", FoundedYear = 1984, ISOCode = "US", Tags = ["computing", "enterprise"] },
+            new Brand { Id = 5, Name = "LG", Country = "South Korea", FoundedYear = 1958, ISOCode = "KR", Tags = ["displays", "appliances"] },
+            new Brand { Id = 6, Name = "Logitech", Country = "Switzerland", FoundedYear = 1981, ISOCode = "CH", Tags = ["accessories", "peripherals"] },
+            new Brand { Id = 7, Name = "Anker", Country = "China", FoundedYear = 2011, ISOCode = "CN", Tags = ["accessories", "charging"] },
+            new Brand { Id = 8, Name = "Bose", Country = "United States", FoundedYear = 1964, ISOCode = "US", Tags = ["premium", "audio"] }
         );
 
         modelBuilder.Entity<Stock>().HasData(

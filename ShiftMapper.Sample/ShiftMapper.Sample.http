@@ -10,10 +10,12 @@ GET {{HostAddress}}/api/products
 Accept: application/json
 
 ### 1b. Brands — GENERATED extension, brand.Map<BrandDto>(mapper) creates a new DTO.
-#     Two things to look at in the response. "isoCode": the entity spells it ISOCode and the
+#     Three things to look at in the response. "isoCode": the entity spells it ISOCode and the
 #     DTO spells it IsoCode, so this is case-insensitive matching working end to end, through
-#     the database. And "foundedYear": quoted, because the entity holds it as an int and the
-#     DTO as a string — ShiftMapper converted it, invariantly, on its own.
+#     the database. "foundedYear": quoted, because the entity holds it as an int and the DTO
+#     as a string — ShiftMapper converted it, invariantly, on its own. And "tags": the entity
+#     holds a List<string>, the DTO an IReadOnlyList<string>, and the DTO gets its OWN copy
+#     rather than a read-only window onto the list EF is still tracking.
 GET {{HostAddress}}/api/brands
 Accept: application/json
 

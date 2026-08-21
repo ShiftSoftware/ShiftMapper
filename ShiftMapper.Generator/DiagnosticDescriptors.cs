@@ -49,9 +49,12 @@ internal static class DiagnosticDescriptors
         defaultSeverity: DiagnosticSeverity.Warning,
         isEnabledByDefault: true,
         description: "ShiftMapper converts between the simple types — numbers, text, bool, char, enums, " +
-                     "Guid and the date and time types — and honours implicit conversion operators the " +
-                     "types themselves declare. It does NOT map nested objects or collections; it will " +
-                     "not move a reference around by up-casting, down-casting or boxing; and it refuses " +
+                     "Guid and the date and time types — honours implicit conversion operators the " +
+                     "types themselves declare, and copies COLLECTIONS of those simple types between " +
+                     "the shapes it can build (arrays, List, HashSet, and the interfaces those satisfy). " +
+                     "It does NOT map nested objects, nor collections of them — a List<Product> cannot " +
+                     "become a List<ProductDto> until nested mapping exists. It will not move a " +
+                     "reference around by up-casting, down-casting or boxing; and it refuses " +
                      "four pairs on purpose, because their answer would not come from the types alone: " +
                      "DateTime to DateTimeOffset (the offset would come from the machine's time zone), " +
                      "DateTimeOffset to DateTime (dropping the offset and converting to UTC are equally " +
@@ -168,7 +171,7 @@ internal static class DiagnosticDescriptors
     public static readonly DiagnosticDescriptor ParsedConversion = new(
         id: "SM0009",
         title: "Destination property is mapped by parsing text at runtime",
-        messageFormat: "ShiftMapper: '{0}.{1}' is filled by parsing text into '{2}' when the map runs, so source text that does not parse throws",
+        messageFormat: "ShiftMapper: '{0}.{1}' is filled by parsing text when the map runs, so source text that does not parse throws",
         category: Category,
         defaultSeverity: DiagnosticSeverity.Info,
         isEnabledByDefault: true,

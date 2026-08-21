@@ -44,13 +44,15 @@ public partial class AppMapper : ShiftMapperBase
         // Maps cleanly, and demonstrates two things at once: CASE-INSENSITIVE MATCHING and
         // TYPE CONVERSION.
         //
-        // TYPE CONVERSION first. Brand.FoundedYear is an int; BrandDto.FoundedYear is a
-        // string. The names line up exactly, so the only question is whether the types can
-        // be bridged — and a number can always be written as text, so ShiftMapper writes:
+        // TYPE CONVERSION first, in two flavours. Brand.FoundedYear is an int and
+        // BrandDto.FoundedYear is a string; Brand.Tags is a List<string> and BrandDto.Tags is
+        // an IReadOnlyList<string>. Both pairs line up by name, so the only question is
+        // whether the types can be bridged — and both can:
         //
         //   FoundedYear = ValueConverter.ToInvariantString(source.FoundedYear)
+        //   Tags        = ValueConverter.ToList(source.Tags)
         //
-        // That is the whole feature in one line. When names match but types do not,
+        // That is the whole feature in two lines. When names match but types do not,
         // ShiftMapper converts if it can and says so if it cannot, instead of silently
         // skipping the property. What it converts:
         //
@@ -62,11 +64,21 @@ public partial class AppMapper : ShiftMapperBase
         //     to and from text
         //   * the date/time pairs with one answer       DateOnly -> DateTime, DateTime -> DateOnly
         //   * your own IMPLICIT conversion operators
+        //   * COLLECTIONS of all of the above           List<int> -> IReadOnlyList<int>,
+        //                                               HashSet<int> -> string[]
+        //
+        // That last one is worth a second look, because it does not just cast. A collection is
+        // COPIED into a new one, every time, even when the source could have been assigned
+        // straight across — so the DTO owns its own list rather than a second reference to the
+        // entity's, and an IEnumerable that was really an unevaluated EF query arrives as data
+        // rather than as a promise that re-runs on a disposed DbContext.
         //
         // and what it refuses, reporting SM0002 rather than guessing: nested objects
-        // (Product -> ProductDto), collections, moving a reference around by up-casting or
-        // boxing, your own EXPLICIT operators — and four pairs C# would convert quite happily,
-        // because their answer would not come from the two types alone:
+        // (Product -> ProductDto) and collections OF them (List<Product> -> List<ProductDto>,
+        // which needs nested mapping and is the next thing to build), moving a reference
+        // around by up-casting or boxing, your own EXPLICIT operators — and four pairs C#
+        // would convert quite happily, because their answer would not come from the two types
+        // alone:
         //
         //   DateTime -> DateTimeOffset   the offset would come from the server's time zone
         //   DateTimeOffset -> DateTime   drop the offset, or convert to UTC? both defensible

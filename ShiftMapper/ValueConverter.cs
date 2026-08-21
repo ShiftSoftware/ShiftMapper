@@ -84,8 +84,9 @@ public static class ValueConverter
     ///
     ///   1 — numbers, bool, char, enums, Guid and the date/time types, to and from text;
     ///       DateOnly/TimeOnly to DateTime/TimeSpan.
+    ///   2 — collections of those types: ToArray, ToList and ToHashSet.
     /// </summary>
-    public const int ConverterApiVersion = 1;
+    public const int ConverterApiVersion = 2;
 
     // -----------------------------------------------------------------
     // TO TEXT
@@ -478,6 +479,81 @@ public static class ValueConverter
     // Parsing text is the one place ShiftMapper is allowed to fail on data; adding a second
     // one, with a different exception type, for a pair this rare is not worth it. The
     // generator refuses that pair and reports SM0002.
+
+    // -----------------------------------------------------------------
+    // COLLECTIONS
+    // -----------------------------------------------------------------
+    //
+    // <c>List&lt;T&gt;</c>, <c>ICollection&lt;T&gt;</c>, <c>IEnumerable&lt;T&gt;</c>,
+    // <c>IReadOnlyList&lt;T&gt;</c>, <c>HashSet&lt;T&gt;</c> and arrays all describe the same
+    // idea in slightly different words, and a DTO rarely spells it the same way its entity
+    // does. These three methods are how the generator gets from any one of them to any other.
+    //
+    // THEY ALWAYS BUILD A NEW COLLECTION — even when the source could simply have been
+    // assigned across, as a List can be to an IEnumerable. Two reasons, and the second is the
+    // one that matters:
+    //
+    //   1. INDEPENDENCE. Assigning the entity's List straight onto the DTO does not copy it,
+    //      it SHARES it. Add an item to the DTO afterwards and you have quietly added it to
+    //      the entity that EF is tracking.
+    //   2. AN IEnumerable MAY NOT BE A COLLECTION AT ALL. It can be an unevaluated LINQ query
+    //      — which is exactly what an ORM hands you — and assigning that to a DTO means the
+    //      DTO holds a live query that runs again every time somebody enumerates it, and
+    //      throws once the DbContext behind it is disposed. Materialising here means the DTO
+    //      leaves the mapper holding data rather than a promise.
+    //
+    // A null source stays null rather than becoming an empty collection: the same rule the
+    // rest of ShiftMapper follows, where absence is copied rather than invented.
+
+    /// <summary>Copies a sequence into a new array.</summary>
+    public static T[]? ToArray<T>(IEnumerable<T>? source) => source?.ToArray();
+
+    /// <summary>Copies a sequence into a new array, converting each element on the way.</summary>
+    /// <param name="convert">
+    /// Applied to every element. The generator passes a <c>static</c> lambda, so it is
+    /// allocated once for the life of the process rather than once per mapped property.
+    /// </param>
+    public static TDestination[]? ToArray<TSource, TDestination>(
+        IEnumerable<TSource>? source,
+        Func<TSource, TDestination> convert) =>
+        source is null ? null : ToList(source, convert)!.ToArray();
+
+    /// <summary>Copies a sequence into a new list.</summary>
+    public static List<T>? ToList<T>(IEnumerable<T>? source) => source?.ToList();
+
+    /// <summary>Copies a sequence into a new list, converting each element on the way.</summary>
+    /// <inheritdoc cref="ToArray{TSource, TDestination}"/>
+    public static List<TDestination>? ToList<TSource, TDestination>(
+        IEnumerable<TSource>? source,
+        Func<TSource, TDestination> convert)
+    {
+        if (source is null)
+            return null;
+
+        // Sized up front when the source can say how many there are, which is the common
+        // case — a list, an array, a HashSet. An unevaluated query cannot, and grows instead.
+        var result = source is ICollection<TSource> known
+            ? new List<TDestination>(known.Count)
+            : new List<TDestination>();
+
+        foreach (TSource item in source)
+            result.Add(convert(item));
+
+        return result;
+    }
+
+    /// <summary>
+    /// Copies a sequence into a new set, which DISCARDS DUPLICATES — that is what a set is,
+    /// and it is why a destination declared as a <see cref="HashSet{T}"/> can come out shorter
+    /// than the list that fed it. The generator reports that as SM0008.
+    /// </summary>
+    public static HashSet<T>? ToHashSet<T>(IEnumerable<T>? source) => source?.ToHashSet();
+
+    /// <inheritdoc cref="ToHashSet{T}(IEnumerable{T})"/>
+    public static HashSet<TDestination>? ToHashSet<TSource, TDestination>(
+        IEnumerable<TSource>? source,
+        Func<TSource, TDestination> convert) =>
+        source is null ? null : ToList(source, convert)!.ToHashSet();
 
     /// <summary>
     /// The one message every failed conversion produces.

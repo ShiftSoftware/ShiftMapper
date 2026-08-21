@@ -992,12 +992,16 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                     conversion.DestinationPropertyType,
                     conversion.Note),
 
+                // No type in this message on purpose. For a scalar it would have named the
+                // destination's type; for a collection it would have named the COLLECTION
+                // ("parsing text into 'int[]'"), when what actually gets parsed is each
+                // element. Naming the property and leaving the types to the code is the one
+                // wording that is true of both.
                 ConversionRisk.Parsed => Diagnostic.Create(
                     DiagnosticDescriptors.ParsedConversion,
                     location,
                     map.DestinationName,
-                    conversion.PropertyName,
-                    conversion.DestinationPropertyType),
+                    conversion.PropertyName),
 
                 _ => null,
             };

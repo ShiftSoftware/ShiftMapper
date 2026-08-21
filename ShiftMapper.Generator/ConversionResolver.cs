@@ -10,7 +10,8 @@ namespace ShiftMapper.Generator;
 ///
 /// This is the whole of ShiftMapper's answer to "the names line up but the types do not".
 /// Before it existed the rule was simply <c>types must be identical</c>; now a
-/// <c>decimal</c> can fill a <c>string</c>, a <c>string</c> can fill an <c>int</c>, and a
+/// <c>decimal</c> can fill a <c>string</c>, a <c>string</c> can fill an <c>int</c>, a
+/// <c>List&lt;int&gt;</c> can fill an <c>IReadOnlyList&lt;string&gt;</c>, and a
 /// <c>Product</c> still cannot fill a <c>ProductDto</c> — with a warning saying so.
 ///
 /// <para><b>WHY IT IS ORDERED THE WAY IT IS</b></para>
@@ -40,10 +41,11 @@ namespace ShiftMapper.Generator;
 /// <item><description>
 /// conversions that just move a REFERENCE around — a downcast (<c>object</c> to
 /// <c>Product</c>) or an unboxing, which throw when the value is not really that type; and
-/// an up-cast or boxing (<c>Product</c> to <c>object</c>, <c>List&lt;T&gt;</c> to
-/// <c>IEnumerable&lt;T&gt;</c>), which compile and hand the DTO a reference to the very entity
-/// it was meant to be a copy of. These are the nested-object and collection cases, which
-/// ShiftMapper does not map yet and reports as SM0002;
+/// an up-cast or boxing (<c>Product</c> to <c>object</c>), which compile and hand the DTO a
+/// reference to the very entity it was meant to be a copy of. These are the nested-object
+/// cases, which ShiftMapper does not map yet and reports as SM0002. Note that a
+/// <c>List&lt;int&gt;</c> to <c>IEnumerable&lt;int&gt;</c> is NOT among them: that pair is an
+/// up-cast too, but step 2 catches it first and COPIES rather than shares;
 /// </description></item>
 /// <item><description>
 /// conversions whose result depends on something OUTSIDE the two types — the machine's time
@@ -74,11 +76,16 @@ internal static class ConversionResolver
     private const string ApiVersionFieldName = "ConverterApiVersion";
 
     /// <summary>
-    /// The version this generator writes calls for. Raise it in BOTH places whenever a new
-    /// method is added to <c>ValueConverter</c> and the generator starts calling it, so an
-    /// older runtime degrades to SM0002 instead of failing to compile.
+    /// The <c>ValueConverter</c> version each family of conversions needs. Raise the const on
+    /// <c>ValueConverter</c> and add a number here whenever a new method is added and the
+    /// generator starts calling it, so a project sitting on an older ShiftMapper runtime loses
+    /// only the conversions that runtime cannot serve — and gets SM0002 for them — instead of
+    /// failing to compile.
     /// </summary>
-    private const int RequiredApiVersion = 1;
+    private const int ScalarConversionApi = 1;
+
+    /// <inheritdoc cref="ScalarConversionApi"/>
+    private const int CollectionConversionApi = 2;
 
     /// <summary>
     /// Works out how to get a <paramref name="sourceType"/> value into a
@@ -96,13 +103,7 @@ internal static class ConversionResolver
         ITypeSymbol destinationType,
         string mapping)
     {
-        // 1. THE SAME TYPE. Note this comparison ignores nullable reference ANNOTATIONS, so
-        //    `string?` to `string` is still a plain copy — exactly as it was before
-        //    conversions existed, and the reason the generated file disables CS8601.
-        if (SymbolEqualityComparer.Default.Equals(sourceType, destinationType))
-            return ValueConversion.Direct;
-
-        // 2. THE TYPES WE WILL NOT REASON ABOUT AT ALL. `dynamic` has to go first: the
+        // 1. THE TYPES WE WILL NOT REASON ABOUT AT ALL. `dynamic` has to go first: the
         //    compiler reports an implicit conversion to it from EVERYTHING, so leaving it in
         //    would let a single `dynamic` property swallow every source property and silence
         //    the SM0002 that should have been reported. Pointers and unresolved types are
@@ -110,16 +111,38 @@ internal static class ConversionResolver
         if (IsUnreasonable(sourceType) || IsUnreasonable(destinationType))
             return null;
 
+        // 2. COLLECTIONS OF SIMPLE VALUES, ahead of the identity test on purpose.
+        //    A collection is copied into whatever shape the destination asks for, and that
+        //    INCLUDES the case where both sides are already the same shape: mapping
+        //    `List<int>` onto `List<int>` gives the destination its own list rather than a
+        //    second reference to the source's. Letting identity win there would make one
+        //    collection mapping behave differently from all the others for no reason the
+        //    developer could see from the code.
+        //
+        //    Everything this step does not recognise — a collection of Products, a Dictionary,
+        //    a shape we cannot construct, a string (which is an IEnumerable<char> and must
+        //    never be treated as one here) — returns null and carries on down the scalar path
+        //    unchanged. `List<Product>` to `List<Product>` is still the plain assignment it
+        //    always was, until nested mapping exists to do better.
+        if (ResolveCollection(compilation, sourceType, destinationType, mapping) is { } collection)
+            return collection;
+
+        // 3. THE SAME TYPE. Note this comparison ignores nullable reference ANNOTATIONS, so
+        //    `string?` to `string` is still a plain copy — exactly as it was before
+        //    conversions existed, and the reason the generated file disables CS8601.
+        if (SymbolEqualityComparer.Default.Equals(sourceType, destinationType))
+            return ValueConversion.Direct;
+
         ITypeSymbol sourceCore = Unwrap(sourceType, out bool sourceIsNullableValue);
         ITypeSymbol destinationCore = Unwrap(destinationType, out bool destinationIsNullableValue);
 
-        // 3. THE PAIRS WE REFUSE ON PURPOSE, even though C# would convert them.
+        // 4. THE PAIRS WE REFUSE ON PURPOSE, even though C# would convert them.
         //    Each one is a conversion whose ANSWER IS NOT DETERMINED BY THE TWO TYPES ALONE,
         //    which is the one thing a compile-time mapper must never emit. See RefusedNote.
         if (RefusedNote(compilation, sourceCore, destinationCore) is not null)
             return null;
 
-        // 4. C# ALREADY DOES IT IMPLICITLY — int to long, int to int?, or an
+        // 5. C# ALREADY DOES IT IMPLICITLY — int to long, int to int?, or an
         //    `implicit operator` somebody wrote by hand. An implicit conversion is the
         //    language's own promise that nothing goes wrong, so we assign and say nothing.
         //
@@ -147,26 +170,26 @@ internal static class ConversionResolver
         if (conversion.Exists && conversion.IsImplicit && !conversion.IsReference && !conversion.IsBoxing)
             return ValueConversion.Direct;
 
-        // 5. TO TEXT. Anything that can format itself can fill a string property, and a
+        // 6. TO TEXT. Anything that can format itself can fill a string property, and a
         //    nullable one needs no special handling on the way: ToInvariantString has its own
         //    nullable overloads, so an absent value stays absent instead of becoming "0".
         if (destinationCore.SpecialType == SpecialType.System_String)
         {
-            return CanFormat(compilation, sourceCore) && HasConverter(compilation)
+            return CanFormat(compilation, sourceCore) && HasConverter(compilation, ScalarConversionApi)
                 ? ValueConversion.Call($"{ConverterType}.ToInvariantString({{0}})", ConversionRisk.None)
                 : null;
         }
 
-        // 6. FROM TEXT. The mirror of step 5, and the one direction that can fail on data
+        // 7. FROM TEXT. The mirror of step 6, and the one direction that can fail on data
         //    rather than on types — hence ConversionRisk.Parsed, which becomes SM0009.
         if (sourceCore.SpecialType == SpecialType.System_String)
         {
-            return HasConverter(compilation)
+            return HasConverter(compilation, ScalarConversionApi)
                 ? ResolveParse(compilation, destinationCore, destinationIsNullableValue, mapping)
                 : null;
         }
 
-        // 7. A NULLABLE SOURCE FILLING A NON-NULLABLE DESTINATION. There is no value to
+        // 8. A NULLABLE SOURCE FILLING A NON-NULLABLE DESTINATION. There is no value to
         //    copy when the source is null, so the destination gets its default. Working out
         //    the rest by recursion means every conversion below is written once and works
         //    lifted for free: `long?` to `int` becomes
@@ -185,13 +208,13 @@ internal static class ConversionResolver
                 inner.Note is null ? NullNote : $"{NullNote}, and {inner.Note}");
         }
 
-        // 8. A CAST, between numbers and enums. Reference downcasts, unboxing and
+        // 9. A CAST, between numbers and enums. Reference downcasts, unboxing and
         //    user-defined explicit operators are all excluded in IsCastable.
         if (IsCastable(conversion))
             return Cast(destinationType, sourceCore, destinationCore);
 
-        // 9. BETWEEN THE DATE AND TIME TYPES, which C# gives no conversions of its own.
-        return HasConverter(compilation) ? ResolveDateAndTime(sourceCore, destinationCore) : null;
+        // 10. BETWEEN THE DATE AND TIME TYPES, which C# gives no conversions of its own.
+        return HasConverter(compilation, ScalarConversionApi) ? ResolveDateAndTime(sourceCore, destinationCore) : null;
     }
 
     /// <summary>
@@ -299,6 +322,203 @@ internal static class ConversionResolver
             note is null ? ConversionRisk.None : ConversionRisk.Lossy,
             note);
     }
+
+    /// <summary>
+    /// Step 2 — one collection of simple values into another.
+    ///
+    /// <c>List&lt;T&gt;</c>, <c>ICollection&lt;T&gt;</c>, <c>IEnumerable&lt;T&gt;</c>,
+    /// <c>IReadOnlyList&lt;T&gt;</c>, <c>HashSet&lt;T&gt;</c> and arrays all describe the same
+    /// idea, and an entity and its DTO rarely spell it the same way. This is the step that
+    /// gets from any of them to any other:
+    ///
+    /// <code>
+    /// // List&lt;int&gt; -> IReadOnlyList&lt;int&gt;
+    /// Tags = ValueConverter.ToList(source.Tags)
+    ///
+    /// // List&lt;int&gt; -> string[]     — the elements convert too
+    /// Tags = ValueConverter.ToArray(source.Tags, static item =&gt; ValueConverter.ToInvariantString(item))
+    /// </code>
+    ///
+    /// <para><b>THE SOURCE</b> is anything that is an <c>IEnumerable&lt;T&gt;</c>, which
+    /// includes arrays and every collection in the BCL. <b>THE DESTINATION</b> has to be a
+    /// shape we know how to BUILD, which is a shorter list — the three concrete ones
+    /// (<c>T[]</c>, <c>List&lt;T&gt;</c>, <c>HashSet&lt;T&gt;</c>) and the interfaces one of
+    /// those satisfies. A destination we cannot construct is reported as SM0002 rather than
+    /// guessed at, the same as anywhere else.</para>
+    ///
+    /// <para><b>SIMPLE ELEMENTS ONLY, for now.</b> The elements have to be value types or
+    /// strings, and they have to convert to each other by the ordinary rules — which is why
+    /// this method recurses into <see cref="Resolve"/> rather than having a table of its own.
+    /// A <c>List&lt;Product&gt;</c> is left alone: turning it into a
+    /// <c>List&lt;ProductDto&gt;</c> means mapping each element, and mapping nested objects is
+    /// a feature that does not exist yet. It falls through to the scalar path, where an
+    /// identical pair is still assigned across and anything else is still SM0002.</para>
+    ///
+    /// <para><b>WHY STRING IS EXCLUDED EXPLICITLY.</b> <c>string</c> is an
+    /// <c>IEnumerable&lt;char&gt;</c>. Without the guard, a <c>string</c> source would be read
+    /// as a collection of characters and a <c>char[]</c> would happily fill a <c>string</c>
+    /// property with something nobody asked for.</para>
+    /// </summary>
+    private static ValueConversion? ResolveCollection(
+        Compilation compilation,
+        ITypeSymbol sourceType,
+        ITypeSymbol destinationType,
+        string mapping)
+    {
+        if (sourceType.SpecialType == SpecialType.System_String
+            || destinationType.SpecialType == SpecialType.System_String)
+        {
+            return null;
+        }
+
+        if (!HasConverter(compilation, CollectionConversionApi))
+            return null;
+
+        if (GetElementType(compilation, sourceType) is not ITypeSymbol sourceElement)
+            return null;
+
+        if (GetDestinationShape(compilation, destinationType) is not var (method, destinationElement))
+            return null;
+
+        // Complex elements are the next feature, not this one.
+        if (!IsSimpleElement(sourceElement) || !IsSimpleElement(destinationElement))
+            return null;
+
+        ValueConversion? element = Resolve(compilation, sourceElement, destinationElement, mapping);
+        if (element is null)
+            return null;
+
+        // `static` on the lambda is not a style choice: it forbids capturing, which is what
+        // lets the compiler cache the delegate in a static field instead of allocating one
+        // every time the map runs.
+        string template = element.Template is null
+            ? $"{ConverterType}.{method}({{0}})"
+            : $"{ConverterType}.{method}({{0}}, static item => {element.Apply("item")})";
+
+        return new ValueConversion(template, CollectionRisk(method, element), CollectionNote(method, element));
+    }
+
+    /// <summary>
+    /// What to tell the developer about a collection conversion: whatever its ELEMENTS carry,
+    /// plus the one thing the collection itself can lose.
+    /// </summary>
+    private static ConversionRisk CollectionRisk(string method, ValueConversion element) =>
+        method == "ToHashSet" && element.Risk == ConversionRisk.None
+            ? ConversionRisk.Lossy
+            : element.Risk;
+
+    /// <inheritdoc cref="CollectionRisk"/>
+    private static string? CollectionNote(string method, ValueConversion element)
+    {
+        // A set is not a shorter word for a list. Whatever feeds it, equal values collapse
+        // into one, so a destination declared as a HashSet can come out shorter than the
+        // source that filled it — quietly, and only for the data that happens to repeat.
+        const string SetNote = "duplicate values are discarded, so the destination can hold fewer items than the source";
+
+        if (method != "ToHashSet")
+            return element.Note is null ? null : $"for each element, {element.Note}";
+
+        return element.Note is null ? SetNote : $"{SetNote}, and for each element, {element.Note}";
+    }
+
+    /// <summary>
+    /// The <c>T</c> in the <c>IEnumerable&lt;T&gt;</c> this type is, or null when it is not
+    /// one. A type implementing it for two different <c>T</c> is treated as not one at all —
+    /// there would be no way to know which sequence was meant.
+    /// </summary>
+    private static ITypeSymbol? GetElementType(Compilation compilation, ITypeSymbol type)
+    {
+        if (type is IArrayTypeSymbol array)
+            return array.Rank == 1 ? array.ElementType : null;
+
+        if (compilation.GetTypeByMetadataName("System.Collections.Generic.IEnumerable`1") is not INamedTypeSymbol enumerable)
+            return null;
+
+        ITypeSymbol? found = null;
+
+        // The type may BE IEnumerable<T> rather than merely implement it, so it is considered
+        // alongside its interfaces.
+        if (type is INamedTypeSymbol named && SymbolEqualityComparer.Default.Equals(named.OriginalDefinition, enumerable))
+            found = named.TypeArguments[0];
+
+        foreach (INamedTypeSymbol candidate in type.AllInterfaces)
+        {
+            if (!SymbolEqualityComparer.Default.Equals(candidate.OriginalDefinition, enumerable))
+                continue;
+
+            if (found is not null && !SymbolEqualityComparer.Default.Equals(found, candidate.TypeArguments[0]))
+                return null;
+
+            found = candidate.TypeArguments[0];
+        }
+
+        return found;
+    }
+
+    /// <summary>
+    /// The collection shapes we can BUILD, and the helper that builds each one.
+    ///
+    /// Deliberately shorter than the list of shapes we can READ. The interfaces are here
+    /// because the concrete type we would build satisfies them — a <c>List&lt;T&gt;</c> is an
+    /// <c>IList&lt;T&gt;</c>, an <c>ICollection&lt;T&gt;</c>, an
+    /// <c>IReadOnlyList&lt;T&gt;</c> and an <c>IEnumerable&lt;T&gt;</c> all at once, so a
+    /// destination declared as any of them can be filled with one.
+    ///
+    /// Anything not on this list is SM0002: a <c>Dictionary&lt;K,V&gt;</c> is a different
+    /// shape entirely, and a collection type of your own could need anything at all to
+    /// construct it.
+    /// </summary>
+    private static readonly (string Metadata, string Method)[] DestinationShapes =
+    {
+        ("System.Collections.Generic.List`1", "ToList"),
+        ("System.Collections.Generic.IList`1", "ToList"),
+        ("System.Collections.Generic.ICollection`1", "ToList"),
+        ("System.Collections.Generic.IEnumerable`1", "ToList"),
+        ("System.Collections.Generic.IReadOnlyList`1", "ToList"),
+        ("System.Collections.Generic.IReadOnlyCollection`1", "ToList"),
+        ("System.Collections.Generic.HashSet`1", "ToHashSet"),
+        ("System.Collections.Generic.ISet`1", "ToHashSet"),
+        ("System.Collections.Generic.IReadOnlySet`1", "ToHashSet"),
+    };
+
+    /// <summary>
+    /// Which <c>ValueConverter</c> method builds this destination, and what its elements are.
+    /// Returns null when the destination is not a shape we can construct.
+    /// </summary>
+    private static (string Method, ITypeSymbol Element)? GetDestinationShape(Compilation compilation, ITypeSymbol type)
+    {
+        if (type is IArrayTypeSymbol array)
+            return array.Rank == 1 ? ("ToArray", array.ElementType) : null;
+
+        if (type is not INamedTypeSymbol { IsGenericType: true } named || named.TypeArguments.Length != 1)
+            return null;
+
+        foreach ((string metadata, string method) in DestinationShapes)
+        {
+            if (compilation.GetTypeByMetadataName(metadata) is INamedTypeSymbol shape
+                && SymbolEqualityComparer.Default.Equals(named.OriginalDefinition, shape))
+            {
+                return (method, named.TypeArguments[0]);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Whether an element is simple enough for this first version: a value type (an
+    /// <c>int</c>, an <c>int?</c>, an enum, a <c>DateTime</c>, a struct of your own) or a
+    /// <c>string</c>.
+    ///
+    /// Note what the test rules OUT and why it is a TYPE test rather than just letting
+    /// <see cref="Resolve"/> decide. Two <c>Product</c> elements would resolve perfectly well
+    /// — as an identity — and the collection would be copied with both sides pointing at the
+    /// same Product instances. That is a half-done job: the shape is a copy and the contents
+    /// are shared. Nested mapping is the feature that finishes it, and until it exists these
+    /// are left alone rather than half converted.
+    /// </summary>
+    private static bool IsSimpleElement(ITypeSymbol type) =>
+        type.IsValueType || type.SpecialType == SpecialType.System_String;
 
     /// <summary>
     /// THE PAIRS SHIFTMAPPER REFUSES ON PURPOSE — the ones C# is perfectly happy to convert
@@ -477,7 +697,7 @@ internal static class ConversionResolver
     /// nothing. This is the same defence the generator already mounts around
     /// <c>MapExpression</c> for <c>ReverseMap</c>.
     /// </summary>
-    private static bool HasConverter(Compilation compilation)
+    private static bool HasConverter(Compilation compilation, int minimumVersion)
     {
         if (compilation.GetTypeByMetadataName(ConverterMetadataName) is not INamedTypeSymbol converter)
             return false;
@@ -485,7 +705,7 @@ internal static class ConversionResolver
         foreach (ISymbol member in converter.GetMembers(ApiVersionFieldName))
         {
             if (member is IFieldSymbol { HasConstantValue: true, ConstantValue: int version })
-                return version >= RequiredApiVersion;
+                return version >= minimumVersion;
         }
 
         return false;
