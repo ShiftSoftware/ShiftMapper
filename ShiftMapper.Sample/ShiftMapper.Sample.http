@@ -10,8 +10,10 @@ GET {{HostAddress}}/api/products
 Accept: application/json
 
 ### 1b. Brands — GENERATED extension, brand.Map<BrandDto>(mapper) creates a new DTO.
-#     Note "isoCode" in the response: the entity spells it ISOCode and the DTO spells it
-#     IsoCode, so this is case-insensitive matching working end to end, through the database.
+#     Two things to look at in the response. "isoCode": the entity spells it ISOCode and the
+#     DTO spells it IsoCode, so this is case-insensitive matching working end to end, through
+#     the database. And "foundedYear": quoted, because the entity holds it as an int and the
+#     DTO as a string — ShiftMapper converted it, invariantly, on its own.
 GET {{HostAddress}}/api/brands
 Accept: application/json
 
@@ -33,6 +35,9 @@ Accept: application/json
 ### 1c3. Create a stock — the REVERSE map, StockDto -> Stock. Every request above goes
 #     entity -> DTO; this one only compiles because AppMapper chains .ReverseMap().
 #     The id below is ignored — the endpoint resets it so the database assigns the real one.
+#     It is also the direction that has to READ the id back out of text: Stock.Id is an int
+#     and StockDto.Id is a string, so the reverse map parses it. Leaving "id" out sends
+#     empty text, which reads back as 0; send "id": "not-a-number" to watch it refuse.
 POST {{HostAddress}}/api/stocks
 Content-Type: application/json
 

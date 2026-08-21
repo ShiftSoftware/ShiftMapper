@@ -17,8 +17,10 @@ namespace ShiftMapper.Generator;
 /// THE BIG PICTURE — it runs in three steps, every time you type:
 ///   1. FIND      : look for classes that derive from ShiftMapperBase.
 ///   2. UNDERSTAND: read the CreateMap&lt;A, B&gt; calls inside each one and work out
-///                  which properties of A and B line up. A call with .ReverseMap() chained
-///                  onto it yields two maps, the second with the types swapped.
+///                  which properties of A and B line up — by NAME here, and by TYPE over in
+///                  <see cref="ConversionResolver"/>, which also decides how to bridge two
+///                  types that differ. A call with .ReverseMap() chained onto it yields two
+///                  maps, the second with the types swapped.
 ///   3. WRITE     : for each mapper emit (a) the other half of that partial class, with
 ///                  instance Map methods, and (b) extension methods that delegate to it.
 ///
@@ -387,7 +389,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         if (semanticModel.GetSymbolInfo(destinationSyntax, cancellationToken).Symbol is not INamedTypeSymbol destinationType)
             yield break;
 
-        yield return BuildMapModel(sourceType, destinationType, LocationInfo.CreateFrom(createMap), isReverse: false, caseSensitive: caseSensitive);
+        yield return BuildMapModel(semanticModel.Compilation, sourceType, destinationType, LocationInfo.CreateFrom(createMap), isReverse: false, caseSensitive: caseSensitive);
 
         if (reverseMapName is null)
             yield break;
@@ -405,6 +407,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             semanticModel, FirstArgument(FindInvocation(reverseMapName)), mapOptions, cancellationToken);
 
         yield return BuildMapModel(
+            semanticModel.Compilation,
             destinationType,
             sourceType,
             LocationInfo.CreateFrom(reverseMapName) ?? LocationInfo.CreateFrom(createMap),
@@ -523,13 +526,14 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// with everything else the emitter needs to know about the two types.
     /// </summary>
     private static MapModel BuildMapModel(
+        Compilation compilation,
         INamedTypeSymbol sourceType,
         INamedTypeSymbol destinationType,
         LocationInfo? location,
         bool isReverse,
         bool caseSensitive)
     {
-        PropertyAnalysis analysis = FindMatchingProperties(sourceType, destinationType, caseSensitive);
+        PropertyAnalysis analysis = FindMatchingProperties(compilation, sourceType, destinationType, caseSensitive);
 
         return new MapModel(
             sourceType: sourceType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
@@ -543,6 +547,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             propertyNames: analysis.All,
             writablePropertyNames: analysis.Writable,
             unmappedProperties: analysis.Unmapped,
+            convertedProperties: analysis.Converted,
             destinationName: destinationType.Name,
             location: location,
             isReverse: isReverse);
@@ -554,11 +559,13 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         public PropertyAnalysis(
             ImmutableArray<PropertyPair> all,
             ImmutableArray<PropertyPair> writable,
-            ImmutableArray<UnmappedProperty> unmapped)
+            ImmutableArray<UnmappedProperty> unmapped,
+            ImmutableArray<ConvertedProperty> converted)
         {
             All = all;
             Writable = writable;
             Unmapped = unmapped;
+            Converted = converted;
         }
 
         /// <summary>Settable while constructing, init-only included.</summary>
@@ -569,21 +576,32 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
         /// <summary>Skipped properties the developer can act on — each becomes a warning.</summary>
         public ImmutableArray<UnmappedProperty> Unmapped { get; }
+
+        /// <summary>Mapped properties whose type had to be converted on the way.</summary>
+        public ImmutableArray<ConvertedProperty> Converted { get; }
     }
 
     /// <summary>
-    /// THE MATCHING RULE — deliberately as simple as it gets:
-    /// copy a property only when the destination and the source both have it,
-    /// with the SAME NAME and the exact SAME TYPE.
+    /// THE MATCHING RULE, in two halves:
     ///
-    /// Anything else is skipped for now: no nested object mapping, no collections,
-    /// no renaming, no type conversion.
+    ///   1. NAME  — the destination and the source must both have the property. Exact spelling
+    ///              first, then the case-insensitive fallback if it is switched on.
+    ///   2. TYPE  — the source's type must be the destination's type, or be CONVERTIBLE into
+    ///              it. <see cref="ConversionResolver"/> owns that second question, and what
+    ///              it hands back is the C# that does the converting.
     ///
-    /// Returns two lists, because the two generated methods can do different things:
+    /// The type half used to be "must be identical". Now a <c>decimal</c> fills a
+    /// <c>string</c> property and a <c>string</c> fills an <c>int</c>, but nested objects and
+    /// collections are still not mapped, and a pair with no conversion at all is still
+    /// skipped and reported as SM0002 rather than guessed at.
+    ///
+    /// Returns two lists of pairs, because the two generated methods can do different things:
     /// everything settable at construction time (init-only included), and the subset that
-    /// can still be assigned afterwards.
+    /// can still be assigned afterwards. Plus the two lists of things to tell the developer
+    /// about — what could not be mapped, and what was mapped only by converting it.
     /// </summary>
     private static PropertyAnalysis FindMatchingProperties(
+        Compilation compilation,
         INamedTypeSymbol sourceType,
         INamedTypeSymbol destinationType,
         bool caseSensitive)
@@ -617,6 +635,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         var all = ImmutableArray.CreateBuilder<PropertyPair>();
         var writable = ImmutableArray.CreateBuilder<PropertyPair>();
         var unmapped = ImmutableArray.CreateBuilder<UnmappedProperty>();
+        var converted = ImmutableArray.CreateBuilder<ConvertedProperty>();
         var seen = new HashSet<string>();
 
         foreach (IPropertySymbol destinationProperty in GetProperties(destinationType))
@@ -683,20 +702,45 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                 }
             }
 
-            // Same type required — no conversions in this first version.
-            if (!SymbolEqualityComparer.Default.Equals(sourceProperty.Type, destinationProperty.Type))
+            // The names line up. Can the types? The answer is either the C# that converts
+            // one into the other, or null — which is the honest "no" that becomes SM0002.
+            //
+            // The mapping string is only ever read by a human: it is baked into the
+            // generated call as a literal so that a conversion failing at runtime can name
+            // the two properties it was working on, rather than throwing an anonymous
+            // FormatException from somewhere inside the BCL.
+            ValueConversion? conversion = ConversionResolver.Resolve(
+                compilation,
+                sourceProperty.Type,
+                destinationProperty.Type,
+                $"{sourceType.Name}.{sourceProperty.Name} -> {destinationType.Name}.{destinationProperty.Name}");
+
+            if (conversion is null)
             {
                 unmapped.Add(new UnmappedProperty(
                     destinationProperty.Name,
-                    UnmappedReason.TypeMismatch,
+                    UnmappedReason.NotConvertible,
                     ShortTypeName(destinationProperty.Type),
                     ShortTypeName(sourceProperty.Type)));
                 continue;
             }
 
+            // Anything that needed code written for it is worth listing in the generated
+            // method's remarks — a plain copy is not, or the remark would list every
+            // property on the type and say nothing.
+            if (conversion.Template is not null)
+            {
+                converted.Add(new ConvertedProperty(
+                    destinationProperty.Name,
+                    ShortTypeName(sourceProperty.Type),
+                    ShortTypeName(destinationProperty.Type),
+                    conversion.Risk,
+                    conversion.Note));
+            }
+
             // Each side is spelled as its OWN type declares it, which is what makes a
             // case-insensitive match emit `destination.Sku = source.SKU`.
-            var pair = new PropertyPair(destinationProperty.Name, sourceProperty.Name);
+            var pair = new PropertyPair(destinationProperty.Name, sourceProperty.Name, conversion.Template);
             all.Add(pair);
 
             // `init` accessors are legal inside an object initializer but nowhere else,
@@ -706,7 +750,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                 writable.Add(pair);
         }
 
-        return new PropertyAnalysis(all.ToImmutable(), writable.ToImmutable(), unmapped.ToImmutable());
+        return new PropertyAnalysis(
+            all.ToImmutable(), writable.ToImmutable(), unmapped.ToImmutable(), converted.ToImmutable());
     }
 
     /// <summary>Readable type name for warning messages, e.g. <c>List&lt;InvoiceLine&gt;</c>.</summary>
@@ -895,9 +940,9 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                         map.SourceName,
                         unmapped.Candidates),
 
-                    // SM0002: same name on both sides, but the types are not the same.
+                    // SM0002: same name on both sides, and nothing bridges the two types.
                     _ => Diagnostic.Create(
-                        DiagnosticDescriptors.TypeMismatch,
+                        DiagnosticDescriptors.NotConvertible,
                         location,
                         map.DestinationName,
                         unmapped.PropertyName,
@@ -907,6 +952,58 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
                 context.ReportDiagnostic(diagnostic);
             }
+
+            // Only when a method that PERFORMS these conversions is actually emitted. A map
+            // whose destination cannot be constructed (SM0004) and is a value type — so gets
+            // no update overload either — produces no code at all, and telling the developer
+            // that a conversion in it is lossy would be describing code that does not exist.
+            if (map.CanConstructDestination || !map.IsDestinationValueType)
+                ReportConversions(context, map, location);
+        }
+    }
+
+    /// <summary>
+    /// Reports the properties that ARE mapped, but only because their type was converted on
+    /// the way — and only the ones with something to answer for.
+    ///
+    /// Widening an <c>int</c> into a <c>long</c>, or writing a number out as text, cannot go
+    /// wrong, so nothing is said about it; the generated file shows the conversion plainly
+    /// enough for anyone who looks. What IS reported is the pair of cases where a map that
+    /// compiles can still surprise you at runtime: a conversion that quietly changes a value
+    /// (SM0008) and one that reads text and can throw on it (SM0009).
+    ///
+    /// Both are INFORMATIONAL. These conversions are the feature working — the developer
+    /// wrote two types that do not match and asked ShiftMapper to cope — so making every one
+    /// of them a build warning would teach people to tune ShiftMapper out. They show in the
+    /// IDE and under <c>dotnet build -v d</c>.
+    /// </summary>
+    private static void ReportConversions(SourceProductionContext context, MapModel map, Location? location)
+    {
+        foreach (ConvertedProperty conversion in map.ConvertedProperties)
+        {
+            Diagnostic? diagnostic = conversion.Risk switch
+            {
+                ConversionRisk.Lossy => Diagnostic.Create(
+                    DiagnosticDescriptors.LossyConversion,
+                    location,
+                    map.DestinationName,
+                    conversion.PropertyName,
+                    conversion.SourcePropertyType,
+                    conversion.DestinationPropertyType,
+                    conversion.Note),
+
+                ConversionRisk.Parsed => Diagnostic.Create(
+                    DiagnosticDescriptors.ParsedConversion,
+                    location,
+                    map.DestinationName,
+                    conversion.PropertyName,
+                    conversion.DestinationPropertyType),
+
+                _ => null,
+            };
+
+            if (diagnostic is not null)
+                context.ReportDiagnostic(diagnostic);
         }
     }
 
@@ -1078,13 +1175,19 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             if (map.IsReverse)
                 sb.AppendLine($"{indent}        //{OriginNote(map)}");
 
+            // One method serves every destination reachable from this source, so a shared
+            // <remarks> could not say which branch it was talking about. The note goes next
+            // to the branch it describes instead.
+            if (ConversionList(map) is string converted)
+                AppendWrapped(sb, $"{indent}        // ", $"Converted rather than copied straight across: {converted}.");
+
             sb.AppendLine($"{indent}        if (typeof(TDestination) == typeof({map.DestinationType}))");
             sb.AppendLine($"{indent}        {{");
             sb.AppendLine($"{indent}            var destination = new {map.DestinationType}");
             sb.AppendLine($"{indent}            {{");
             foreach (PropertyPair property in map.PropertyNames)
             {
-                sb.AppendLine($"{indent}                {property.Destination} = source.{property.Source},");
+                sb.AppendLine($"{indent}                {property.Destination} = {property.ValueExpression("source")},");
             }
             sb.AppendLine($"{indent}            }};");
             sb.AppendLine();
@@ -1112,7 +1215,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     private static void AppendUpdateOverload(StringBuilder sb, string indent, MapModel map)
     {
         sb.AppendLine($"{indent}    /// <summary>Copies a {map.SourceName} onto an existing <paramref name=\"destination\"/> and returns it.{OriginNote(map)}</summary>");
-        AppendInitOnlyRemark(sb, $"{indent}    ", map);
+        AppendRemarks(sb, $"{indent}    ", map);
         sb.AppendLine($"{indent}    {AccessibilityOf(map.IsSourcePublic, map.IsDestinationPublic)} {map.DestinationType} Map({map.SourceType} source, {map.DestinationType} destination)");
         sb.AppendLine($"{indent}    {{");
         AppendNullGuard(sb, $"{indent}        ", "source", map.IsSourceValueType);
@@ -1120,7 +1223,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
         foreach (PropertyPair property in map.WritablePropertyNames)
         {
-            sb.AppendLine($"{indent}        destination.{property.Destination} = source.{property.Source};");
+            sb.AppendLine($"{indent}        destination.{property.Destination} = {property.ValueExpression("source")};");
         }
 
         sb.AppendLine();
@@ -1145,7 +1248,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     private static void AppendUpdateExtension(StringBuilder sb, MapperClassModel model, MapModel map)
     {
         sb.AppendLine($"        /// <summary>Copies this {map.SourceName} onto an existing <paramref name=\"destination\"/> and returns it.{OriginNote(map)}</summary>");
-        AppendInitOnlyRemark(sb, "        ", map);
+        AppendRemarks(sb, "        ", map);
         sb.AppendLine($"        {AccessibilityOf(model.IsPublic, map.IsSourcePublic, map.IsDestinationPublic)} static {map.DestinationType} Map(this {map.SourceType} source, {map.DestinationType} destination, {model.FullyQualifiedName} mapper)");
         sb.AppendLine("        {");
         sb.AppendLine("            if (mapper is null)");
@@ -1170,21 +1273,117 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     }
 
     /// <summary>
-    /// Explains, right where the developer will read it, why an init-only property is
-    /// created but never refreshed.
+    /// The <c>&lt;remarks&gt;</c> block for one generated update method: which properties went
+    /// through a conversion, and which ones this method leaves alone because they are
+    /// init-only. Writes nothing when there is neither to report, which is the common case.
+    ///
+    /// ONE element, not two. Both facts used to get a <c>&lt;remarks&gt;</c> of their own, and a
+    /// member with two sibling remarks is malformed documentation — every viewer shows the
+    /// first and silently drops the second, so whichever fact came second was invisible.
     /// </summary>
-    private static void AppendInitOnlyRemark(StringBuilder sb, string indent, MapModel map)
+    private static void AppendRemarks(StringBuilder sb, string indent, MapModel map)
+    {
+        var sentences = new List<string>();
+
+        // Only the properties this method actually assigns. The map records a conversion for
+        // everything settable, init-only included; naming an init-only property here would
+        // promise a conversion the update overload never performs, because it cannot assign
+        // that property at all.
+        if (ConversionList(map, InitOnly(map)) is string converted)
+            sentences.Add($"Converted rather than copied straight across: {XmlEscape(converted)}.");
+
+        if (InitOnly(map) is { Count: > 0 } initOnly)
+        {
+            sentences.Add(
+                "Not copied because they are init-only and can only be set when the object is " +
+                $"created: {string.Join(", ", initOnly)}.");
+        }
+
+        if (sentences.Count == 0)
+            return;
+
+        AppendWrapped(sb, $"{indent}/// ", $"<remarks>{string.Join(" ", sentences)}</remarks>");
+    }
+
+    /// <summary>
+    /// Destination properties that can be set only while the object is being CREATED, so the
+    /// update overload has to skip them (CS8852).
+    /// </summary>
+    private static List<string> InitOnly(MapModel map)
     {
         var writable = new HashSet<string>(map.WritablePropertyNames.Select(p => p.Destination), StringComparer.Ordinal);
-        var initOnly = map.PropertyNames
+
+        return map.PropertyNames
             .Where(p => !writable.Contains(p.Destination))
             .Select(p => p.Destination)
             .ToList();
+    }
 
-        if (initOnly.Count == 0)
-            return;
+    /// <summary>
+    /// Makes text safe to put inside an XML doc comment. The generated list names TYPES, and a
+    /// type name like <c>List&lt;int&gt;</c> dropped raw into a doc comment is not well-formed
+    /// XML — the compiler reports CS1570 on a file the developer cannot edit. The plain
+    /// <c>//</c> comment the create method gets needs none of this.
+    /// </summary>
+    private static string XmlEscape(string text) => text
+        .Replace("&", "&amp;")
+        .Replace("<", "&lt;")
+        .Replace(">", "&gt;");
 
-        sb.AppendLine($"{indent}/// <remarks>Not copied because they are init-only and can only be set when the object is created: {string.Join(", ", initOnly)}.</remarks>");
+    /// <summary>
+    /// The converted properties as one readable list, e.g.
+    /// <c>Price (decimal to string), FoundedYear (int to string)</c>, or null when there are
+    /// none.
+    /// </summary>
+    /// <param name="exclude">
+    /// Property names to leave out — used by the update overload, which must not advertise a
+    /// conversion for a property it never assigns.
+    /// </param>
+    private static string? ConversionList(MapModel map, List<string>? exclude = null)
+    {
+        IEnumerable<ConvertedProperty> listed = map.ConvertedProperties;
+
+        if (exclude is { Count: > 0 })
+        {
+            var skip = new HashSet<string>(exclude, StringComparer.Ordinal);
+            listed = listed.Where(c => !skip.Contains(c.PropertyName));
+        }
+
+        string joined = string.Join(", ", listed.Select(c => c.Describe()));
+
+        return joined.Length == 0 ? null : joined;
+    }
+
+    /// <summary>
+    /// Writes a sentence out over as many lines as it takes, each one carrying
+    /// <paramref name="prefix"/>.
+    ///
+    /// Generated code is meant to be OPENED AND READ — that is the whole reason the sample
+    /// project writes it to disk — and a remark naming thirty converted properties on a single
+    /// 2,000-character line is not something anybody reads. Breaking on spaces is enough,
+    /// because everything given to it is a list of short phrases; a single word longer than
+    /// the width simply gets its own long line rather than being cut in half.
+    /// </summary>
+    private static void AppendWrapped(StringBuilder sb, string prefix, string text, int width = 108)
+    {
+        var line = new StringBuilder();
+
+        foreach (string word in text.Split(' '))
+        {
+            if (line.Length > 0 && prefix.Length + line.Length + 1 + word.Length > width)
+            {
+                sb.AppendLine(prefix + line);
+                line.Clear();
+            }
+
+            if (line.Length > 0)
+                line.Append(' ');
+
+            line.Append(word);
+        }
+
+        if (line.Length > 0)
+            sb.AppendLine(prefix + line);
     }
 
     /// <summary>

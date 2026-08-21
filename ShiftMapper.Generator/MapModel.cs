@@ -24,12 +24,14 @@ internal sealed class MapModel
         ImmutableArray<PropertyPair> propertyNames,
         ImmutableArray<PropertyPair> writablePropertyNames,
         ImmutableArray<UnmappedProperty> unmappedProperties,
+        ImmutableArray<ConvertedProperty> convertedProperties,
         string destinationName,
         LocationInfo? location,
         bool isReverse)
     {
         IsReverse = isReverse;
         UnmappedProperties = unmappedProperties;
+        ConvertedProperties = convertedProperties;
         DestinationName = destinationName;
         Location = location;
         SourceType = sourceType;
@@ -85,6 +87,13 @@ internal sealed class MapModel
 
     /// <summary>Destination properties we had to skip — each becomes a build warning.</summary>
     public ImmutableArray<UnmappedProperty> UnmappedProperties { get; }
+
+    /// <summary>
+    /// Destination properties that ARE mapped, but whose type had to be converted on the way
+    /// — listed in the generated method's remarks, and reported as SM0008/SM0009 when the
+    /// conversion carries a caveat.
+    /// </summary>
+    public ImmutableArray<ConvertedProperty> ConvertedProperties { get; }
 
     /// <summary>Simple name of the destination type, e.g. <c>BrandDto</c>, used in messages.</summary>
     public string DestinationName { get; }

@@ -32,16 +32,35 @@ internal static class DiagnosticDescriptors
         description: "The destination property keeps its default value. Add a matching property " +
                      "to the source, or remove it from the destination.");
 
-    /// <summary>SM0002 — the names line up but the types do not.</summary>
-    public static readonly DiagnosticDescriptor TypeMismatch = new(
+    /// <summary>
+    /// SM0002 — the names line up, and ShiftMapper will not bridge the two types.
+    ///
+    /// Note the wording: "does not convert", not "cannot be converted". Some of these pairs
+    /// really have no conversion at all (Product to ProductDto, bool to int); others C# would
+    /// convert quite happily and ShiftMapper still refuses, because the answer would depend on
+    /// something other than the two types. Claiming they are impossible would be a lie the
+    /// developer could disprove in one line.
+    /// </summary>
+    public static readonly DiagnosticDescriptor NotConvertible = new(
         id: "SM0002",
-        title: "Destination property is not mapped because the types differ",
-        messageFormat: "ShiftMapper: '{0}.{1}' is not mapped because the types differ (source is '{2}', destination is '{3}')",
+        title: "Destination property is not mapped because ShiftMapper does not convert between the two types",
+        messageFormat: "ShiftMapper: '{0}.{1}' is not mapped because ShiftMapper does not convert '{2}' to '{3}'",
         category: Category,
         defaultSeverity: DiagnosticSeverity.Warning,
         isEnabledByDefault: true,
-        description: "ShiftMapper only copies properties whose types match exactly. Nested objects " +
-                     "and collections are not mapped yet.");
+        description: "ShiftMapper converts between the simple types — numbers, text, bool, char, enums, " +
+                     "Guid and the date and time types — and honours implicit conversion operators the " +
+                     "types themselves declare. It does NOT map nested objects or collections; it will " +
+                     "not move a reference around by up-casting, down-casting or boxing; and it refuses " +
+                     "four pairs on purpose, because their answer would not come from the types alone: " +
+                     "DateTime to DateTimeOffset (the offset would come from the machine's time zone), " +
+                     "DateTimeOffset to DateTime (dropping the offset and converting to UTC are equally " +
+                     "defensible), one enum to a different enum (a cast maps them by number, so " +
+                     "reordering either would silently change the meaning), and TimeSpan to TimeOnly " +
+                     "(a negative duration, or one of a day or more, has no time of day). A user-defined " +
+                     "EXPLICIT operator is refused too: its author chose the keyword that says stop and " +
+                     "think. Give the destination property the source's type, or fill it in yourself " +
+                     "after mapping.");
 
     /// <summary>SM0003 — it looks mappable but the setter cannot be called.</summary>
     public static readonly DiagnosticDescriptor SetterNotAccessible = new(
@@ -109,6 +128,54 @@ internal static class DiagnosticDescriptors
         description: "Rename one of the source properties, give the destination the exact name of " +
                      "the one you want, or pass PropertyMatching.CaseSensitive to turn the " +
                      "fallback off for this map.");
+
+    /// <summary>
+    /// SM0008 — the property IS mapped, but the conversion can change or refuse the value.
+    ///
+    /// Narrowing a <c>long</c> into an <c>int</c>, unwrapping a <c>decimal?</c> onto a
+    /// <c>decimal</c>, turning a <c>DateTime</c> into a <c>DateOnly</c>: each of those does
+    /// something reasonable with most values and something surprising with a few.
+    ///
+    /// INFORMATIONAL on purpose, for the same reason as SM0006. These conversions are the
+    /// feature working as intended — the developer wrote two types that do not match and
+    /// asked ShiftMapper to cope — so a warning on every one of them would train people to
+    /// ignore ShiftMapper's warnings, which is worse than saying nothing. It shows in the
+    /// IDE and under <c>dotnet build -v d</c>, and does not count as a build warning.
+    /// </summary>
+    public static readonly DiagnosticDescriptor LossyConversion = new(
+        id: "SM0008",
+        title: "Destination property is mapped through a conversion that can lose information",
+        messageFormat: "ShiftMapper: '{0}.{1}' is mapped by converting '{2}' to '{3}', which can lose information ({4})",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Info,
+        isEnabledByDefault: true,
+        description: "The map is generated and works. This is here so the narrowing is a decision you " +
+                     "have seen rather than one you inherit. Give the two properties the same type if " +
+                     "you would rather it did not happen.");
+
+    /// <summary>
+    /// SM0009 — the property is filled by READING TEXT, so it can throw on data rather than
+    /// on types.
+    ///
+    /// Every other conversion is settled at compile time; this one is not. A destination
+    /// <c>int</c> fed by a source <c>string</c> compiles perfectly and then throws the first
+    /// time the column contains something that is not a number.
+    ///
+    /// Informational for the same reason as SM0008 — this is the feature doing what it was
+    /// asked to do — but worth surfacing, because it is the only place a ShiftMapper map can
+    /// fail at runtime for reasons the build could not see.
+    /// </summary>
+    public static readonly DiagnosticDescriptor ParsedConversion = new(
+        id: "SM0009",
+        title: "Destination property is mapped by parsing text at runtime",
+        messageFormat: "ShiftMapper: '{0}.{1}' is filled by parsing text into '{2}' when the map runs, so source text that does not parse throws",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Info,
+        isEnabledByDefault: true,
+        description: "Null, empty and whitespace-only text converts to the destination's default value " +
+                     "(or to null, when the destination is nullable). Anything else that does not parse " +
+                     "throws a FormatException naming the two properties, rather than quietly mapping a " +
+                     "zero. See ShiftMapper.ValueConverter for the exact rules.");
 
     /// <summary>SM0005 — the whole mapper produced nothing.</summary>
     public static readonly DiagnosticDescriptor MapperSkipped = new(

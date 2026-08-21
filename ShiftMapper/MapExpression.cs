@@ -28,7 +28,10 @@ public readonly struct MapExpression<TSource, TDestination>
     /// </code>
     ///
     /// The reverse is worked out independently, by the same matching rule as any other map:
-    /// same name, same type. It is NOT a mirror image of the forward map. A DTO is usually a
+    /// same name, and a type that is the same or convertible into it. It is NOT a mirror
+    /// image of the forward map — the conversions are not symmetric either, so an
+    /// <c>int</c> written out as text on the way there is PARSED back on the way home, and
+    /// that direction can fail on bad data where the first one cannot. A DTO is usually a
     /// SUBSET of its entity, so the reverse direction typically leaves some entity properties
     /// untouched — navigation collections, audit columns, and so on. Those are reported as
     /// SM0006, which is informational rather than a warning precisely because it is the

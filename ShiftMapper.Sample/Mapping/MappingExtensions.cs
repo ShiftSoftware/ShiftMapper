@@ -1,3 +1,4 @@
+using System.Globalization;
 using ShiftMapper.Sample.Dtos;
 using ShiftMapper.Sample.Entities;
 
@@ -14,6 +15,12 @@ namespace ShiftMapper.Sample.Mapping;
 /// For now we write it by hand so the sample runs end-to-end. Once the
 /// generator exists, this whole file gets deleted and replaced by generated
 /// equivalents (e.g. an auto-generated <c>invoice.ToDto()</c>).
+///
+/// Worth comparing against the generated code while it is still here: the two
+/// ToString calls below are the CONVERSIONS ShiftMapper works out for itself,
+/// and the InvariantCulture argument is the detail hand-written mapping code
+/// forgets — which is how a price or a year ends up formatted one way on a
+/// developer's machine and another way on the server.
 /// ============================================================================
 /// </summary>
 public static class MappingExtensions
@@ -23,12 +30,17 @@ public static class MappingExtensions
         Id = brand.Id,
         Name = brand.Name,
         Country = brand.Country,
-        FoundedYear = brand.FoundedYear,
+        // int -> string. ShiftMapper works this conversion out by itself; it spells it
+        // ValueConverter.ToInvariantString(source.FoundedYear), which is the same answer
+        // with the culture decided in one place instead of on every line.
+        FoundedYear = brand.FoundedYear.ToString(CultureInfo.InvariantCulture),
     };
 
     public static StockDto ToDto(this Stock stock) => new()
     {
-        Id = stock.Id,
+        // int -> string, the same conversion again — and in the generated Stock map, the
+        // reverse direction reads it back with ValueConverter.Parse<int>.
+        Id = stock.Id.ToString(CultureInfo.InvariantCulture),
         Name = stock.Name,
         City = stock.City,
         Code = stock.Code,

@@ -6,8 +6,12 @@ internal enum UnmappedReason
     /// <summary>The source type has no readable property with this name.</summary>
     NoSourceProperty,
 
-    /// <summary>Both types have the property, but their types are not the same.</summary>
-    TypeMismatch,
+    /// <summary>
+    /// Both types have the property, and there is no conversion from one type to the other
+    /// that ShiftMapper is willing to make — see <see cref="ConversionResolver"/> for what
+    /// it will and will not convert.
+    /// </summary>
+    NotConvertible,
 
     /// <summary>The property exists on both sides, but its setter is not public.</summary>
     SetterNotAccessible,

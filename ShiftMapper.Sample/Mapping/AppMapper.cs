@@ -41,7 +41,39 @@ public partial class AppMapper : ShiftMapperBase
     {
         _logger = logger;
 
-        // Maps cleanly, and demonstrates CASE-INSENSITIVE MATCHING along the way.
+        // Maps cleanly, and demonstrates two things at once: CASE-INSENSITIVE MATCHING and
+        // TYPE CONVERSION.
+        //
+        // TYPE CONVERSION first. Brand.FoundedYear is an int; BrandDto.FoundedYear is a
+        // string. The names line up exactly, so the only question is whether the types can
+        // be bridged — and a number can always be written as text, so ShiftMapper writes:
+        //
+        //   FoundedYear = ValueConverter.ToInvariantString(source.FoundedYear)
+        //
+        // That is the whole feature in one line. When names match but types do not,
+        // ShiftMapper converts if it can and says so if it cannot, instead of silently
+        // skipping the property. What it converts:
+        //
+        //   * anything C# already converts implicitly    int -> long, int -> decimal
+        //   * between number types                       long -> int  (a cast; SM0008)
+        //   * to and from text                           decimal <-> string, bool <-> string
+        //   * enums and numbers, enums and text          Status <-> int, Status <-> string
+        //   * Guid, TimeSpan and every date/time type   Guid <-> string, DateTime <-> string
+        //     to and from text
+        //   * the date/time pairs with one answer       DateOnly -> DateTime, DateTime -> DateOnly
+        //   * your own IMPLICIT conversion operators
+        //
+        // and what it refuses, reporting SM0002 rather than guessing: nested objects
+        // (Product -> ProductDto), collections, moving a reference around by up-casting or
+        // boxing, your own EXPLICIT operators — and four pairs C# would convert quite happily,
+        // because their answer would not come from the two types alone:
+        //
+        //   DateTime -> DateTimeOffset   the offset would come from the server's time zone
+        //   DateTimeOffset -> DateTime   drop the offset, or convert to UTC? both defensible
+        //   one enum -> a different enum a cast maps by NUMBER, so reordering either enum
+        //                                would silently change what every map means
+        //   TimeSpan -> TimeOnly         a negative duration, or one of a day or more, is
+        //                                ordinary data that no clock can hold
         //
         // Brand carries the column as ISOCode — acronym casing, the way an EF entity
         // mirroring a database column usually looks. BrandDto spells it IsoCode. There is no
@@ -65,6 +97,18 @@ public partial class AppMapper : ShiftMapperBase
         //   StockDto dto   = mapper.Map<StockDto>(stock);
         //   Stock    stock = mapper.Map<Stock>(dto);
         //
+        // This is also where conversion has to work BOTH WAYS. Stock.Id is an int and
+        // StockDto.Id is a string, so the two generated maps do opposite things:
+        //
+        //   Id = ValueConverter.ToInvariantString(source.Id)                       // out
+        //   Id = ValueConverter.Parse<int>(source.Id, "StockDto.Id -> Stock.Id")   // back
+        //
+        // Reading is the only one of the two that can fail on DATA rather than on types, so
+        // the build reports it as SM0009 — informational, like SM0006 below. Empty text
+        // (what arrives when a client POSTs a new location without an id) reads back as 0;
+        // anything else that will not parse throws a FormatException naming both properties
+        // rather than quietly mapping a zero.
+        //
         // The reverse is not a mirror of the forward map; it is worked out on its own by
         // the same rule. Stock has a Products navigation list that StockDto does not, so
         // mapping back cannot fill it. That is reported as SM0006 — INFO, not a warning,
@@ -72,7 +116,7 @@ public partial class AppMapper : ShiftMapperBase
         // at all. See it with `dotnet build -v d`, or in the IDE's Error List with
         // informational messages shown:
         //
-        //   AppMapper.cs(60,38): info SM0006: the reverse map leaves 'Stock.Products'
+        //   AppMapper.cs(123,38): info SM0006: the reverse map leaves 'Stock.Products'
         //   unmapped because 'StockDto' has no readable property named 'Products'
         //
         // Note it points at .ReverseMap(), not at CreateMap — that is the code responsible.
@@ -83,9 +127,11 @@ public partial class AppMapper : ShiftMapperBase
         //
         //   SM0001  InvoiceLineDto.LineTotal  — InvoiceLine has no LineTotal; the DTO
         //                                       computes it, so there is nothing to copy.
-        //   SM0002  InvoiceLineDto.Product    — both sides HAVE a Product, but the types
-        //                                       differ (Product vs ProductDto), and nested
-        //                                       mapping is not supported yet.
+        //   SM0002  InvoiceLineDto.Product    — both sides HAVE a Product, and no conversion
+        //                                       turns a Product into a ProductDto. Nested
+        //                                       objects are not mapped, and inventing a
+        //                                       cast here would only move the failure to
+        //                                       runtime.
         //
         // The map is still generated for the three properties that DO line up (Id,
         // Quantity, UnitPrice) — ShiftMapper does what it can and tells you the rest.
