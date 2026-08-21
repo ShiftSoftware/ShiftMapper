@@ -19,21 +19,21 @@ public static class SeedData
     public static void Apply(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<Brand>().HasData(
-            new Brand { Id = 1, Name = "Apple", Country = "United States", FoundedYear = 1976, ISOCode = "US", Tags = ["premium", "mobile", "audio"] },
-            new Brand { Id = 2, Name = "Samsung", Country = "South Korea", FoundedYear = 1938, ISOCode = "KR", Tags = ["mobile", "displays"] },
-            new Brand { Id = 3, Name = "Sony", Country = "Japan", FoundedYear = 1946, ISOCode = "JP", Tags = ["audio", "imaging"] },
-            new Brand { Id = 4, Name = "Dell", Country = "United States", FoundedYear = 1984, ISOCode = "US", Tags = ["computing", "enterprise"] },
-            new Brand { Id = 5, Name = "LG", Country = "South Korea", FoundedYear = 1958, ISOCode = "KR", Tags = ["displays", "appliances"] },
-            new Brand { Id = 6, Name = "Logitech", Country = "Switzerland", FoundedYear = 1981, ISOCode = "CH", Tags = ["accessories", "peripherals"] },
-            new Brand { Id = 7, Name = "Anker", Country = "China", FoundedYear = 2011, ISOCode = "CN", Tags = ["accessories", "charging"] },
-            new Brand { Id = 8, Name = "Bose", Country = "United States", FoundedYear = 1964, ISOCode = "US", Tags = ["premium", "audio"] }
+            new Brand { Id = 1, Name = "Apple", Country = "United States", FoundedYear = 1976, ISOCode = "US", Tags = ["premium", "mobile", "audio"], ExternalIds = [4_000_000_001L, 4_000_000_002L] },
+            new Brand { Id = 2, Name = "Samsung", Country = "South Korea", FoundedYear = 1938, ISOCode = "KR", Tags = ["mobile", "displays"], ExternalIds = [10_020L] },
+            new Brand { Id = 3, Name = "Sony", Country = "Japan", FoundedYear = 1946, ISOCode = "JP", Tags = ["audio", "imaging"], ExternalIds = [10_030L] },
+            new Brand { Id = 4, Name = "Dell", Country = "United States", FoundedYear = 1984, ISOCode = "US", Tags = ["computing", "enterprise"], ExternalIds = [10_040L] },
+            new Brand { Id = 5, Name = "LG", Country = "South Korea", FoundedYear = 1958, ISOCode = "KR", Tags = ["displays", "appliances"], ExternalIds = [10_050L] },
+            new Brand { Id = 6, Name = "Logitech", Country = "Switzerland", FoundedYear = 1981, ISOCode = "CH", Tags = ["accessories", "peripherals"], ExternalIds = [10_060L] },
+            new Brand { Id = 7, Name = "Anker", Country = "China", FoundedYear = 2011, ISOCode = "CN", Tags = ["accessories", "charging"], ExternalIds = [10_070L] },
+            new Brand { Id = 8, Name = "Bose", Country = "United States", FoundedYear = 1964, ISOCode = "US", Tags = ["premium", "audio"], ExternalIds = [10_080L] }
         );
 
         modelBuilder.Entity<Stock>().HasData(
-            new Stock { Id = 1, Name = "Central Warehouse", City = "Erbil", Code = "ERB-WH" },
-            new Stock { Id = 2, Name = "Baghdad Retail Store", City = "Baghdad", Code = "BGD-RS" },
-            new Stock { Id = 3, Name = "Sulaymaniyah Depot", City = "Sulaymaniyah", Code = "SUL-DP" },
-            new Stock { Id = 4, Name = "Online Fulfillment", City = "Erbil", Code = "ERB-OF" }
+            new Stock { Id = 1, Name = "Central Warehouse", City = "Erbil", Code = "ERB-WH", BayNumbers = [1, 2, 3, 4] },
+            new Stock { Id = 2, Name = "Baghdad Retail Store", City = "Baghdad", Code = "BGD-RS", BayNumbers = [1, 2] },
+            new Stock { Id = 3, Name = "Sulaymaniyah Depot", City = "Sulaymaniyah", Code = "SUL-DP", BayNumbers = [1, 2, 3] },
+            new Stock { Id = 4, Name = "Online Fulfillment", City = "Erbil", Code = "ERB-OF", BayNumbers = [1] }
         );
 
         modelBuilder.Entity<Product>().HasData(

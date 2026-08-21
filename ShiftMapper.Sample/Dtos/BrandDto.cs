@@ -47,6 +47,38 @@ public class BrandDto
     public IReadOnlyList<string> Tags { get; set; } = [];
 
     /// <summary>
+    /// The brand's ids in the external supplier catalogue — declared as <c>int</c> while the
+    /// entity holds <c>long</c>. DELIBERATELY WRONG, and left that way because it is the live
+    /// demonstration of SM0010.
+    ///
+    /// The collection SHAPE is identical on both sides, so the only thing that differs is the
+    /// element type — which is the whole point of this pair. It maps, element by element:
+    ///
+    /// <code>
+    /// ExternalIds = ValueConverter.ToList&lt;long, int&gt;(
+    ///                   source.ExternalIds, static item =&gt; unchecked((int)item))
+    /// </code>
+    ///
+    /// And that is the problem. An id past 2,147,483,647 comes out as a different, entirely
+    /// plausible-looking number, with nothing in the code to say so and no exception when it
+    /// happens. Hit <c>GET /api/brands</c> on a seeded database and brand 1 reports
+    /// <c>-294967295</c> where the entity holds <c>4000000001</c>.
+    ///
+    /// That is why SM0010 is a WARNING and not a note like SM0008 — a null becoming zero, or a
+    /// HashSet dropping duplicates, is a rule you chose; this is a value quietly changing.
+    ///
+    /// <code>
+    /// warning SM0010: 'BrandDto.ExternalIds' is mapped by converting 'List&lt;long&gt;' to
+    ///                 'List&lt;int&gt;', which cannot hold every value the source can
+    /// </code>
+    ///
+    /// The fix in real code is to declare this <c>IReadOnlyList&lt;long&gt;</c> and watch the
+    /// warning disappear. Do that and you lose the demonstration, which is the only reason it
+    /// is still here.
+    /// </summary>
+    public List<int> ExternalIds { get; set; } = new();
+
+    /// <summary>
     /// Deliberately spelled differently from the entity's <c>ISOCode</c>. With the default
     /// PropertyMatching.CaseInsensitive there is no exact match, so ShiftMapper falls back
     /// to ignoring case and generates <c>IsoCode = source.ISOCode</c>.

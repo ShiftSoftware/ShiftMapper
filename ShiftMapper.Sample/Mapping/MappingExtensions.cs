@@ -38,6 +38,9 @@ public static class MappingExtensions
         // COMPILE — a List is an IReadOnlyList — and would hand the DTO a read-only window
         // onto a list the entity can still change underneath it. ShiftMapper copies instead.
         Tags = brand.Tags.ToList(),
+        // List<long> -> List<int>. Written by hand it looks harmless; ShiftMapper generates
+        // the same thing and warns (SM0010) that an id past int.MaxValue comes out wrong.
+        ExternalIds = brand.ExternalIds.Select(n => unchecked((int)n)).ToList(),
     };
 
     public static StockDto ToDto(this Stock stock) => new()
@@ -45,6 +48,9 @@ public static class MappingExtensions
         // int -> string, the same conversion again — and in the generated Stock map, the
         // reverse direction reads it back with ValueConverter.Parse<int>.
         Id = stock.Id.ToString(CultureInfo.InvariantCulture),
+        // List<int> -> IReadOnlyList<string>: the shape AND the elements both change, so
+        // every item has to be converted into a list built for the destination's type.
+        BayNumbers = stock.BayNumbers.Select(n => n.ToString(CultureInfo.InvariantCulture)).ToList(),
         Name = stock.Name,
         City = stock.City,
         Code = stock.Code,

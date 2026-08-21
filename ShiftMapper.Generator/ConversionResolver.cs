@@ -202,9 +202,12 @@ internal static class ConversionResolver
 
             const string NullNote = "a null source becomes the destination type's default value";
 
+            // Unwrapping is only a note, but whatever is wrapped inside it may be more than
+            // that: `long?` to `int` both defaults the nulls AND narrows the rest, and the
+            // narrowing is the half worth a warning.
             return new ValueConversion(
                 inner.Apply("{0}.GetValueOrDefault()"),
-                ConversionRisk.Lossy,
+                inner.Risk == ConversionRisk.Narrowing ? ConversionRisk.Narrowing : ConversionRisk.Lossy,
                 inner.Note is null ? NullNote : $"{NullNote}, and {inner.Note}");
         }
 
@@ -250,7 +253,17 @@ internal static class ConversionResolver
             ? $"unchecked(({destinationName}){{0}})"
             : $"({destinationName}){{0}}";
 
-        return new ValueConversion(template, ConversionRisk.Lossy, DescribeCast(sourceCore, destinationCore));
+        // Anything reaching here is a conversion C# itself classes as EXPLICIT, and between
+        // two numbers that means one thing: the destination cannot hold everything the source
+        // can. (An int to a long is implicit and was taken four steps ago.) So the numeric
+        // cases are narrowing by construction — no range table needed — while the enum cases
+        // are a by-design reinterpretation and stay a note.
+        bool enumInvolved = sourceCore.TypeKind == TypeKind.Enum || destinationCore.TypeKind == TypeKind.Enum;
+
+        return new ValueConversion(
+            template,
+            enumInvolved ? ConversionRisk.Lossy : ConversionRisk.Narrowing,
+            DescribeCast(sourceCore, destinationCore));
     }
 
     /// <summary>
@@ -388,12 +401,34 @@ internal static class ConversionResolver
         if (element is null)
             return null;
 
+        // THE TEST IS "SAME TYPE", NOT "NEEDS NO CONVERSION CODE", and the difference is the
+        // whole reason this line is careful.
+        //
+        // For a single value the two are interchangeable: an int can be assigned to a long
+        // with no code at all, because C# converts it implicitly. For a COLLECTION of them
+        // they are nothing alike — generics are INVARIANT, so a List<int> is not a List<long>
+        // and never converts into one however willing the compiler is about the elements.
+        // Copying `List<int>` into `List<long>` with the element-free overload produces a
+        // List<int>, and the generated file does not compile.
+        //
+        // So the elements go through the converting overload whenever their types differ at
+        // all — even when the conversion itself is the empty `item => item`, whose entire job
+        // is to let the implicit conversion happen one element at a time.
+        bool sameElement = SymbolEqualityComparer.Default.Equals(sourceElement, destinationElement);
+
         // `static` on the lambda is not a style choice: it forbids capturing, which is what
         // lets the compiler cache the delegate in a static field instead of allocating one
         // every time the map runs.
-        string template = element.Template is null
+        //
+        // The type arguments are written out for the same reason the test above is careful.
+        // Inference reads TDestination from what the LAMBDA returns, so `item => item` over a
+        // List<int> would infer List<int> again and quietly rebuild the bug this comment is
+        // about. Stating both types makes the destination the compiler's problem rather than
+        // the inference algorithm's — and makes the generated line say what it produces.
+        string template = sameElement
             ? $"{ConverterType}.{method}({{0}})"
-            : $"{ConverterType}.{method}({{0}}, static item => {element.Apply("item")})";
+            : $"{ConverterType}.{method}<{FullName(sourceElement)}, {FullName(destinationElement)}>" +
+              $"({{0}}, static item => {element.Apply("item")})";
 
         return new ValueConversion(template, CollectionRisk(method, element), CollectionNote(method, element));
     }
@@ -405,7 +440,7 @@ internal static class ConversionResolver
     private static ConversionRisk CollectionRisk(string method, ValueConversion element) =>
         method == "ToHashSet" && element.Risk == ConversionRisk.None
             ? ConversionRisk.Lossy
-            : element.Risk;
+            : element.Risk;   // a List<long> to List<int> is narrowing, one element at a time
 
     /// <inheritdoc cref="CollectionRisk"/>
     private static string? CollectionNote(string method, ValueConversion element)
@@ -790,6 +825,13 @@ internal static class ConversionResolver
         return type;
     }
 
+    /// <summary>
+    /// How a type is spelled in emitted code — fully qualified, so nothing depends on which
+    /// usings happen to be in scope where the generated file lands.
+    /// </summary>
+    private static string FullName(ITypeSymbol type) =>
+        type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+
     private static string Name(ITypeSymbol type) =>
         type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat.WithGlobalNamespaceStyle(
             SymbolDisplayGlobalNamespaceStyle.Omitted));
@@ -804,8 +846,21 @@ internal enum ConversionRisk
     /// <summary>Nothing to report: the value survives the trip unchanged.</summary>
     None,
 
-    /// <summary>Something can be lost or refused on the way — reported as SM0008.</summary>
+    /// <summary>
+    /// Something is dropped on the way, BY DESIGN and predictably — a null becomes a default,
+    /// an enum member becomes its number, a set discards duplicates, a DateTime loses its time
+    /// of day. Reported as SM0008, informational, because it is the conversion doing exactly
+    /// what it says.
+    /// </summary>
     Lossy,
+
+    /// <summary>
+    /// The destination CANNOT HOLD every value the source can, so an ordinary value can come
+    /// out as a different one — <c>long</c> 9,000,000,000 arriving as <c>int</c> 410,065,408.
+    /// Reported as SM0010, and a real warning rather than a note, because nothing about the
+    /// code says it is happening and no exception marks it when it does.
+    /// </summary>
+    Narrowing,
 
     /// <summary>Text is read at runtime, so bad data throws — reported as SM0009.</summary>
     Parsed,

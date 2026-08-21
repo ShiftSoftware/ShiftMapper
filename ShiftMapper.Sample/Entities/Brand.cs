@@ -30,6 +30,17 @@ public class Brand
     /// </summary>
     public List<string> Tags { get; set; } = new();
 
+    /// <summary>
+    /// The ids this brand has in the external supplier catalogue — <c>long</c>, because that
+    /// system outgrew 32-bit ids years ago.
+    ///
+    /// <see cref="Dtos.BrandDto.ExternalIds"/> declares them as <c>int</c>, which is exactly
+    /// the kind of mistake nobody notices until an id goes past 2,147,483,647. It is left in
+    /// on purpose: it is what makes the build report SM0010, and what makes
+    /// <c>GET /api/brands</c> return an id that is visibly not the one in the database.
+    /// </summary>
+    public List<long> ExternalIds { get; set; } = new();
+
     // Navigation: every product that carries this brand.
     public List<Product> Products { get; set; } = new();
 }

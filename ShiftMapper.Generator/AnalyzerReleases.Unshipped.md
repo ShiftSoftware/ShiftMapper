@@ -15,3 +15,4 @@ SM0006 | ShiftMapper | Info | Reverse map leaves a destination property unmapped
 SM0007 | ShiftMapper | Warning | Destination property matches several source properties when case is ignored
 SM0008 | ShiftMapper | Info | Destination property is mapped through a conversion that can lose information
 SM0009 | ShiftMapper | Info | Destination property is mapped by parsing text at runtime
+SM0010 | ShiftMapper | Warning | Destination property is mapped through a conversion that can change the value

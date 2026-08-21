@@ -983,6 +983,19 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         {
             Diagnostic? diagnostic = conversion.Risk switch
             {
+                // SM0010 is the WARNING half of this pair — an ordinary value coming out
+                // different — and SM0008 the note half, for the losses the conversion is
+                // there to perform. Same five arguments, deliberately: the only thing that
+                // differs is how loudly it is said.
+                ConversionRisk.Narrowing => Diagnostic.Create(
+                    DiagnosticDescriptors.NarrowingConversion,
+                    location,
+                    map.DestinationName,
+                    conversion.PropertyName,
+                    conversion.SourcePropertyType,
+                    conversion.DestinationPropertyType,
+                    conversion.Note),
+
                 ConversionRisk.Lossy => Diagnostic.Create(
                     DiagnosticDescriptors.LossyConversion,
                     location,
@@ -1039,6 +1052,11 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         sb.AppendLine("// non-nullable destination is possible. That is the developer's call to make,");
         sb.AppendLine("// and they cannot edit this file to silence it, so it is turned off here.");
         sb.AppendLine("#pragma warning disable CS8601 // possible null reference assignment");
+        sb.AppendLine("// The same situation one element at a time: converting a List<int?> into a");
+        sb.AppendLine("// List<string> hands each null to a non-nullable element type, and the compiler");
+        sb.AppendLine("// sees it as a null RETURN from the per-element lambda rather than as an");
+        sb.AppendLine("// assignment. Same decision, same reason, different warning number.");
+        sb.AppendLine("#pragma warning disable CS8603 // possible null reference return");
         sb.AppendLine();
         sb.AppendLine("// A global using applies to EVERY file in this project, so the Map extension");
         sb.AppendLine("// methods below are in scope everywhere without you writing a using directive.");

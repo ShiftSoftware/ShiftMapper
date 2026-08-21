@@ -133,11 +133,14 @@ internal static class DiagnosticDescriptors
                      "fallback off for this map.");
 
     /// <summary>
-    /// SM0008 — the property IS mapped, but the conversion can change or refuse the value.
+    /// SM0008 — the property IS mapped, and something is dropped on the way BY DESIGN.
     ///
-    /// Narrowing a <c>long</c> into an <c>int</c>, unwrapping a <c>decimal?</c> onto a
-    /// <c>decimal</c>, turning a <c>DateTime</c> into a <c>DateOnly</c>: each of those does
-    /// something reasonable with most values and something surprising with a few.
+    /// A null becoming the destination's default, an enum member becoming its number, a
+    /// HashSet discarding duplicates, a <c>DateTime</c> losing its time of day: each of those
+    /// is the conversion doing exactly what it says on the tin, for every value it is given.
+    ///
+    /// Contrast SM0010, which is the case where an ORDINARY value comes out wrong. That one is
+    /// a warning; this one is a note.
     ///
     /// INFORMATIONAL on purpose, for the same reason as SM0006. These conversions are the
     /// feature working as intended — the developer wrote two types that do not match and
@@ -179,6 +182,36 @@ internal static class DiagnosticDescriptors
                      "(or to null, when the destination is nullable). Anything else that does not parse " +
                      "throws a FormatException naming the two properties, rather than quietly mapping a " +
                      "zero. See ShiftMapper.ValueConverter for the exact rules.");
+
+    /// <summary>
+    /// SM0010 — the property IS mapped, and the conversion can hand back a DIFFERENT VALUE
+    /// from the one it was given.
+    ///
+    /// A <c>long</c> of 9,000,000,000 arrives in an <c>int</c> as 410,065,408. A
+    /// <c>decimal</c> price arrives in a <c>double</c> having quietly lost digits. Nothing in
+    /// the code says so and no exception marks it when it happens — which is exactly why this
+    /// one is a WARNING where SM0008 is a note. SM0008 is for the losses you asked for (a null
+    /// becoming a default, a set discarding duplicates, a DateTime dropping its time); this is
+    /// for the ones you did not.
+    ///
+    /// It fires on collections too, once for the property rather than once per element:
+    /// mapping a <c>List&lt;long&gt;</c> onto a <c>List&lt;int&gt;</c> narrows every item in it.
+    ///
+    /// Silence it per project with &lt;NoWarn&gt;$(NoWarn);SM0010&lt;/NoWarn&gt;, or make it
+    /// impossible to ignore with &lt;WarningsAsErrors&gt;$(WarningsAsErrors);SM0010&lt;/WarningsAsErrors&gt;.
+    /// The real fix is usually to give the destination property the source's type.
+    /// </summary>
+    public static readonly DiagnosticDescriptor NarrowingConversion = new(
+        id: "SM0010",
+        title: "Destination property is mapped through a conversion that can change the value",
+        messageFormat: "ShiftMapper: '{0}.{1}' is mapped by converting '{2}' to '{3}', which cannot hold every value the source can ({4})",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "The map is generated and works, and for values inside the destination's range it " +
+                     "is exact. Outside that range the result is silently wrong rather than rejected, " +
+                     "so this is a warning rather than a note: give the destination the source's type, " +
+                     "or NoWarn it once you have decided the range is safe.");
 
     /// <summary>SM0005 — the whole mapper produced nothing.</summary>
     public static readonly DiagnosticDescriptor MapperSkipped = new(

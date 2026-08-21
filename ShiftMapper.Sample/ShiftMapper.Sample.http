@@ -13,9 +13,14 @@ Accept: application/json
 #     Three things to look at in the response. "isoCode": the entity spells it ISOCode and the
 #     DTO spells it IsoCode, so this is case-insensitive matching working end to end, through
 #     the database. "foundedYear": quoted, because the entity holds it as an int and the DTO
-#     as a string — ShiftMapper converted it, invariantly, on its own. And "tags": the entity
+#     as a string — ShiftMapper converted it, invariantly, on its own. "tags": the entity
 #     holds a List<string>, the DTO an IReadOnlyList<string>, and the DTO gets its OWN copy
 #     rather than a read-only window onto the list EF is still tracking.
+#
+#     And "externalIds" on brand 1, which is the point of SM0010. The database holds
+#     4000000001 and 4000000002; the DTO declares them int, so the response reads
+#     -294967295 and -294967294. It mapped, it did not throw, and the numbers are wrong.
+#     That is why SM0010 is a build WARNING rather than an informational note.
 GET {{HostAddress}}/api/brands
 Accept: application/json
 
@@ -27,6 +32,9 @@ Accept: application/json
 
 ### 1c. Stocks — same generated maps, but called DIRECTLY on the mapper instance
 #     (mapper.Map<StockDto>(stock)) instead of through the extension method.
+#     Look at "bayNumbers": the entity holds List<int>, the DTO IReadOnlyList<string>, so both
+#     the collection shape and the element type were converted — and the POST below reads them
+#     back the other way.
 GET {{HostAddress}}/api/stocks
 Accept: application/json
 
@@ -46,7 +54,8 @@ Content-Type: application/json
 {
   "name": "Duhok Distribution Centre",
   "city": "Duhok",
-  "code": "DHK-DC"
+  "code": "DHK-DC",
+  "bayNumbers": ["1", "2", "3"]
 }
 
 ### 1c4. Read back what 1c3 created (id 5 on a fresh database) — both directions of the

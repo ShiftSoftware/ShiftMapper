@@ -52,6 +52,26 @@ public partial class AppMapper : ShiftMapperBase
         //   FoundedYear = ValueConverter.ToInvariantString(source.FoundedYear)
         //   Tags        = ValueConverter.ToList(source.Tags)
         //
+        // A third pair on this same map is deliberately WRONG, and is the live demonstration
+        // of SM0010. Brand.ExternalIds is a List<long>; BrandDto.ExternalIds is a List<int>.
+        // Same collection shape, different element type — so it maps, one element at a time:
+        //
+        //   ExternalIds = ValueConverter.ToList<long, int>(source.ExternalIds,
+        //                     static item => unchecked((int)item))
+        //
+        // and that is the problem. Brand 1 is seeded with external id 4000000001, past
+        // int.MaxValue, so GET /api/brands reports -294967295 instead — a different number,
+        // entirely plausible-looking, with nothing in the code to say so and no exception to
+        // mark it. Hence a WARNING rather than a note:
+        //
+        //   warning SM0010: 'BrandDto.ExternalIds' is mapped by converting 'List<long>' to
+        //                   'List<int>', which cannot hold every value the source can
+        //
+        // That is the line SM0010 draws against SM0008. A null becoming zero, or a HashSet
+        // dropping duplicates, is a loss you asked the conversion to perform; this is an
+        // ordinary value coming out different. Declare the DTO property IReadOnlyList<long>
+        // and the warning goes away — along with the demonstration.
+        //
         // That is the whole feature in two lines. When names match but types do not,
         // ShiftMapper converts if it can and says so if it cannot, instead of silently
         // skipping the property. What it converts:
@@ -115,6 +135,18 @@ public partial class AppMapper : ShiftMapperBase
         //   Id = ValueConverter.ToInvariantString(source.Id)                       // out
         //   Id = ValueConverter.Parse<int>(source.Id, "StockDto.Id -> Stock.Id")   // back
         //
+        // Stock.BayNumbers is the same idea one level up: a List<int> on the entity, an
+        // IReadOnlyList<string> on the DTO, so the SHAPE and the ELEMENTS both differ and both
+        // get bridged, in both directions:
+        //
+        //   BayNumbers = ValueConverter.ToList<int, string>(source.BayNumbers, item => ...)  // out
+        //   BayNumbers = ValueConverter.ToList<string, int>(source.BayNumbers, item => ...)  // back
+        //
+        // The type arguments are load bearing. A List<int> is not a List<string> and never
+        // converts into one, however freely an int converts to a string — generics are
+        // invariant, so the elements are converted one at a time into a list built for the
+        // destination's element type.
+        //
         // Reading is the only one of the two that can fail on DATA rather than on types, so
         // the build reports it as SM0009 — informational, like SM0006 below. Empty text
         // (what arrives when a client POSTs a new location without an id) reads back as 0;
@@ -128,7 +160,7 @@ public partial class AppMapper : ShiftMapperBase
         // at all. See it with `dotnet build -v d`, or in the IDE's Error List with
         // informational messages shown:
         //
-        //   AppMapper.cs(123,38): info SM0006: the reverse map leaves 'Stock.Products'
+        //   AppMapper.cs(147,38): info SM0006: the reverse map leaves 'Stock.Products'
         //   unmapped because 'StockDto' has no readable property named 'Products'
         //
         // Note it points at .ReverseMap(), not at CreateMap — that is the code responsible.
