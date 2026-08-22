@@ -75,7 +75,19 @@ internal sealed class NestedProperty
     /// </summary>
     public string DestinationCollectionType { get; }
 
-    /// <summary>Whether the source property can be null, so the generated code guards it.</summary>
+    /// <summary>
+    /// Whether the source navigation is declared NULLABLE — <c>Brand?</c> rather than
+    /// <c>Brand</c>. Read from the nullable annotation, so it is the developer's own statement
+    /// about the relationship rather than a guess from the type.
+    ///
+    /// It decides whether the PROJECTION guards the property. A nullable navigation is a LEFT
+    /// JOIN that can produce no row, so it needs <c>x == null ? null : ...</c>; a required one
+    /// cannot, and wrapping it anyway produces a conditional EF has to see through — which it
+    /// does not always manage, particularly around primitive collections.
+    ///
+    /// The in-memory maps guard either way. There, null does not mean "no row" but "you did not
+    /// Include it", which happens to required navigations exactly as often as to optional ones.
+    /// </summary>
     public bool SourceIsNullable { get; }
 
     /// <summary>False for an <c>init</c> property, which the update overload cannot assign.</summary>

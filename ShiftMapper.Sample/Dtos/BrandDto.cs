@@ -1,4 +1,4 @@
-namespace ShiftMapper.Sample.Dtos;
+﻿namespace ShiftMapper.Sample.Dtos;
 
 /// <summary>Read model for a <see cref="Entities.Brand"/>.</summary>
 public class BrandDto
@@ -19,8 +19,8 @@ public class BrandDto
     /// INVARIANT, not the server's culture, so <c>1976</c> is the same four characters
     /// whether the process happens to be running in Baghdad or in Berlin.
     ///
-    /// Compare <see cref="Mapping.MappingExtensions"/>, where the hand-written version of
-    /// this same map has to remember to say so itself.
+    /// Written by hand, every mapping site has to remember to say so; here it is decided once,
+    /// in ValueConverter, for every map in the project.
     /// </summary>
     public string FoundedYear { get; set; } = string.Empty;
 

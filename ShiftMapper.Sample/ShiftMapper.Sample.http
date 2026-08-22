@@ -4,11 +4,6 @@
 GET {{HostAddress}}/
 Accept: application/json
 
-### 1. List products (helper) — use this to find product ids for creating an invoice
-#    Each product carries its brand and stock.
-GET {{HostAddress}}/api/products
-Accept: application/json
-
 ### 1b. Brands — GENERATED extension, brand.Map<BrandDto>(mapper) creates a new DTO.
 #     Three things to look at in the response. "isoCode": the entity spells it ISOCode and the
 #     DTO spells it IsoCode, so this is case-insensitive matching working end to end, through
@@ -76,163 +71,99 @@ Content-Type: application/json
   "code": "NON-E"
 }
 
-### 2. List all invoices — full graph: invoice -> lines -> product -> brand + stock
-GET {{HostAddress}}/api/invoices
+### 1d. Products — PROJECTION, and the shortest demonstration of what that buys you.
+#     ProductDto carries a BrandDto and a StockDto, and the endpoint contains no Include at
+#     all. EF works the joins out from the map itself, so the response comes back three levels
+#     deep from one query that reads only the columns the DTOs use.
+#
+#     Look inside for every earlier feature still working through the nesting: the brand's
+#     "foundedYear" is a string over the entity's int, its "tags" an IReadOnlyList<string>
+#     over a List<string>, the stock's "id" a string over an int, its "bayNumbers" strings
+#     over ints. Add ?sql=true to see the query.
+GET {{HostAddress}}/api/products
 Accept: application/json
 
-### 3. Get a single invoice by id — HAND-WRITTEN, not ShiftMapper.
-#     This one calls invoice.ToDto() from MappingExtensions.cs, the by-hand mapper kept as the
-#     "before" picture. It is here to compare against 3b, and it does NOT react to anything you
-#     change in AppMapper.cs — not MaxDepth, not Ignore, not MapFrom. If an edit to the mapper
-#     seems to have had no effect, check you are looking at 3b (/mapped) and not this one.
-GET {{HostAddress}}/api/invoices/1
-Accept: application/json
-
-### 3b. SHIFTMAPPER, in memory — mapper.Map<InvoiceDto>(invoice). Note the /mapped suffix:
-#     request 3 above is the hand-written one, this is the generated one.
-#     Invoice -> InvoiceDto does not map by name alone, and AppMapper settles both problems
-#     on one chain:
+### 2. Invoices — THE MAP AS A DATABASE QUERY.
+#     db.Invoices.ProjectTo<InvoiceDto>(mapper), and again not one Include, yet the response
+#     is four levels deep: invoice -> lines -> product -> brand and stock.
 #
-#         CreateMap<Invoice, InvoiceDto>()
-#             .Ignore(d => d.Lines)
-#             .MapFrom(d => d.Total,  s => s.Lines.Sum(l => l.Quantity * l.UnitPrice))
-#             .MapFrom(d => d.Number, s => _numbering.Prefix + s.Number);
-#
-#     In the response:
-#
-#       "total"   a number the entity never stores — MapFrom worked it out from the lines.
-#       "number"  carries the "IQ/" prefix, which came from IInvoiceNumbering. That service
-#                 was injected into AppMapper's CONSTRUCTOR and used inside the expression;
-#                 nothing else was needed to make DI work in a custom mapping.
-#       "lines"   the whole graph, four levels deep, and NOTHING in the CreateMap chain
-#                 mentions it. A nested object maps as soon as a CreateMap exists for its
-#                 pair — Invoice -> InvoiceDto pulls in InvoiceLine -> InvoiceLineDto, which
-#                 pulls in Product -> ProductDto, which pulls in Brand and Stock.
-#
-#     Look inside one line and you can see every earlier feature still working, four levels
-#     down: "lineTotal" is that map's OWN MapFrom, "foundedYear" is a string over the
-#     entity's int, and "bayNumbers" is IReadOnlyList<string> over a List<int>.
-#
-#     The Lines property is an IReadOnlyList<InvoiceLineDto> over a List<InvoiceLine>, so the
-#     collection SHAPE is converted too — the same helpers a List<int> goes through.
-#
-#     Every Include in this endpoint is load-bearing: an in-memory map can only copy what was
-#     fetched, so dropping the ThenInclude for Brand makes the DTO's brand arrive null.
-#     Request 3c needs no Includes at all.
-GET {{HostAddress}}/api/invoices/1/mapped
-Accept: application/json
-
-### 3c. THE SAME MAP AS A DATABASE QUERY — db.Invoices.ProjectTo<InvoiceDto>(mapper)
-#     Same CreateMap line as 3b, no second declaration. The difference is where the work
-#     happens: 3b loads whole invoices and maps them in C#; this hands the map itself to EF,
-#     which turns it into the SELECT list.
-#
-#     So the database reads only the columns InvoiceDto uses, adds the lines up itself, and
-#     works out every join from the map — there is not one Include in the endpoint, and the
-#     nested graph still arrives complete. Compare the JSON with 3b: identical, four levels
-#     down, from a declaration that never mentions Product, Brand or Stock.
+#     In the JSON: "total" is a number the entity never stores, "number" carries the "IQ/"
+#     prefix from an injected service, and each line's "lineTotal" comes from the NESTED map's
+#     own MapFrom — a customization two levels down that still translates.
 #
 #     ProjectTo returns an IQueryable, so the endpoint's OrderByDescending and Take(20) are
 #     part of that same one query rather than filtering in memory afterwards.
-#
-#     Invoice 1 in this response reads "total": 1596.0000 — the same number 3b produced, only
-#     at the database column's scale instead of the C# decimal's.
-GET {{HostAddress}}/api/invoices/projected
+GET {{HostAddress}}/api/invoices
 Accept: application/json
 
-### 3d. THE SQL ITSELF — what EF made of the map. This is the request to read carefully.
+### 2b. THE SQL ITSELF — the request to read carefully.
 #
 #         DECLARE @p int = 20;
 #         DECLARE @_numbering_Prefix nvarchar(4000) = N'IQ/';
 #
-#         SELECT TOP(@p) [i].[Id], [i].[CustomerName], [i].[CustomerEmail], [i].[IssuedAt], (
+#         SELECT ... FROM (SELECT TOP(@p) ..., (
 #             SELECT COALESCE(SUM(CAST([i0].[Quantity] AS decimal(18,2)) * [i0].[UnitPrice]), 0.0)
-#             FROM [InvoiceLines] AS [i0]
-#             WHERE [i].[Id] = [i0].[InvoiceId]) AS [Total],
-#             @_numbering_Prefix + [i].[Number] AS [Number]
-#         FROM [Invoices] AS [i]
-#         ORDER BY [i].[IssuedAt] DESC
+#             FROM [InvoiceLines] AS [i0] WHERE [i].[Id] = [i0].[InvoiceId]) AS [c],
+#             @_numbering_Prefix + [i].[Number] AS [c0] FROM [Invoices] AS [i] ...) AS [i2]
+#         LEFT JOIN (SELECT ..., CAST([i1].[Quantity] AS decimal(18,2)) * [i1].[UnitPrice] ...
+#             FROM [InvoiceLines] AS [i1]
+#             INNER JOIN [Products] AS [p] ON [i1].[ProductId] = [p].[Id]
+#             INNER JOIN [Brands]   AS [b] ON [p].[BrandId]   = [b].[Id]
+#             INNER JOIN [Stocks]   AS [s] ON [p].[StockId]   = [s].[Id] ...) AS [s0] ...
 #
-#     The nesting turns this into a much bigger query, and every part of it is worth a look:
+#     Four levels of joins nobody asked for — EF worked them out from the map, because the
+#     whole nested graph reached it as ONE expression. Three things worth finding:
 #
-#       * LEFT JOIN to a subquery over [InvoiceLines], then INNER JOIN [Products], [Brands]
-#         and [Stocks]. FOUR LEVELS OF JOINS that no endpoint asked for — EF worked them out
-#         from the map, because the whole nested graph reached it as ONE expression.
-#       * CAST([i1].[Quantity] AS decimal(18,2)) * [i1].[UnitPrice] — that is InvoiceLineDto's
-#         own MapFrom for LineTotal, composed in from the NESTED map. A customization two
-#         levels down still translates.
-#       * CONVERT(varchar(11), [b].[FoundedYear]) — the int-to-string conversion, at level 4.
-#       * OUTER APPLY OPENJSON(...) for Tags, ExternalIds and BayNumbers, the primitive
-#         collections, also at level 4.
-#       * The MapFrom for Total is still its own CORRELATED SUBQUERY, and
-#         @_numbering_Prefix is still the injected service arriving as a parameter named
-#         after your field.
-#
-#     One round trip for all of it.
-GET {{HostAddress}}/api/invoices/projected?sql=true
+#       * the correlated subquery for Total, from a MapFrom on THIS map;
+#       * Quantity * UnitPrice, from a MapFrom on the NESTED InvoiceLine map;
+#       * @_numbering_Prefix — an injected service, read once in C# because it does not depend
+#         on any row, and sent as a parameter named after the field it came from.
+GET {{HostAddress}}/api/invoices?sql=true
 Accept: text/plain
 
-### 3e. WHERE THE LIMIT ACTUALLY IS — this one needs an edit to see, and it is worth doing.
-#     In AppMapper.cs swap the last MapFrom for the OTHER member of the same service:
+### 3. One invoice — THE SAME MAP, IN MEMORY. mapper.Map<InvoiceDto>(invoice).
+#     One declaration in AppMapper feeds this and request 2 both, and they give the same
+#     answer. What differs is who does the work: here the entity is loaded first and mapped in
+#     C#, which is why every Include in this endpoint is load-bearing — drop the ThenInclude
+#     for Brand and the DTO's brand arrives null, because there was nothing in memory to map.
 #
-#         .MapFrom(d => d.Number, s => _numbering.Format(s.Number, s.IssuedAt))
-#
-#     Format takes the ROW's data, so no database can run it. Re-run 3c and it still works:
-#     EF is allowed to evaluate a top-level projection on the client, so it selects the
-#     columns Format needs and runs your C# per row. One query, only the needed columns —
-#     run 3d to watch [i].[Number] and [i].[IssuedAt] come back raw instead of concatenated.
-#
-#     The break comes one step further out. Add a filter on that property in the endpoint:
-#
-#         .ProjectTo<InvoiceDto>(mapper).Where(i => i.Number.Contains("2026"))
-#
-#     and this request returns 500:
-#
-#         InvalidOperationException: The LINQ expression could not be translated.
-#         Translation of method 'IInvoiceNumbering.Format' failed.
-#
-#     A Where decides which rows the database returns, so it cannot wait until they have
-#     arrived. With Prefix there is no such limit, because that value really is in the SQL.
-#
-#     ShiftMapper predicts none of this — it generates the projection and lets EF answer, so
-#     you get what today's EF can do rather than what ShiftMapper assumed when it was written.
-GET {{HostAddress}}/api/invoices/projected
+#     This is the form for when you already have the entity: after a save, inside a unit of
+#     work, or anywhere the object is in hand rather than in the database.
+GET {{HostAddress}}/api/invoices/1
 Accept: application/json
 
-### 3f. THE TWO RULES NESTING ADDS — both are edits rather than requests, both worth doing.
+### 3b. THE TWO RULES NESTING ADDS — both are edits rather than requests, both worth doing.
 #
 #     (a) A NESTED OBJECT WITH NO MAP IS A BUILD ERROR.
 #
 #     Comment out CreateMap<Product, ProductDto>() in AppMapper.cs and the build STOPS:
 #
 #         error SM0011: 'InvoiceLineDto.Product' needs a map from 'Product' to 'ProductDto'.
-#                       Add CreateMap<Product, ProductDto>() to this mapper, or
-#                       .Ignore(d => d.Product) to leave it unmapped on purpose
+#                       Add CreateMap<Product, ProductDto>(), or
+#                       CreateMap<ProductDto, Product>().ReverseMap(), or
+#                       .Ignore(d => d.Product) to leave it unmapped on purpose.
 #
-#     This is the only ERROR ShiftMapper reports. Every other message describes a property
-#     left unmapped, which may well be on purpose; this one describes a property that cannot
-#     be mapped YET, where a null in the response would be indistinguishable from a null in
-#     the database. Both ways out are one line, and both leave the decision written down.
+#     Either direction counts — a pair registered by ReverseMap satisfies it exactly as well.
+#     This is the only ERROR ShiftMapper reports: every other message describes a property
+#     left unmapped, which may well be on purpose, while this one describes a property that
+#     cannot be mapped YET, where a null in the response would look just like a null in the
+#     database.
 #
-#     (b) A LOOP IS A BUILD ERROR.
+#     (b) A LOOP IS ALSO A BUILD ERROR.
 #
-#     There is no depth setting. Mapping goes as deep as the maps you declared and stops —
-#     which is the whole rule, and the reason nothing here needs configuring.
-#
-#     The one graph that cannot work that way is one that points back at itself. Give BrandDto
-#     a List<ProductDto> Products (ProductDto already has a BrandDto Brand) and the build
-#     stops:
+#     There is no depth setting. Mapping goes as deep as the maps you declared and stops,
+#     which is the whole rule. The one graph that cannot work that way is one that points back
+#     at itself — give BrandDto a List<ProductDto> Products (ProductDto already has a BrandDto
+#     Brand) and the build stops:
 #
 #         error SM0012: nested mapping never finishes — BrandDto.Products ->
 #                       ProductDto.Brand -> BrandDto. Break the loop with
 #                       .Ignore(d => d.Brand) on whichever side is the back-reference.
 #
-#     An error rather than a silent cut, because the alternatives are worse: code that follows
-#     the loop recurses until the stack runs out, and in .NET that kills the process rather
-#     than failing one request. Cutting at some arbitrary depth avoids the crash but makes the
-#     response shape depend on a number nobody chose. So it asks instead, and .Ignore on the
-#     back-reference is one line that also records which side is the view.
-GET {{HostAddress}}/api/invoices/projected
+#     An error rather than a silent cut, because code that followed the loop would recurse
+#     until the stack ran out — and in .NET that kills the process rather than failing one
+#     request.
+GET {{HostAddress}}/api/invoices
 Accept: application/json
 
 ### 4. Create an invoice
@@ -251,7 +182,9 @@ Content-Type: application/json
   ]
 }
 
-### 5. Get the invoice that was just created (id 4 on a fresh database)
+### 5. Read back what request 4 created — it is mapped by the same CreateMap, so the
+#     response has the full nested graph. Adjust the id to the one request 4 returned
+#     (4 on a fresh database).
 GET {{HostAddress}}/api/invoices/4
 Accept: application/json
 

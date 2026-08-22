@@ -987,7 +987,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                         destinationElementName: complex.Destination.Name,
                         collectionBuilder: complex.Builder,
                         destinationCollectionType: destinationProperty.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
-                        sourceIsNullable: !sourceProperty.Type.IsValueType,
+                        sourceIsNullable: sourceProperty.NullableAnnotation == NullableAnnotation.Annotated,
                         canSetAfterConstruction: !setter.IsInitOnly));
                     continue;
                 }
@@ -1830,7 +1830,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
         return $"new global::ShiftMapper.MapCustomizations.NestedBinding(" +
                $"\"{nested.Destination}\", \"{nested.Source}\", " +
-               $"{projection}, {builder})";
+               $"{projection}, {builder}, {(nested.SourceIsNullable ? "true" : "false")})";
     }
 
     /// <summary>

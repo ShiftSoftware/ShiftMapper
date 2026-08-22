@@ -13,43 +13,18 @@ public static class InvoiceEndpoints
         var group = app.MapGroup("/api/invoices").WithTags("Invoices");
 
         // GET /api/invoices  -> all invoices, each with the full graph.
-        group.MapGet("/", async (AppDbContext db) =>
-        {
-            var invoices = await WithFullGraph(db)
-                .OrderByDescending(i => i.IssuedAt)
-                .ToListAsync();
-
-            return Results.Ok(invoices.Select(i => i.ToDto()).ToList());
-        })
-        .WithName("GetInvoices");
-
-        // GET /api/invoices/{id}  -> a single invoice with the full graph.
-        group.MapGet("/{id:int}", async (int id, AppDbContext db) =>
-        {
-            var invoice = await WithFullGraph(db).FirstOrDefaultAsync(i => i.Id == id);
-
-            return invoice is null
-                ? Results.NotFound()
-                : Results.Ok(invoice.ToDto());
-        })
-        .WithName("GetInvoiceById");
-
-        // POST /api/invoices  -> create an invoice from a customer + list of (product, quantity).
-        // PROJECTION — the map as a QUERY, instead of as code that runs over loaded objects.
+        // THE MAP AS A QUERY — db.Invoices.ProjectTo<InvoiceDto>(mapper).
         //
-        // Compare it with GET / just above. That one asks the database for whole invoices, with
-        // every line and every product and every brand attached, and then maps them in C#. This
-        // one hands the map itself to EF, which turns it into the SELECT list — so the database
-        // reads only the columns InvoiceDto actually uses, adds the lines up itself, and returns
-        // one flat row per invoice.
+        // There is not one Include here, and the response still comes back four levels deep:
+        // invoice -> lines -> product -> brand and stock. EF works every join out from the map
+        // itself, because the whole nested graph reaches it as a single expression, so only the
+        // columns InvoiceDto actually uses are read and the lines are added up in SQL.
         //
-        // Notice what still works AROUND it. ProjectTo returns an IQueryable, so OrderByDescending
-        // and Take below are part of the same single query rather than filtering in memory
-        // afterwards.
+        // ProjectTo returns an IQueryable, so OrderByDescending and Take below are part of that
+        // same one query rather than filtering in memory afterwards.
         //
-        // Add ?sql=true to see exactly what EF made of it — including the correlated subquery that
-        // came from .MapFrom(d => d.Total, ...) and the parameter that came from _numbering.Prefix.
-        group.MapGet("/projected", (AppDbContext db, AppMapper mapper, bool sql = false) =>
+        // Add ?sql=true to read what EF made of it.
+        group.MapGet("/", (AppDbContext db, AppMapper mapper, bool sql = false) =>
         {
             IQueryable<InvoiceDto> query = db.Invoices
                 .AsNoTracking()
@@ -61,37 +36,30 @@ public static class InvoiceEndpoints
                 ? Results.Text(query.ToQueryString(), "text/plain")
                 : Results.Ok(query.ToList());
         })
-        .WithName("GetProjectedInvoices");
+        .WithName("GetInvoices");
 
-        // THE SAME TWO CUSTOMIZATIONS, RUN IN MEMORY.
+        // THE SAME MAP, IN MEMORY — mapper.Map<InvoiceDto>(invoice).
         //
-        // /projected hands the map to the database. This one loads an Invoice first and maps it
-        // in C#, and it is worth having both in front of you: ONE declaration in AppMapper feeds
-        // both, because MapFrom keeps the expression rather than a copy of your code.
+        // One declaration in AppMapper feeds both this and the projection above, and they give
+        // the same answer. What differs is who does the work: here the entity is loaded first and
+        // mapped in C#, which is why every Include below is load-bearing. Drop the ThenInclude for
+        // Brand and the DTO's brand arrives null — not because the map is wrong, but because
+        // there was nothing in memory to map.
         //
-        // In this direction, Total is worked out by the compiled expression over an already
-        // loaded Lines collection, and _numbering.Prefix is just a property read. Same answers,
-        // reached completely differently.
-        group.MapGet("/{id:int}/mapped", async (int id, AppDbContext db, AppMapper mapper) =>
+        // This is the form to use when you already have the entity: after a save, inside a unit
+        // of work, or anywhere the object is in hand rather than in the database.
+        group.MapGet("/{id:int}", async (int id, AppDbContext db, AppMapper mapper) =>
         {
-            // EVERY Include here is load-bearing, and that is the honest cost of mapping in
-            // memory: the map can only copy what you remembered to fetch. Drop the ThenInclude
-            // for Brand and the DTO's brand arrives null — not because the map is wrong, but
-            // because there was nothing in memory to map. /projected has no Includes at all,
-            // because EF works out the joins from the map itself.
-            var invoice = await db.Invoices
-                .AsNoTracking()
-                .Include(i => i.Lines).ThenInclude(l => l.Product).ThenInclude(p => p.Brand)
-                .Include(i => i.Lines).ThenInclude(l => l.Product).ThenInclude(p => p.Stock)
-                .FirstOrDefaultAsync(i => i.Id == id);
+            var invoice = await WithFullGraph(db).FirstOrDefaultAsync(i => i.Id == id);
 
             return invoice is null
                 ? Results.NotFound()
                 : Results.Ok(mapper.Map<InvoiceDto>(invoice));
         })
-        .WithName("GetMappedInvoiceById");
+        .WithName("GetInvoiceById");
 
-        group.MapPost("/", async (CreateInvoiceRequest request, AppDbContext db) =>
+        // POST /api/invoices  -> create an invoice from a customer + list of (product, quantity).
+        group.MapPost("/", async (CreateInvoiceRequest request, AppDbContext db, AppMapper mapper) =>
         {
             if (request.Lines is null || request.Lines.Count == 0)
                 return Results.BadRequest("An invoice must have at least one line.");
@@ -130,7 +98,9 @@ public static class InvoiceEndpoints
             db.Invoices.Add(invoice);
             await db.SaveChangesAsync();
 
-            var dto = invoice.ToDto();
+            // The entity is already in hand and its graph is fully populated, so this is the
+            // in-memory map rather than a second trip to the database.
+            var dto = mapper.Map<InvoiceDto>(invoice);
             return Results.Created($"/api/invoices/{invoice.Id}", dto);
         })
         .WithName("CreateInvoice");

@@ -194,11 +194,19 @@ public sealed class MapCustomizations
 
         if (child.Builder is null)
         {
-            // A single object. The null guard is what turns an absent related row into a null
-            // DTO rather than an exception — and in SQL it is what a LEFT JOIN already means, so
-            // EF translates the whole conditional rather than running it.
             Expression body = new ParameterReplacer(child.Projection.Parameters[0], source)
                 .Visit(child.Projection.Body)!;
+
+            // A REQUIRED navigation needs no guard: the join always matches, so there is no row
+            // that could produce a null. Adding one anyway is not merely redundant — it buries
+            // the nested initializer inside a conditional that EF then has to see through, and it
+            // does not always manage, particularly where the nested DTO has a primitive
+            // collection of its own.
+            //
+            // An OPTIONAL one does need it, because a LEFT JOIN really can come back empty and
+            // the DTO should be null rather than an object full of defaults.
+            if (!child.Nullable)
+                return body;
 
             return Expression.Condition(
                 Expression.Equal(source, Expression.Constant(null, source.Type)),
@@ -235,11 +243,16 @@ public sealed class MapCustomizations
     /// The <see cref="Enumerable"/> method that builds the destination collection — ToList,
     /// ToArray, ToHashSet — or null when the property holds a single object.
     /// </param>
+    /// <param name="Nullable">
+    /// Whether the source navigation is declared nullable, and so whether the projection has to
+    /// guard against no related row. Ignored for collections, which are empty rather than null.
+    /// </param>
     public sealed record NestedBinding(
         string Member,
         string SourceMember,
         LambdaExpression Projection,
-        string? Builder);
+        string? Builder,
+        bool Nullable = false);
 
     /// <summary>
     /// Reads the property name out of a selector such as <c>d =&gt; d.Country</c>.

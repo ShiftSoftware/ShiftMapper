@@ -1,31 +1,32 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using ShiftMapper.Sample.Data;
+using ShiftMapper.Sample.Dtos;
 using ShiftMapper.Sample.Mapping;
 
 namespace ShiftMapper.Sample.Endpoints;
 
-/// <summary>
-/// A small convenience endpoint. It isn't part of the core invoice flow, but it
-/// lets you list the seeded products (and their ids) so you know what to put in
-/// a "create invoice" request.
-/// </summary>
 public static class ProductEndpoints
 {
     public static void MapProductEndpoints(this IEndpointRouteBuilder app)
     {
         var group = app.MapGroup("/api/products").WithTags("Products");
 
-        // GET /api/products  -> all products, each with its brand + stock.
-        group.MapGet("/", async (AppDbContext db) =>
+        // PROJECTION, and note what is NOT here: no Include for Brand, no Include for Stock.
+        //
+        // ProductDto carries a BrandDto and a StockDto, and this endpoint never says so. EF
+        // works the joins out from the map itself, because the whole nested graph reaches it
+        // as one expression — so the database returns exactly the columns the DTO uses, in one
+        // query, and nothing is loaded to be thrown away afterwards.
+        group.MapGet("/", (AppDbContext db, AppMapper mapper, bool sql = false) =>
         {
-            var products = await db.Products
+            IQueryable<ProductDto> query = db.Products
                 .AsNoTracking()
-                .Include(p => p.Brand)
-                .Include(p => p.Stock)
                 .OrderBy(p => p.Id)
-                .ToListAsync();
+                .ProjectTo<ProductDto>(mapper);
 
-            return Results.Ok(products.Select(p => p.ToDto()).ToList());
+            return sql
+                ? Results.Text(query.ToQueryString(), "text/plain")
+                : Results.Ok(query.ToList());
         })
         .WithName("GetProducts");
     }

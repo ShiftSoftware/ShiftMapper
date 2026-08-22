@@ -542,8 +542,20 @@ internal static class ConversionResolver
         // LAMBDA returns, so the identity conversion `item => item` over a List<int> filling a
         // List<long> infers List<int> and the generated file does not compile. Naming both types
         // makes the destination the compiler's problem instead of the inference algorithm's.
+        // A projection that only needs the SHAPE changed assigns straight across instead of
+        // copying. In memory the copy is the point — the DTO owns its own list rather than a
+        // second reference to the entity's — but a projection has no entity to share with, since
+        // EF reads the column and builds a fresh collection per row either way.
+        //
+        // It is also the difference between working and not. EF cannot shape a primitive
+        // collection through Enumerable.ToList in a projection; it throws a NullReferenceException
+        // out of its own shaper, and does so for hand-written LINQ exactly as readily. Assigning
+        // directly is both the cheaper spelling and the one that survives.
+        bool assignable = compilation.ClassifyConversion(sourceType, destinationType) is
+            { Exists: true, IsImplicit: true, IsBoxing: false, IsUserDefined: false };
+
         string queryTemplate = sameElement
-            ? $"{LinqType}.{method}({{0}})"
+            ? (assignable ? "{0}" : $"{LinqType}.{method}({{0}})")
             : $"{LinqType}.{method}<{FullName(destinationElement)}>(" +
               $"{LinqType}.Select<{FullName(sourceElement)}, {FullName(destinationElement)}>" +
               $"({{0}}, item => {element.ApplyQuery("item")}))";
