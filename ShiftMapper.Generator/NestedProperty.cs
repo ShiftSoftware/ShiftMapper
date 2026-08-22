@@ -1,4 +1,4 @@
-namespace ShiftMapper.Generator;
+﻿namespace ShiftMapper.Generator;
 
 /// <summary>
 /// A destination property whose value is another OBJECT ShiftMapper maps — either one of them
@@ -11,9 +11,9 @@ namespace ShiftMapper.Generator;
 /// leaves the verdict to <see cref="ShiftMapperGenerator"/>'s resolve pass, which runs once every
 /// declaration of the class has been collected.
 ///
-/// The verdict then has three outcomes: a map exists and the property is filled; no map exists
-/// and the build stops with SM0011; or the property sits past <c>MaxDepth</c> and is left unset
-/// with SM0012.
+/// The verdict is then one of three: a map exists and the property is filled; no map exists and
+/// the build stops with SM0011; or following it would go round in a loop and the build stops with
+/// SM0012.
 /// </summary>
 internal sealed class NestedProperty
 {
@@ -87,35 +87,4 @@ internal sealed class NestedProperty
     /// <summary>The pair a CreateMap must exist for, in the same spelling <c>MapModel.Key</c> uses.</summary>
     public string Key => SourceElementType + "->" + DestinationElementType;
 
-    /// <summary>
-    /// How many levels are left for this property's own graph, once the resolve pass has counted
-    /// the levels above it. Only meaningful when <see cref="CanDelegate"/> is false, since that
-    /// is the case where the emitter has to write the nested body out and cut it.
-    /// </summary>
-    public int Budget { get; private set; }
-
-    /// <summary>
-    /// Whether the in-memory map can simply CALL the nested map instead of writing it out.
-    ///
-    /// True in the ordinary case, and it is the better code by some distance: one line, each map
-    /// defined in one place, and the nested map's own MapFrom customizations apply without the
-    /// emitter doing anything. It is only false when the nested graph reaches further than the
-    /// budget left here — a deliberately small MaxDepth, or DTOs that point back at each other —
-    /// because a call cannot be asked to stop halfway, so the body is inlined and cut instead.
-    /// </summary>
-    public bool CanDelegate { get; private set; } = true;
-
-    /// <summary>The same property with the resolve pass's arithmetic recorded on it.</summary>
-    public NestedProperty WithDepth(int budget, bool canDelegate)
-    {
-        var copy = new NestedProperty(
-            Destination, Source, SourceElementType, DestinationElementType, DestinationElementName,
-            CollectionBuilder, DestinationCollectionType, SourceIsNullable, CanSetAfterConstruction)
-        {
-            Budget = budget,
-            CanDelegate = canDelegate,
-        };
-
-        return copy;
-    }
 }

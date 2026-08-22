@@ -145,9 +145,6 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         bool? classDefaultCaseSensitive = ReadClassDefaultCaseSensitive(
             context.SemanticModel.Compilation, classSymbol, baseClass, mapOptions, cancellationToken);
 
-        int? classDefaultMaxDepth = ReadClassDefaultMaxDepth(
-            context.SemanticModel.Compilation, classSymbol, baseClass, mapOptions, cancellationToken);
-
         var maps = ImmutableArray.CreateBuilder<MapModel>();
         var seen = new HashSet<string>();
 
@@ -169,7 +166,6 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                          mapExpression,
                          mapOptions,
                          classDefaultCaseSensitive,
-                         classDefaultMaxDepth,
                          cancellationToken))
             {
                 if (seen.Add(map.Key))
@@ -541,7 +537,6 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         INamedTypeSymbol? mapExpression,
         INamedTypeSymbol? mapOptions,
         bool? classDefaultCaseSensitive,
-        int? classDefaultMaxDepth,
         CancellationToken cancellationToken)
     {
         TypeSyntax sourceSyntax = createMap.TypeArgumentList.Arguments[0];
@@ -553,13 +548,6 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             semanticModel, FirstArgument(invocation), mapOptions, cancellationToken);
 
         bool caseSensitive = declared ?? classDefaultCaseSensitive ?? false;
-
-        // Same precedence, same three levels: this map's lambda, then ConfigureDefaults, then
-        // ShiftMapper's own default.
-        int? declaredDepth = ReadMaxDepth(
-            semanticModel, FirstArgument(invocation), mapOptions, cancellationToken);
-
-        int maxDepth = declaredDepth ?? classDefaultMaxDepth ?? DefaultMaxDepth;
 
         // Ask the compiler: what type does the text "Brand" actually refer to here?
         if (semanticModel.GetSymbolInfo(sourceSyntax, cancellationToken).Symbol is not INamedTypeSymbol sourceType)
@@ -580,7 +568,6 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             LocationInfo.CreateFrom(createMap),
             isReverse: false,
             caseSensitive: caseSensitive,
-            maxDepth: maxDepth,
             refinements: chain.Forward);
 
         if (chain.ReverseMapName is null)
@@ -604,9 +591,6 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         bool? reverseDeclared = ReadCaseSensitive(
             semanticModel, FirstArgument(FindInvocation(chain.ReverseMapName)), mapOptions, cancellationToken);
 
-        int? reverseDepth = ReadMaxDepth(
-            semanticModel, FirstArgument(FindInvocation(chain.ReverseMapName)), mapOptions, cancellationToken);
-
         yield return BuildMapModel(
             semanticModel.Compilation,
             destinationType,
@@ -614,7 +598,6 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             LocationInfo.CreateFrom(chain.ReverseMapName) ?? LocationInfo.CreateFrom(createMap),
             isReverse: true,
             caseSensitive: reverseDeclared ?? caseSensitive,
-            maxDepth: reverseDepth ?? maxDepth,
             refinements: chain.Reverse);
     }
 
@@ -631,9 +614,6 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// <summary>Underlying value of <c>PropertyMatching.CaseSensitive</c>.</summary>
     private const int CaseSensitiveValue = 1;
 
-    /// <summary>How deep nested mapping goes when nothing says otherwise. Matches MapOptions.</summary>
-    private const int DefaultMaxDepth = 10;
-
     /// <summary>
     /// Reads the options a configure lambda sets, e.g. the <c>o =&gt; o.Matching = ...</c> in
     /// <c>CreateMap&lt;A, B&gt;(o =&gt; o.Matching = PropertyMatching.CaseSensitive)</c>.
@@ -646,19 +626,6 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// work — the expression body above and a block body setting several options — and it is
     /// the same routine that reads ConfigureDefaults. Future options plug in here by name.
     /// </summary>
-    private static int? ReadMaxDepth(
-        SemanticModel semanticModel,
-        SyntaxNode? scope,
-        INamedTypeSymbol? mapOptions,
-        CancellationToken cancellationToken)
-    {
-        object? value = ReadOption(semanticModel, scope, mapOptions, "MaxDepth", cancellationToken);
-
-        // A limit below 1 would mean "do not even generate the map you asked for", which is not
-        // something a number should be able to say. Anything silly is treated as unset.
-        return value is int depth && depth >= 1 ? depth : null;
-    }
-
     private static bool? ReadCaseSensitive(
         SemanticModel semanticModel,
         SyntaxNode? scope,
@@ -731,20 +698,6 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         return value is int matching ? matching == CaseSensitiveValue : null;
     }
 
-    /// <summary>The mapper-wide <c>MaxDepth</c>, when ConfigureDefaults sets one.</summary>
-    private static int? ReadClassDefaultMaxDepth(
-        Compilation compilation,
-        INamedTypeSymbol classSymbol,
-        INamedTypeSymbol baseClass,
-        INamedTypeSymbol? mapOptions,
-        CancellationToken cancellationToken)
-    {
-        object? value = ReadClassDefault(
-            compilation, classSymbol, baseClass, mapOptions, "MaxDepth", cancellationToken);
-
-        return value is int depth && depth >= 1 ? depth : null;
-    }
-
     /// <summary>
     /// Reads one mapper-wide default out of an overridden <c>ConfigureDefaults</c>.
     ///
@@ -805,7 +758,6 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         LocationInfo? location,
         bool isReverse,
         bool caseSensitive,
-        int maxDepth,
         Refinements refinements)
     {
         PropertyAnalysis analysis = FindMatchingProperties(
@@ -826,7 +778,6 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             convertedProperties: analysis.Converted,
             customProperties: refinements.Customized,
             nestedProperties: analysis.Nested,
-            maxDepth: maxDepth,
             destinationName: destinationType.Name,
             location: location,
             isReverse: isReverse);
@@ -1220,26 +1171,18 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// <summary>
     /// Settles every nested object property, now that all of the mapper's maps are known.
     ///
-    /// Each candidate has one of three fates:
+    /// Two things can be wrong, and both stop the build:
     ///
-    ///   * NO MAP for its pair — SM0011, a build ERROR. The developer adds one line, either the
-    ///     CreateMap or an Ignore. This is the only error ShiftMapper reports, because it is the
-    ///     only case where doing nothing would silently produce a null that looks like data.
+    ///   * SM0011 — the pair has no map, in either direction. One line fixes it, either the
+    ///     CreateMap or an Ignore, and either way the decision is written down.
     ///
-    ///   * PAST MaxDepth — SM0012, informational, and the property is dropped. Reached either by
-    ///     a genuinely deep graph or by DTOs that point back at each other, which no limit can
-    ///     finish.
+    ///   * SM0012 — the maps nest each other in a LOOP. There is no depth at which such a graph
+    ///     is complete, and generated code that followed it would call itself until the stack ran
+    ///     out, so it is refused rather than guessed at.
     ///
-    ///   * OTHERWISE it is kept, and the emitter fills it.
-    ///
-    /// The depth arithmetic is what the rest of this method is about. A nested map is emitted in
-    /// memory as a CALL to the mapper's own Map method, which is small, keeps each map in one
-    /// place, and picks up that map's own MapFrom customizations for free. But a call is
-    /// all-or-nothing: <c>Map&lt;ProductDto&gt;</c> fills a ProductDto the way the Product map
-    /// says to, and cannot be asked to stop halfway. So delegating is only correct when the
-    /// nested map's own REACH fits in the budget left at that point. When it does not, the
-    /// emitter writes the body out inline instead and cuts it at the limit — which is also what
-    /// keeps a cycle finite, since a cyclic map's reach never fits.
+    /// Nothing else bounds how deep mapping goes. A nested object is mapped when a map exists for
+    /// it, all the way down, which is the only rule worth remembering — and the loop check is what
+    /// makes "all the way down" a finite instruction.
     /// </summary>
     private static ImmutableArray<MapModel> ResolveNested(
         SourceProductionContext context,
@@ -1252,17 +1195,16 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         foreach (MapModel map in maps)
             byKey[map.Key] = map;
 
-        // Reach is expensive enough to be worth remembering, and is asked for repeatedly: every
-        // map that nests a ProductDto asks the same question about it.
-        var reach = new Dictionary<string, int>(StringComparer.Ordinal);
-
-        var resolved = ImmutableArray.CreateBuilder<MapModel>(maps.Length);
+        // PASS 1 — every nested pair needs a map. Done for all maps before anything else, so a
+        // missing CreateMap is reported once from where it is missing rather than once per place
+        // that happens to reach it.
+        var validated = new Dictionary<string, MapModel>(StringComparer.Ordinal);
 
         foreach (MapModel map in maps)
         {
             if (map.NestedProperties.IsEmpty)
             {
-                resolved.Add(map);
+                validated[map.Key] = map;
                 continue;
             }
 
@@ -1270,112 +1212,122 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
             foreach (NestedProperty nested in map.NestedProperties)
             {
-                if (!byKey.TryGetValue(nested.Key, out MapModel? nestedMap))
+                if (byKey.ContainsKey(nested.Key))
                 {
-                    context.ReportDiagnostic(Diagnostic.Create(
-                        DiagnosticDescriptors.NoMapForNestedProperty,
-                        map.Location?.ToLocation(),
-                        map.DestinationName,
-                        nested.Destination,
-                        ShortName(nested.SourceElementType),
-                        nested.DestinationElementName));
+                    kept.Add(nested);
                     continue;
                 }
 
-                // The property itself sits at level 2 of this map — level 1 being the map's own
-                // destination — so it needs a budget of at least 2 to exist at all.
-                if (map.MaxDepth < 2)
-                {
-                    context.ReportDiagnostic(Diagnostic.Create(
-                        DiagnosticDescriptors.NestedPropertyTooDeep,
-                        map.Location?.ToLocation(),
-                        map.DestinationName,
-                        nested.Destination,
-                        2,
-                        map.MaxDepth));
-                    continue;
-                }
-
-                int budget = map.MaxDepth - 1;
-                int nestedReach = ReachOf(nestedMap, byKey, reach, new HashSet<string>(StringComparer.Ordinal));
-
-                // The nested graph runs past what is left, so this property is left unset.
-                //
-                // Dropping the WHOLE property rather than mapping it partly is what keeps the two
-                // paths honest. A nested map is emitted as a CALL to the mapper's own Map method,
-                // and a call cannot be asked to stop halfway — Map<ProductDto> fills a ProductDto
-                // the way the Product map says to. Filling it in memory and cutting it short in
-                // the projection would make the same declaration mean two different things.
-                //
-                // This is also what makes a loop terminate: DTOs that point back at each other
-                // have a reach that never fits any budget, so the loop is cut here rather than
-                // followed. SM0012 says where, and .Ignore records the decision permanently.
-                if (nestedReach > budget)
-                {
-                    context.ReportDiagnostic(Diagnostic.Create(
-                        DiagnosticDescriptors.NestedPropertyTooDeep,
-                        map.Location?.ToLocation(),
-                        map.DestinationName,
-                        nested.Destination,
-                        nestedReach + 1,
-                        map.MaxDepth));
-                    continue;
-                }
-
-                kept.Add(nested);
+                context.ReportDiagnostic(Diagnostic.Create(
+                    DiagnosticDescriptors.NoMapForNestedProperty,
+                    map.Location?.ToLocation(),
+                    map.DestinationName,
+                    nested.Destination,
+                    ShortName(nested.SourceElementType),
+                    nested.DestinationElementName));
             }
 
-            resolved.Add(map.WithNested(kept.ToImmutable()));
+            validated[map.Key] = map.WithNested(kept.ToImmutable());
+        }
+
+        // PASS 2 — find loops, and cut the edge that closes each one so the generated file still
+        // compiles. The build is failing anyway; emitting code that recurses forever on top of
+        // that would bury the real message under a stack overflow at test time.
+        var cut = new HashSet<string>(StringComparer.Ordinal);
+        var reported = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (MapModel map in validated.Values.OrderBy(m => m.Key, StringComparer.Ordinal))
+            FindCycles(context, map, validated, new List<(string Key, NestedProperty Via)>(), cut, reported);
+
+        if (cut.Count == 0)
+            return validated.Values.ToImmutableArray();
+
+        var resolved = ImmutableArray.CreateBuilder<MapModel>(maps.Length);
+
+        foreach (MapModel map in maps)
+        {
+            MapModel current = validated[map.Key];
+
+            resolved.Add(current.WithNested(current.NestedProperties
+                .Where(nested => !cut.Contains(current.Key + "|" + nested.Destination))
+                .ToImmutableArray()));
         }
 
         return resolved.ToImmutable();
     }
 
     /// <summary>
-    /// How many levels one map reaches, counting itself as 1 — capped by its own
-    /// <c>MaxDepth</c>, because a map never generates deeper than it was told to.
+    /// Walks the nesting graph depth-first looking for an edge that leads back to a map already on
+    /// the path — which is exactly what a loop is.
     ///
-    /// <paramref name="onPath"/> is what makes this terminate on a cyclic graph. A map already
-    /// on the current path is reported as reaching its own limit, which is the largest answer it
-    /// could ever have; that is enough for every caller, which only ever asks whether the reach
-    /// FITS in a budget.
+    /// <paramref name="path"/> is the chain of maps currently being followed and the property each
+    /// step came through, so when a loop closes it can be described the way the developer wrote it
+    /// (<c>BrandDto.Products -> ProductDto.Brand -> BrandDto</c>) rather than as a set of type
+    /// names with no indication of which property to remove.
     /// </summary>
-    private static int ReachOf(
+    private static void FindCycles(
+        SourceProductionContext context,
         MapModel map,
         Dictionary<string, MapModel> byKey,
-        Dictionary<string, int> cache,
-        HashSet<string> onPath)
+        List<(string Key, NestedProperty Via)> path,
+        HashSet<string> cut,
+        HashSet<string> reported)
     {
-        if (cache.TryGetValue(map.Key, out int cached))
-            return cached;
-
-        if (!onPath.Add(map.Key))
-            return map.MaxDepth;
-
-        int deepest = 1;
-
         foreach (NestedProperty nested in map.NestedProperties)
         {
-            if (!byKey.TryGetValue(nested.Key, out MapModel? nestedMap))
+            if (cut.Contains(map.Key + "|" + nested.Destination))
                 continue;
 
-            deepest = Math.Max(deepest, 1 + ReachOf(nestedMap, byKey, cache, onPath));
+            if (!byKey.TryGetValue(nested.Key, out MapModel? child))
+                continue;
 
-            if (deepest >= map.MaxDepth)
+            int closes = path.FindIndex(step => string.Equals(step.Key, nested.Key, StringComparison.Ordinal));
+            bool loops = closes >= 0 || string.Equals(nested.Key, map.Key, StringComparison.Ordinal);
+
+            if (loops)
             {
-                deepest = map.MaxDepth;
-                break;
+                // Cut it first: the same loop is reachable from every map on it, and without this
+                // the walk would keep rediscovering it.
+                cut.Add(map.Key + "|" + nested.Destination);
+
+                if (reported.Add(nested.Key + "|" + map.Key + "|" + nested.Destination))
+                {
+                    context.ReportDiagnostic(Diagnostic.Create(
+                        DiagnosticDescriptors.CircularNesting,
+                        map.Location?.ToLocation(),
+                        DescribeLoop(path, closes, map, nested, child),
+                        nested.Destination));
+                }
+
+                continue;
             }
+
+            path.Add((map.Key, nested));
+            FindCycles(context, child, byKey, path, cut, reported);
+            path.RemoveAt(path.Count - 1);
         }
+    }
 
-        onPath.Remove(map.Key);
+    /// <summary>
+    /// Spells a loop out as the properties it is made of, e.g.
+    /// <c>BrandDto.Products -> ProductDto.Brand -> BrandDto</c>.
+    /// </summary>
+    private static string DescribeLoop(
+        List<(string Key, NestedProperty Via)> path,
+        int closes,
+        MapModel map,
+        NestedProperty nested,
+        MapModel child)
+    {
+        var parts = new List<string>();
 
-        // Only a result reached without a cycle on the path is worth keeping: one computed while
-        // a loop was being broken is an answer about that path, not about the map.
-        if (onPath.Count == 0)
-            cache[map.Key] = deepest;
+        for (int i = Math.Max(closes, 0); i < path.Count; i++)
+            parts.Add(ShortName(path[i].Key.Split('>').Last()) + "." + path[i].Via.Destination);
 
-        return deepest;
+        parts.Add(map.DestinationName + "." + nested.Destination);
+        parts.Add(child.DestinationName);
+
+        return string.Join(" -> ", parts);
     }
 
     /// <summary>
@@ -1616,7 +1568,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                     if (wroteMember)
                         sb.AppendLine();
 
-                    AppendProjectionMember(sb, indent, model, map);
+                    AppendProjectionMember(sb, indent, map);
                     wroteMember = true;
                 }
 
@@ -1840,15 +1792,16 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     private static string NestedValueExpression(NestedProperty nested, string parameter)
     {
         string access = $"{parameter}.{nested.Source}";
+        string call = $"Map<{nested.DestinationElementType}>";
 
         if (nested.CollectionBuilder is not null)
         {
             return $"global::ShiftMapper.ValueConverter.{nested.CollectionBuilder}" +
                    $"<{nested.SourceElementType}, {nested.DestinationElementType}>" +
-                   $"({access}, item => Map<{nested.DestinationElementType}>(item))";
+                   $"({access}, item => {call}(item))";
         }
 
-        string mapped = $"Map<{nested.DestinationElementType}>({access})";
+        string mapped = $"{call}({access})";
 
         // Map throws on a null source — deliberately, since asking to map nothing is a mistake
         // worth hearing about. A nested property is the one place where null is ordinary data:
@@ -1869,13 +1822,15 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// without this emitter recursing: that expression already has its own customizations spliced
     /// in and its own children grafted on, so one level of grafting brings the whole subtree.
     /// </summary>
-    private static string NestedBindingExpression(MapperClassModel model, NestedProperty nested)
+    private static string NestedBindingExpression(NestedProperty nested)
     {
         string builder = nested.CollectionBuilder is null ? "null" : $"\"{nested.CollectionBuilder}\"";
 
+        string projection = ProjectionMemberName(nested.SourceElementType, nested.DestinationElementType);
+
         return $"new global::ShiftMapper.MapCustomizations.NestedBinding(" +
                $"\"{nested.Destination}\", \"{nested.Source}\", " +
-               $"{ProjectionMemberName(nested.SourceElementType, nested.DestinationElementType)}, {builder})";
+               $"{projection}, {builder})";
     }
 
     /// <summary>
@@ -1993,7 +1948,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// composing the parts is what produces that without this emitter ever recursing: each
     /// property is complete on its own, so referring to one brings its whole subtree along.
     /// </summary>
-    private static void AppendProjectionMember(StringBuilder sb, string indent, MapperClassModel model, MapModel map)
+    private static void AppendProjectionMember(StringBuilder sb, string indent, MapModel map)
     {
         string name = ProjectionMemberName(map.SourceType, map.DestinationType);
         string type = $"global::System.Linq.Expressions.Expression<global::System.Func<{map.SourceType}, {map.DestinationType}>>";
@@ -2012,7 +1967,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         foreach (NestedProperty nested in map.NestedProperties)
         {
             sb.AppendLine(",");
-            sb.Append($"{indent}            {NestedBindingExpression(model, nested)}");
+            sb.Append($"{indent}            {NestedBindingExpression(nested)}");
         }
 
         sb.AppendLine(");");

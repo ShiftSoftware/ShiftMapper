@@ -252,28 +252,24 @@ public partial class AppMapper : ShiftMapperBase
         // IReadOnlyList<string>. Declare it as an InvoiceLineDto[] or a HashSet<InvoiceLineDto>
         // and it still maps; only the per-element step is different.
         //
-        // The whole graph comes with it, four levels down and bounded by MaxDepth (10 by default,
-        // and settable per map or for the whole mapper through ConfigureDefaults):
+        // The whole graph comes with it, all four levels, and there is nothing to configure:
         //
-        //   InvoiceDto        level 1
-        //     .Lines          level 2   InvoiceLine -> InvoiceLineDto
-        //       .Product      level 3   Product     -> ProductDto
-        //         .Brand      level 4   Brand       -> BrandDto
-        //         .Stock      level 4   Stock       -> StockDto
+        //   InvoiceDto
+        //     .Lines          InvoiceLine -> InvoiceLineDto
+        //       .Product      Product     -> ProductDto
+        //         .Brand      Brand       -> BrandDto
+        //         .Stock      Stock       -> StockDto
         //
-        // Try CreateMap<Invoice, InvoiceDto>(o => o.MaxDepth = 2) to watch it stop. The whole
-        // property is left unset and the build says so — informational, because stopping is what
-        // a limit is for:
+        // THE ONLY RULE IS THAT A MAP EXISTS. Mapping goes as deep as the maps you declared, and
+        // stops there. No depth setting, no default to remember, nothing that quietly changes
+        // what a response contains.
         //
-        //   info SM0012: 'InvoiceDto.Lines' needs 4 levels and this map allows 2, so it is left
-        //                unmapped. Raise MaxDepth, or .Ignore(d => d.Lines) to say so deliberately
-        //
-        // Info messages need `dotnet build -v d`, or the IDE's Error List with them switched on.
-        //
-        // The property is dropped ENTIRELY rather than filled part of the way, and that is
-        // deliberate. In memory a nested object is mapped by CALLING the mapper's own Map method,
-        // which cannot be asked to stop halfway; filling it in memory while cutting it short in
-        // the projection would make one declaration mean two different things.
+        // The one graph that cannot work that way is a LOOP — a BrandDto holding ProductDtos
+        // that each hold a BrandDto. There is no depth at which that is finished, and generated
+        // code following it would call itself until the stack ran out, which in .NET takes the
+        // whole process down rather than failing one request. So it is a build ERROR (SM0012)
+        // naming the loop, and .Ignore on the back-reference is the one-line fix — which also
+        // records which of the two types is the view and which is the thing being viewed.
         CreateMap<Invoice, InvoiceDto>()
 
             // THE VALUE YOU WRITE HERE IS AN EXPRESSION, NOT A METHOD.
@@ -331,6 +327,13 @@ public partial class AppMapper : ShiftMapperBase
     }
 
     /// <summary>Proof that constructor injection works on this class.</summary>
+    // MAPPER-WIDE DEFAULTS. Override this to change a setting for every map at once, instead of
+    // repeating it on each CreateMap. It is an OVERRIDE, a member of the class — not something
+    // you call from the constructor, where it would compile and do nothing.
+    //
+    // protected override void ConfigureDefaults(MapOptions options)
+    //     => options.Matching = PropertyMatching.CaseSensitive;
+
     public string InjectedDependency => _logger.GetType().Name;
 
     /// <summary>

@@ -80,11 +80,16 @@ Content-Type: application/json
 GET {{HostAddress}}/api/invoices
 Accept: application/json
 
-### 3. Get a single invoice by id — full graph
+### 3. Get a single invoice by id — HAND-WRITTEN, not ShiftMapper.
+#     This one calls invoice.ToDto() from MappingExtensions.cs, the by-hand mapper kept as the
+#     "before" picture. It is here to compare against 3b, and it does NOT react to anything you
+#     change in AppMapper.cs — not MaxDepth, not Ignore, not MapFrom. If an edit to the mapper
+#     seems to have had no effect, check you are looking at 3b (/mapped) and not this one.
 GET {{HostAddress}}/api/invoices/1
 Accept: application/json
 
-### 3b. IGNORE + MAPFROM, mapped in memory — mapper.Map<InvoiceDto>(invoice)
+### 3b. SHIFTMAPPER, in memory — mapper.Map<InvoiceDto>(invoice). Note the /mapped suffix:
+#     request 3 above is the hand-written one, this is the generated one.
 #     Invoice -> InvoiceDto does not map by name alone, and AppMapper settles both problems
 #     on one chain:
 #
@@ -209,31 +214,24 @@ Accept: application/json
 #     be mapped YET, where a null in the response would be indistinguishable from a null in
 #     the database. Both ways out are one line, and both leave the decision written down.
 #
-#     (b) MaxDepth STOPS THE GRAPH, and defaults to 10.
+#     (b) A LOOP IS A BUILD ERROR.
 #
-#     Set it on this map:
+#     There is no depth setting. Mapping goes as deep as the maps you declared and stops —
+#     which is the whole rule, and the reason nothing here needs configuring.
 #
-#         CreateMap<Invoice, InvoiceDto>(o => o.MaxDepth = 2)
+#     The one graph that cannot work that way is one that points back at itself. Give BrandDto
+#     a List<ProductDto> Products (ProductDto already has a BrandDto Brand) and the build
+#     stops:
 #
-#     Re-run 3c and "lines" comes back empty, because the graph under it needs 4 levels:
+#         error SM0012: nested mapping never finishes — BrandDto.Products ->
+#                       ProductDto.Brand -> BrandDto. Break the loop with
+#                       .Ignore(d => d.Brand) on whichever side is the back-reference.
 #
-#         info SM0012: 'InvoiceDto.Lines' needs 4 levels and this map allows 2, so it is
-#                      left unmapped. Raise MaxDepth, or .Ignore(d => d.Lines) to say so
-#                      deliberately
-#
-#     Informational rather than a warning, because stopping is what a limit is for — use
-#     `dotnet build -v d` to see it. It sets the same way as case-sensitivity does: on one
-#     CreateMap, on a ReverseMap, or for the whole mapper through ConfigureDefaults.
-#
-#     Note the property is dropped ENTIRELY rather than filled part of the way. In memory a
-#     nested object is mapped by CALLING the mapper's own Map method, which cannot be asked
-#     to stop halfway — so filling it in memory while cutting it short in SQL would make one
-#     declaration mean two different things.
-#
-#     MaxDepth is also what makes DTOs that point back at each other terminate: a BrandDto
-#     holding ProductDtos, each holding a BrandDto, has a graph no limit can finish, so the
-#     loop is cut and SM0012 says where. .Ignore on one side records which is the view and
-#     which is the back-reference.
+#     An error rather than a silent cut, because the alternatives are worse: code that follows
+#     the loop recurses until the stack runs out, and in .NET that kills the process rather
+#     than failing one request. Cutting at some arbitrary depth avoids the crash but makes the
+#     response shape depend on a number nobody chose. So it asks instead, and .Ignore on the
+#     back-reference is one line that also records which side is the view.
 GET {{HostAddress}}/api/invoices/projected
 Accept: application/json
 

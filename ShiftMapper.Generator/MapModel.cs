@@ -27,7 +27,6 @@ internal sealed class MapModel
         ImmutableArray<ConvertedProperty> convertedProperties,
         ImmutableArray<CustomProperty> customProperties,
         ImmutableArray<NestedProperty> nestedProperties,
-        int maxDepth,
         string destinationName,
         LocationInfo? location,
         bool isReverse)
@@ -37,7 +36,6 @@ internal sealed class MapModel
         ConvertedProperties = convertedProperties;
         CustomProperties = customProperties;
         NestedProperties = nestedProperties;
-        MaxDepth = maxDepth;
         DestinationName = destinationName;
         Location = location;
         SourceType = sourceType;
@@ -118,10 +116,6 @@ internal sealed class MapModel
     /// </summary>
     public ImmutableArray<NestedProperty> NestedProperties { get; }
 
-    /// <summary>How many levels of nested objects this map follows. See MapOptions.MaxDepth.</summary>
-    public int MaxDepth { get; }
-
-    /// <summary>Simple name of the destination type, e.g. <c>BrandDto</c>, used in messages.</summary>
     public string DestinationName { get; }
 
     /// <summary>Where the CreateMap call is, so warnings point at the right line.</summary>
@@ -149,5 +143,5 @@ internal sealed class MapModel
         new(SourceType, DestinationType, SourceName, IsSourcePublic, IsDestinationPublic,
             IsSourceValueType, IsDestinationValueType, CanConstructDestination, PropertyNames,
             WritablePropertyNames, UnmappedProperties, ConvertedProperties, CustomProperties,
-            nestedProperties, MaxDepth, DestinationName, Location, IsReverse);
+            nestedProperties, DestinationName, Location, IsReverse);
 }

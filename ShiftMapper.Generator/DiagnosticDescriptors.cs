@@ -255,28 +255,35 @@ internal static class DiagnosticDescriptors
                      "map is declared or the property is explicitly ignored.");
 
     /// <summary>
-    /// SM0012 — the graph goes deeper than <c>MaxDepth</c> allows, so following it stopped.
+    /// SM0012 — the nested maps form a LOOP, so following them would never finish.
     ///
-    /// INFORMATIONAL, because stopping is not a failure — it is what setting a limit asked for.
-    /// It is reported at all because the property arrives unset, and a quietly empty branch of a
-    /// response is the kind of thing that gets discovered in production rather than at build time.
+    /// A <c>BrandDto</c> holding <c>ProductDto</c>s that each hold a <c>BrandDto</c> describes an
+    /// object graph with no bottom. There is no depth at which it is complete, and nothing the
+    /// generator can quietly pick is the right answer.
     ///
-    /// Two situations reach it. Either the graph is genuinely deeper than the limit, in which case
-    /// raising <c>MaxDepth</c> is the answer; or the DTOs point back at each other — a BrandDto
-    /// holding ProductDtos, each holding a BrandDto — in which case no limit is deep enough and
-    /// the answer is <c>.Ignore</c> on one side of the loop, which also says which side is the
-    /// view and which is the back-reference.
+    /// AN ERROR, and specifically an error rather than a truncation, because of what the
+    /// alternatives cost. Generated code that follows the loop calls itself forever, and infinite
+    /// recursion in .NET is a <c>StackOverflowException</c> — which cannot be caught and takes the
+    /// process down rather than failing one request. Cutting the loop at some arbitrary depth
+    /// avoids the crash but replaces it with a response whose shape depends on a number nobody
+    /// chose, which is its own kind of bug.
+    ///
+    /// So the loop is refused, and breaking it is one line: <c>.Ignore</c> on whichever side is
+    /// the back-reference. That is a decision only the developer can make — which of the two types
+    /// is the view and which is the thing being viewed — and writing it down is worth more than
+    /// any default.
     /// </summary>
-    public static readonly DiagnosticDescriptor NestedPropertyTooDeep = new(
+    public static readonly DiagnosticDescriptor CircularNesting = new(
         id: "SM0012",
-        title: "Nested object property is deeper than MaxDepth",
-        messageFormat: "ShiftMapper: '{0}.{1}' needs {2} levels and this map allows {3}, so it is left unmapped. Raise MaxDepth, or .Ignore(d => d.{1}) to say so deliberately.",
+        title: "Nested object mapping is circular",
+        messageFormat: "ShiftMapper: nested mapping never finishes — {0}. Break the loop with .Ignore(d => d.{1}) on whichever side is the back-reference.",
         category: Category,
-        defaultSeverity: DiagnosticSeverity.Info,
+        defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true,
-        description: "Following nested objects stopped at MaxDepth and this property sits past it, so " +
-                     "it keeps whatever its own initializer gave it. Raise the limit to go further, or " +
-                     "ignore the property to record the decision where a reader will see it.");
+        description: "These maps nest each other in a loop, so there is no depth at which the graph is " +
+                     "complete. Generated code that followed it would recurse until the stack ran out, " +
+                     "so the build stops instead. Ignore the property that points back and the rest of " +
+                     "the graph maps as normal.");
 
     /// <summary>SM0005 — the whole mapper produced nothing.</summary>
     public static readonly DiagnosticDescriptor MapperSkipped = new(
