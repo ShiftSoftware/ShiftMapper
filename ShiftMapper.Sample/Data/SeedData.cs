@@ -19,7 +19,7 @@ public static class SeedData
     public static void Apply(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<Brand>().HasData(
-            new Brand { Id = 1, Name = "Apple", Country = "United States", FoundedYear = 1976, ISOCode = "US", Tags = ["premium", "mobile", "audio"], ExternalIds = [4_000_000_001L, 4_000_000_002L] },
+            new Brand { Id = 1, Name = "Apple", Country = "United States", FoundedYear = 1976, ISOCode = "US", Tags = ["premium", "mobile", "audio"], ExternalIds = [10_010L, 10_011L] },
             new Brand { Id = 2, Name = "Samsung", Country = "South Korea", FoundedYear = 1938, ISOCode = "KR", Tags = ["mobile", "displays"], ExternalIds = [10_020L] },
             new Brand { Id = 3, Name = "Sony", Country = "Japan", FoundedYear = 1946, ISOCode = "JP", Tags = ["audio", "imaging"], ExternalIds = [10_030L] },
             new Brand { Id = 4, Name = "Dell", Country = "United States", FoundedYear = 1984, ISOCode = "US", Tags = ["computing", "enterprise"], ExternalIds = [10_040L] },

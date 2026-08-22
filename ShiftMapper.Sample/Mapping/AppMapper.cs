@@ -63,10 +63,15 @@ public partial class AppMapper : ShiftMapperBase
         //   ExternalIds = ValueConverter.ToList<long, int>(source.ExternalIds,
         //                     static item => unchecked((int)item))
         //
-        // and that is the problem. Brand 1 is seeded with external id 4000000001, past
-        // int.MaxValue, so GET /api/brands reports -294967295 instead — a different number,
-        // entirely plausible-looking, with nothing in the code to say so and no exception to
-        // mark it. Hence a WARNING rather than a note:
+        // and that is the problem. Any id past int.MaxValue comes back a DIFFERENT number —
+        // 4000000001 reads as -294967295 — entirely plausible-looking, with nothing in the code
+        // to say so and no exception to mark it. Hence a WARNING rather than a note:
+        //
+        // The seeded ids stay inside int range, because BrandDto is now reached by the NESTED
+        // projection four levels down (Invoice -> Lines -> Product -> Brand) and SQL refuses the
+        // overflow rather than wrapping it: "Arithmetic overflow error converting expression to
+        // data type int". Which is worth knowing on its own — the conversion that quietly hands
+        // back the wrong number in C# is a hard error in the database.
         //
         //   warning SM0010: 'BrandDto.ExternalIds' is mapped by converting 'List<long>' to
         //                   'List<int>', which cannot hold every value the source can
@@ -97,12 +102,13 @@ public partial class AppMapper : ShiftMapperBase
         // entity's, and an IEnumerable that was really an unevaluated EF query arrives as data
         // rather than as a promise that re-runs on a disposed DbContext.
         //
-        // and what it refuses, reporting SM0002 rather than guessing: nested objects
-        // (Product -> ProductDto) and collections OF them (List<Product> -> List<ProductDto>,
-        // which needs nested mapping and is the next thing to build), moving a reference
-        // around by up-casting or boxing, your own EXPLICIT operators — and four pairs C#
-        // would convert quite happily, because their answer would not come from the two types
-        // alone:
+        // and what it refuses, reporting SM0002 rather than guessing: moving a reference around
+        // by up-casting or boxing, your own EXPLICIT operators — and four pairs C# would convert
+        // quite happily, because their answer would not come from the two types alone:
+        //
+        // Nested objects (Product -> ProductDto) and collections of them are no longer on that
+        // list — they are MAPPED now, as long as a CreateMap exists for the pair, and a build
+        // ERROR when one does not. See CreateMap<Product, ProductDto>() below.
         //
         //   DateTime -> DateTimeOffset   the offset would come from the server's time zone
         //   DateTimeOffset -> DateTime   drop the offset, or convert to UTC? both defensible
@@ -168,7 +174,19 @@ public partial class AppMapper : ShiftMapperBase
         //   unmapped because 'StockDto' has no readable property named 'Products'
         //
         // Note it points at .ReverseMap(), not at CreateMap — that is the code responsible.
-        CreateMap<Stock, StockDto>().ReverseMap();
+        CreateMap<Stock, StockDto>()
+            .ReverseMap()
+
+            // IGNORE, ON THE REVERSE MAP. Everything chained before .ReverseMap() configures the
+            // forward direction and everything after it configures the way back, and the types
+            // enforce that on their own: ReverseMap returns MapExpression<StockDto, Stock>, so
+            // here `d` IS a Stock and naming a StockDto property would not compile.
+            //
+            // Stock has a Products collection that StockDto does not, which used to be reported
+            // as SM0006 every build. It is not an oversight — a DTO being a subset of its entity
+            // is the whole reason to reverse a map — so this says as much, once, and the message
+            // stops. Delete the line and it comes back.
+            .Ignore(d => d.Products);
 
         // This one does NOT map cleanly, on purpose — it is the live demonstration of the
         // build-time warnings. Building produces exactly two, both pointing at this line:
@@ -184,7 +202,35 @@ public partial class AppMapper : ShiftMapperBase
         // The map is still generated for the three properties that DO line up (Id,
         // Quantity, UnitPrice) — ShiftMapper does what it can and tells you the rest.
         // Delete this line and the warnings go away.
-        CreateMap<InvoiceLine, InvoiceLineDto>();
+        CreateMap<InvoiceLine, InvoiceLineDto>()
+
+            // LineTotal has no counterpart on the entity — it is quantity times price, worked out
+            // rather than stored. This is also the customization that proves nesting composes:
+            // this map is used NESTED inside Invoice -> InvoiceDto below, and this MapFrom still
+            // applies there, in memory AND in SQL, without the outer map knowing about it.
+            .MapFrom(d => d.LineTotal, s => s.Quantity * s.UnitPrice);
+
+        // ------------------------------------------------------------------
+        // NESTED OBJECTS — one line, and a whole graph maps.
+        // ------------------------------------------------------------------
+        //
+        // ProductDto has a BrandDto and a StockDto on it, and this single CreateMap fills both,
+        // because maps for them are declared above. That is the rule: a nested object is mapped
+        // when a CreateMap exists for its pair, and it is a BUILD ERROR when one does not.
+        //
+        // Delete this line to see it. InvoiceLineDto.Product then has nowhere to go, and the
+        // build stops with SM0011 rather than quietly handing back a null Product:
+        //
+        //   error SM0011: 'InvoiceLineDto.Product' needs a map from 'Product' to 'ProductDto'.
+        //                 Add CreateMap<Product, ProductDto>() to this mapper, or
+        //                 .Ignore(d => d.Product) to leave it unmapped on purpose
+        //
+        // An ERROR rather than a warning, and it is the only one ShiftMapper reports. Every other
+        // message describes a property left unmapped, which may well be deliberate. This one
+        // describes a property that CANNOT be mapped yet, where a null in the response would look
+        // exactly like a null in the database. Both ways out are one line, and both leave the
+        // decision written down where the next reader will find it.
+        CreateMap<Product, ProductDto>();
 
         // ------------------------------------------------------------------
         // IGNORE and MAPFROM — telling ShiftMapper what the conventions cannot work out.
@@ -193,20 +239,42 @@ public partial class AppMapper : ShiftMapperBase
         // Invoice -> InvoiceDto does not map by name alone. Two of the DTO's properties have no
         // counterpart on the entity at all, and they need opposite answers:
         //
-        //   Total   is a number the entity never stores — it is the lines added up.
-        //   Lines   is a collection of a DIFFERENT type (InvoiceLine -> InvoiceLineDto), which is
-        //           nested mapping, and ShiftMapper does not do that yet.
+        //   Total   is a number the entity never stores — it is the lines added up, so MapFrom
+        //           supplies it.
+        //   Lines   is a COLLECTION OF OBJECTS: List<InvoiceLine> on the entity, and
+        //           IReadOnlyList<InvoiceLineDto> on the DTO. Nothing here mentions it, and it maps
+        //           anyway — the map for the two element types is declared above, which is all
+        //           nesting needs.
         //
-        // Left alone, both would be reported as SM0001 and stay empty. So:
+        // Note that the two collection SHAPES differ as well as the element types, and that is
+        // handled by the same helpers a collection of ints goes through: List<InvoiceLine> fills an
+        // IReadOnlyList<InvoiceLineDto> for exactly the reason List<int> fills an
+        // IReadOnlyList<string>. Declare it as an InvoiceLineDto[] or a HashSet<InvoiceLineDto>
+        // and it still maps; only the per-element step is different.
         //
-        //   MapFrom  supplies a value for Total.
-        //   Ignore   says Lines is deliberately not mapped — the caller fills it in.
+        // The whole graph comes with it, four levels down and bounded by MaxDepth (10 by default,
+        // and settable per map or for the whole mapper through ConfigureDefaults):
         //
-        // Ignore also SILENCES the report for that one property on this one map, which is the
-        // point of it: SM0001 telling you a property you decided to leave alone is unmapped is
-        // exactly the noise you wanted gone. Every other property keeps reporting.
+        //   InvoiceDto        level 1
+        //     .Lines          level 2   InvoiceLine -> InvoiceLineDto
+        //       .Product      level 3   Product     -> ProductDto
+        //         .Brand      level 4   Brand       -> BrandDto
+        //         .Stock      level 4   Stock       -> StockDto
+        //
+        // Try CreateMap<Invoice, InvoiceDto>(o => o.MaxDepth = 2) to watch it stop. The whole
+        // property is left unset and the build says so — informational, because stopping is what
+        // a limit is for:
+        //
+        //   info SM0012: 'InvoiceDto.Lines' needs 4 levels and this map allows 2, so it is left
+        //                unmapped. Raise MaxDepth, or .Ignore(d => d.Lines) to say so deliberately
+        //
+        // Info messages need `dotnet build -v d`, or the IDE's Error List with them switched on.
+        //
+        // The property is dropped ENTIRELY rather than filled part of the way, and that is
+        // deliberate. In memory a nested object is mapped by CALLING the mapper's own Map method,
+        // which cannot be asked to stop halfway; filling it in memory while cutting it short in
+        // the projection would make one declaration mean two different things.
         CreateMap<Invoice, InvoiceDto>()
-            .Ignore(d => d.Lines)
 
             // THE VALUE YOU WRITE HERE IS AN EXPRESSION, NOT A METHOD.
             //

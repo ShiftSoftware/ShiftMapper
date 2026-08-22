@@ -1,4 +1,4 @@
-; Unshipped analyzer release
+﻿; Unshipped analyzer release
 ; Rules that exist in the current build but have not been published in a release yet.
 ; https://github.com/dotnet/roslyn-analyzers/blob/main/src/Microsoft.CodeAnalysis.Analyzers/ReleaseTrackingAnalyzers.Help.md
 
@@ -16,3 +16,5 @@ SM0007 | ShiftMapper | Warning | Destination property matches several source pro
 SM0008 | ShiftMapper | Info | Destination property is mapped through a conversion that can lose information
 SM0009 | ShiftMapper | Info | Destination property is mapped by parsing text at runtime
 SM0010 | ShiftMapper | Warning | Destination property is mapped through a conversion that can change the value
+SM0011 | ShiftMapper | Error | Nested object property has no CreateMap registered for its types
+SM0012 | ShiftMapper | Info | Nested object property is left unmapped because it is deeper than MaxDepth

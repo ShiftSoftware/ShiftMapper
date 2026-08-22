@@ -74,9 +74,15 @@ public static class InvoiceEndpoints
         // reached completely differently.
         group.MapGet("/{id:int}/mapped", async (int id, AppDbContext db, AppMapper mapper) =>
         {
+            // EVERY Include here is load-bearing, and that is the honest cost of mapping in
+            // memory: the map can only copy what you remembered to fetch. Drop the ThenInclude
+            // for Brand and the DTO's brand arrives null — not because the map is wrong, but
+            // because there was nothing in memory to map. /projected has no Includes at all,
+            // because EF works out the joins from the map itself.
             var invoice = await db.Invoices
                 .AsNoTracking()
-                .Include(i => i.Lines)
+                .Include(i => i.Lines).ThenInclude(l => l.Product).ThenInclude(p => p.Brand)
+                .Include(i => i.Lines).ThenInclude(l => l.Product).ThenInclude(p => p.Stock)
                 .FirstOrDefaultAsync(i => i.Id == id);
 
             return invoice is null

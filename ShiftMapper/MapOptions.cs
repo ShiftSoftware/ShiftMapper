@@ -1,4 +1,4 @@
-namespace ShiftMapper;
+﻿namespace ShiftMapper;
 
 /// <summary>
 /// The knobs for one map, handed to you inside <c>CreateMap</c> and <c>ReverseMap</c>:
@@ -32,4 +32,37 @@ public sealed class MapOptions
     /// Setting it here overrides both, for this map only.
     /// </summary>
     public PropertyMatching Matching { get; set; } = PropertyMatching.CaseInsensitive;
+
+    /// <summary>
+    /// How many levels of NESTED OBJECTS this map will follow. Defaults to 10.
+    ///
+    /// The map itself is level 1, the objects hanging off it are level 2, and so on:
+    ///
+    /// <code>
+    /// InvoiceDto            level 1   the map you asked for
+    ///   .Lines              level 2   InvoiceLine -> InvoiceLineDto
+    ///     .Product          level 3   Product     -> ProductDto
+    ///       .Brand          level 4   Brand       -> BrandDto
+    /// </code>
+    ///
+    /// Nesting needs no configuration to work — a nested object is mapped as long as you have
+    /// declared a <c>CreateMap</c> for it, and it is a BUILD ERROR if you have not. This
+    /// setting is the stop, not the switch.
+    ///
+    /// WHAT IT IS FOR. Entities point back at their parents: a <c>Brand</c> has
+    /// <c>Products</c>, and each <c>Product</c> has a <c>Brand</c>. Where the DTOs mirror
+    /// that, following the graph never finishes. Most DTOs do not — they are written as a
+    /// one-way view and simply leave the back-reference out, which is why 10 is a generous
+    /// default that ordinary code never reaches.
+    ///
+    /// When a graph IS deeper than this, ShiftMapper stops at the limit, leaves the property
+    /// at that level unset, and says so at build time with SM0012 — informational, because
+    /// stopping is what you asked for by setting a limit. To stop somewhere specific instead,
+    /// name it: <c>.Ignore(d =&gt; d.Products)</c> reads as a decision rather than as a budget
+    /// running out.
+    ///
+    /// Defaults to whatever the mapper's <see cref="ShiftMapperBase.ConfigureDefaults"/> sets,
+    /// and to 10 when it sets nothing. Setting it here overrides both, for this map only.
+    /// </summary>
+    public int MaxDepth { get; set; } = 10;
 }

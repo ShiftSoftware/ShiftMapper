@@ -17,10 +17,13 @@ Accept: application/json
 #     holds a List<string>, the DTO an IReadOnlyList<string>, and the DTO gets its OWN copy
 #     rather than a read-only window onto the list EF is still tracking.
 #
-#     And "externalIds" on brand 1, which is the point of SM0010. The database holds
-#     4000000001 and 4000000002; the DTO declares them int, so the response reads
-#     -294967295 and -294967294. It mapped, it did not throw, and the numbers are wrong.
-#     That is why SM0010 is a build WARNING rather than an informational note.
+#     And "externalIds", which is the point of SM0010: the entity holds them as long and the
+#     DTO declares them int, so any id past int.MaxValue maps to a different number — no
+#     exception, nothing in the code to say so. That is why SM0010 is a build WARNING.
+#     The seeded ids sit inside int range, because the nested projection (3c) reaches this
+#     same BrandDto four levels down and SQL REFUSES the overflow rather than wrapping it:
+#     "Arithmetic overflow error converting expression to data type int". Worth knowing —
+#     the conversion that quietly returns the wrong number in C# is a hard error in SQL.
 GET {{HostAddress}}/api/brands
 Accept: application/json
 
@@ -96,17 +99,21 @@ Accept: application/json
 #       "number"  carries the "IQ/" prefix, which came from IInvoiceNumbering. That service
 #                 was injected into AppMapper's CONSTRUCTOR and used inside the expression;
 #                 nothing else was needed to make DI work in a custom mapping.
-#       "lines"   empty. Ignore said so — nested mapping is not built yet, and rather than
-#                 report SM0001 for a property nobody expected to be filled, the map leaves
-#                 it alone and stays quiet at build time.
+#       "lines"   the whole graph, four levels deep, and NOTHING in the CreateMap chain
+#                 mentions it. A nested object maps as soon as a CreateMap exists for its
+#                 pair — Invoice -> InvoiceDto pulls in InvoiceLine -> InvoiceLineDto, which
+#                 pulls in Product -> ProductDto, which pulls in Brand and Stock.
 #
-#     On a fresh database invoice 1 comes back as:
+#     Look inside one line and you can see every earlier feature still working, four levels
+#     down: "lineTotal" is that map's OWN MapFrom, "foundedYear" is a string over the
+#     entity's int, and "bayNumbers" is IReadOnlyList<string> over a List<int>.
 #
-#         { "id": 1, "number": "IQ/INV-2026-0001", "customerName": "Ahmed Karim",
-#           "customerEmail": "ahmed.karim@example.com", "issuedAt": "2026-01-12T10:30:00",
-#           "total": 1596.00, "lines": [] }
+#     The Lines property is an IReadOnlyList<InvoiceLineDto> over a List<InvoiceLine>, so the
+#     collection SHAPE is converted too — the same helpers a List<int> goes through.
 #
-#     Compare with request 3 above, which builds the same DTO by hand with a full graph.
+#     Every Include in this endpoint is load-bearing: an in-memory map can only copy what was
+#     fetched, so dropping the ThenInclude for Brand makes the DTO's brand arrive null.
+#     Request 3c needs no Includes at all.
 GET {{HostAddress}}/api/invoices/1/mapped
 Accept: application/json
 
@@ -115,9 +122,10 @@ Accept: application/json
 #     happens: 3b loads whole invoices and maps them in C#; this hands the map itself to EF,
 #     which turns it into the SELECT list.
 #
-#     So the database reads only the columns InvoiceDto uses and adds the lines up itself —
-#     no Include, no lines loaded, no graph thrown away afterwards. Check "total" against
-#     request 3b: same answer, reached without loading a single InvoiceLine.
+#     So the database reads only the columns InvoiceDto uses, adds the lines up itself, and
+#     works out every join from the map — there is not one Include in the endpoint, and the
+#     nested graph still arrives complete. Compare the JSON with 3b: identical, four levels
+#     down, from a declaration that never mentions Product, Brand or Stock.
 #
 #     ProjectTo returns an IQueryable, so the endpoint's OrderByDescending and Take(20) are
 #     part of that same one query rather than filtering in memory afterwards.
@@ -140,15 +148,22 @@ Accept: application/json
 #         FROM [Invoices] AS [i]
 #         ORDER BY [i].[IssuedAt] DESC
 #
-#     Three things worth pointing at:
+#     The nesting turns this into a much bigger query, and every part of it is worth a look:
 #
-#       * The MapFrom for Total became a CORRELATED SUBQUERY. The expression you wrote in
-#         AppMapper.cs was not copied as text — it stayed a live Expression<> tree and was
-#         spliced into the projection, which is why EF could translate it at all.
-#       * @_numbering_Prefix IS THE INJECTED SERVICE. EF read _numbering.Prefix once in C#,
-#         saw that it does not depend on any row, and sent it as a parameter — named after
-#         your field. That is constructor injection reaching all the way into SQL.
-#       * [Lines] is absent. Ignore removed it from the projection entirely.
+#       * LEFT JOIN to a subquery over [InvoiceLines], then INNER JOIN [Products], [Brands]
+#         and [Stocks]. FOUR LEVELS OF JOINS that no endpoint asked for — EF worked them out
+#         from the map, because the whole nested graph reached it as ONE expression.
+#       * CAST([i1].[Quantity] AS decimal(18,2)) * [i1].[UnitPrice] — that is InvoiceLineDto's
+#         own MapFrom for LineTotal, composed in from the NESTED map. A customization two
+#         levels down still translates.
+#       * CONVERT(varchar(11), [b].[FoundedYear]) — the int-to-string conversion, at level 4.
+#       * OUTER APPLY OPENJSON(...) for Tags, ExternalIds and BayNumbers, the primitive
+#         collections, also at level 4.
+#       * The MapFrom for Total is still its own CORRELATED SUBQUERY, and
+#         @_numbering_Prefix is still the injected service arriving as a parameter named
+#         after your field.
+#
+#     One round trip for all of it.
 GET {{HostAddress}}/api/invoices/projected?sql=true
 Accept: text/plain
 
@@ -176,6 +191,49 @@ Accept: text/plain
 #
 #     ShiftMapper predicts none of this — it generates the projection and lets EF answer, so
 #     you get what today's EF can do rather than what ShiftMapper assumed when it was written.
+GET {{HostAddress}}/api/invoices/projected
+Accept: application/json
+
+### 3f. THE TWO RULES NESTING ADDS — both are edits rather than requests, both worth doing.
+#
+#     (a) A NESTED OBJECT WITH NO MAP IS A BUILD ERROR.
+#
+#     Comment out CreateMap<Product, ProductDto>() in AppMapper.cs and the build STOPS:
+#
+#         error SM0011: 'InvoiceLineDto.Product' needs a map from 'Product' to 'ProductDto'.
+#                       Add CreateMap<Product, ProductDto>() to this mapper, or
+#                       .Ignore(d => d.Product) to leave it unmapped on purpose
+#
+#     This is the only ERROR ShiftMapper reports. Every other message describes a property
+#     left unmapped, which may well be on purpose; this one describes a property that cannot
+#     be mapped YET, where a null in the response would be indistinguishable from a null in
+#     the database. Both ways out are one line, and both leave the decision written down.
+#
+#     (b) MaxDepth STOPS THE GRAPH, and defaults to 10.
+#
+#     Set it on this map:
+#
+#         CreateMap<Invoice, InvoiceDto>(o => o.MaxDepth = 2)
+#
+#     Re-run 3c and "lines" comes back empty, because the graph under it needs 4 levels:
+#
+#         info SM0012: 'InvoiceDto.Lines' needs 4 levels and this map allows 2, so it is
+#                      left unmapped. Raise MaxDepth, or .Ignore(d => d.Lines) to say so
+#                      deliberately
+#
+#     Informational rather than a warning, because stopping is what a limit is for — use
+#     `dotnet build -v d` to see it. It sets the same way as case-sensitivity does: on one
+#     CreateMap, on a ReverseMap, or for the whole mapper through ConfigureDefaults.
+#
+#     Note the property is dropped ENTIRELY rather than filled part of the way. In memory a
+#     nested object is mapped by CALLING the mapper's own Map method, which cannot be asked
+#     to stop halfway — so filling it in memory while cutting it short in SQL would make one
+#     declaration mean two different things.
+#
+#     MaxDepth is also what makes DTOs that point back at each other terminate: a BrandDto
+#     holding ProductDtos, each holding a BrandDto, has a graph no limit can finish, so the
+#     loop is cut and SM0012 says where. .Ignore on one side records which is the view and
+#     which is the back-reference.
 GET {{HostAddress}}/api/invoices/projected
 Accept: application/json
 

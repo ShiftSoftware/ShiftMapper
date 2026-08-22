@@ -145,6 +145,9 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         bool? classDefaultCaseSensitive = ReadClassDefaultCaseSensitive(
             context.SemanticModel.Compilation, classSymbol, baseClass, mapOptions, cancellationToken);
 
+        int? classDefaultMaxDepth = ReadClassDefaultMaxDepth(
+            context.SemanticModel.Compilation, classSymbol, baseClass, mapOptions, cancellationToken);
+
         var maps = ImmutableArray.CreateBuilder<MapModel>();
         var seen = new HashSet<string>();
 
@@ -166,6 +169,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                          mapExpression,
                          mapOptions,
                          classDefaultCaseSensitive,
+                         classDefaultMaxDepth,
                          cancellationToken))
             {
                 if (seen.Add(map.Key))
@@ -537,6 +541,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         INamedTypeSymbol? mapExpression,
         INamedTypeSymbol? mapOptions,
         bool? classDefaultCaseSensitive,
+        int? classDefaultMaxDepth,
         CancellationToken cancellationToken)
     {
         TypeSyntax sourceSyntax = createMap.TypeArgumentList.Arguments[0];
@@ -548,6 +553,13 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             semanticModel, FirstArgument(invocation), mapOptions, cancellationToken);
 
         bool caseSensitive = declared ?? classDefaultCaseSensitive ?? false;
+
+        // Same precedence, same three levels: this map's lambda, then ConfigureDefaults, then
+        // ShiftMapper's own default.
+        int? declaredDepth = ReadMaxDepth(
+            semanticModel, FirstArgument(invocation), mapOptions, cancellationToken);
+
+        int maxDepth = declaredDepth ?? classDefaultMaxDepth ?? DefaultMaxDepth;
 
         // Ask the compiler: what type does the text "Brand" actually refer to here?
         if (semanticModel.GetSymbolInfo(sourceSyntax, cancellationToken).Symbol is not INamedTypeSymbol sourceType)
@@ -568,6 +580,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             LocationInfo.CreateFrom(createMap),
             isReverse: false,
             caseSensitive: caseSensitive,
+            maxDepth: maxDepth,
             refinements: chain.Forward);
 
         if (chain.ReverseMapName is null)
@@ -591,6 +604,9 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         bool? reverseDeclared = ReadCaseSensitive(
             semanticModel, FirstArgument(FindInvocation(chain.ReverseMapName)), mapOptions, cancellationToken);
 
+        int? reverseDepth = ReadMaxDepth(
+            semanticModel, FirstArgument(FindInvocation(chain.ReverseMapName)), mapOptions, cancellationToken);
+
         yield return BuildMapModel(
             semanticModel.Compilation,
             destinationType,
@@ -598,6 +614,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             LocationInfo.CreateFrom(chain.ReverseMapName) ?? LocationInfo.CreateFrom(createMap),
             isReverse: true,
             caseSensitive: reverseDeclared ?? caseSensitive,
+            maxDepth: reverseDepth ?? maxDepth,
             refinements: chain.Reverse);
     }
 
@@ -614,6 +631,9 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// <summary>Underlying value of <c>PropertyMatching.CaseSensitive</c>.</summary>
     private const int CaseSensitiveValue = 1;
 
+    /// <summary>How deep nested mapping goes when nothing says otherwise. Matches MapOptions.</summary>
+    private const int DefaultMaxDepth = 10;
+
     /// <summary>
     /// Reads the options a configure lambda sets, e.g. the <c>o =&gt; o.Matching = ...</c> in
     /// <c>CreateMap&lt;A, B&gt;(o =&gt; o.Matching = PropertyMatching.CaseSensitive)</c>.
@@ -626,23 +646,55 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// work — the expression body above and a block body setting several options — and it is
     /// the same routine that reads ConfigureDefaults. Future options plug in here by name.
     /// </summary>
+    private static int? ReadMaxDepth(
+        SemanticModel semanticModel,
+        SyntaxNode? scope,
+        INamedTypeSymbol? mapOptions,
+        CancellationToken cancellationToken)
+    {
+        object? value = ReadOption(semanticModel, scope, mapOptions, "MaxDepth", cancellationToken);
+
+        // A limit below 1 would mean "do not even generate the map you asked for", which is not
+        // something a number should be able to say. Anything silly is treated as unset.
+        return value is int depth && depth >= 1 ? depth : null;
+    }
+
     private static bool? ReadCaseSensitive(
         SemanticModel semanticModel,
         SyntaxNode? scope,
         INamedTypeSymbol? mapOptions,
         CancellationToken cancellationToken)
     {
+        object? value = ReadOption(semanticModel, scope, mapOptions, "Matching", cancellationToken);
+
+        return value is int matching ? matching == CaseSensitiveValue : null;
+    }
+
+    /// <summary>
+    /// Reads one option out of a configure lambda by NAME, shared by every setting.
+    ///
+    /// Scanning for ASSIGNMENTS rather than for one particular shape is what lets both lambda
+    /// forms work — a one-line expression body and a block setting several options — and is why
+    /// a new option costs one call here rather than a parser of its own.
+    /// </summary>
+    private static object? ReadOption(
+        SemanticModel semanticModel,
+        SyntaxNode? scope,
+        INamedTypeSymbol? mapOptions,
+        string optionName,
+        CancellationToken cancellationToken)
+    {
         if (scope is null || mapOptions is null)
             return null;
 
-        bool? result = null;
+        object? result = null;
 
         foreach (AssignmentExpressionSyntax assignment in scope.DescendantNodesAndSelf().OfType<AssignmentExpressionSyntax>())
         {
             // The name gets it looked at; the symbol decides. Assigning some other object's
             // Matching property must not be mistaken for configuring a map.
             if (semanticModel.GetSymbolInfo(assignment.Left, cancellationToken).Symbol is not IPropertySymbol property
-                || property.Name != "Matching"
+                || property.Name != optionName
                 || !SymbolEqualityComparer.Default.Equals(property.ContainingType, mapOptions))
             {
                 continue;
@@ -652,8 +704,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
             // A non-constant expression cannot be read at compile time. Leaving it unset
             // falls back to the documented default rather than guessing.
-            if (value is { HasValue: true, Value: int matching })
-                result = matching == CaseSensitiveValue;
+            if (value.HasValue)
+                result = value.Value;
         }
 
         return result;
@@ -673,6 +725,41 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         INamedTypeSymbol? mapOptions,
         CancellationToken cancellationToken)
     {
+        object? value = ReadClassDefault(
+            compilation, classSymbol, baseClass, mapOptions, "Matching", cancellationToken);
+
+        return value is int matching ? matching == CaseSensitiveValue : null;
+    }
+
+    /// <summary>The mapper-wide <c>MaxDepth</c>, when ConfigureDefaults sets one.</summary>
+    private static int? ReadClassDefaultMaxDepth(
+        Compilation compilation,
+        INamedTypeSymbol classSymbol,
+        INamedTypeSymbol baseClass,
+        INamedTypeSymbol? mapOptions,
+        CancellationToken cancellationToken)
+    {
+        object? value = ReadClassDefault(
+            compilation, classSymbol, baseClass, mapOptions, "MaxDepth", cancellationToken);
+
+        return value is int depth && depth >= 1 ? depth : null;
+    }
+
+    /// <summary>
+    /// Reads one mapper-wide default out of an overridden <c>ConfigureDefaults</c>.
+    ///
+    /// Resolved from the class SYMBOL, not from the declaration we happen to be looking at,
+    /// so it does not matter which file of a partial mapper the override sits in. That also
+    /// means the body may live in a different syntax tree, hence the second semantic model.
+    /// </summary>
+    private static object? ReadClassDefault(
+        Compilation compilation,
+        INamedTypeSymbol classSymbol,
+        INamedTypeSymbol baseClass,
+        INamedTypeSymbol? mapOptions,
+        string optionName,
+        CancellationToken cancellationToken)
+    {
         if (mapOptions is null)
             return null;
 
@@ -686,7 +773,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                 SyntaxNode syntax = reference.GetSyntax(cancellationToken);
                 SemanticModel model = compilation.GetSemanticModel(syntax.SyntaxTree);
 
-                bool? value = ReadCaseSensitive(model, syntax, mapOptions, cancellationToken);
+                object? value = ReadOption(model, syntax, mapOptions, optionName, cancellationToken);
                 if (value is not null)
                     return value;
             }
@@ -718,6 +805,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         LocationInfo? location,
         bool isReverse,
         bool caseSensitive,
+        int maxDepth,
         Refinements refinements)
     {
         PropertyAnalysis analysis = FindMatchingProperties(
@@ -737,6 +825,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             unmappedProperties: analysis.Unmapped,
             convertedProperties: analysis.Converted,
             customProperties: refinements.Customized,
+            nestedProperties: analysis.Nested,
+            maxDepth: maxDepth,
             destinationName: destinationType.Name,
             location: location,
             isReverse: isReverse);
@@ -749,12 +839,14 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             ImmutableArray<PropertyPair> all,
             ImmutableArray<PropertyPair> writable,
             ImmutableArray<UnmappedProperty> unmapped,
-            ImmutableArray<ConvertedProperty> converted)
+            ImmutableArray<ConvertedProperty> converted,
+            ImmutableArray<NestedProperty> nested)
         {
             All = all;
             Writable = writable;
             Unmapped = unmapped;
             Converted = converted;
+            Nested = nested;
         }
 
         /// <summary>Settable while constructing, init-only included.</summary>
@@ -768,6 +860,12 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
         /// <summary>Mapped properties whose type had to be converted on the way.</summary>
         public ImmutableArray<ConvertedProperty> Converted { get; }
+
+        /// <summary>
+        /// Properties holding objects to MAP. Still unresolved at this point — see
+        /// <see cref="NestedProperty"/> for why the verdict has to wait.
+        /// </summary>
+        public ImmutableArray<NestedProperty> Nested { get; }
     }
 
     /// <summary>
@@ -835,6 +933,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         var writable = ImmutableArray.CreateBuilder<PropertyPair>();
         var unmapped = ImmutableArray.CreateBuilder<UnmappedProperty>();
         var converted = ImmutableArray.CreateBuilder<ConvertedProperty>();
+        var nested = ImmutableArray.CreateBuilder<NestedProperty>();
         var seen = new HashSet<string>();
 
         foreach (IPropertySymbol destinationProperty in GetProperties(destinationType))
@@ -922,6 +1021,26 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
             if (conversion is null)
             {
+                // No CONVERSION — but the two sides may be objects to MAP rather than values to
+                // convert, which is a different question with a different answer. It cannot be
+                // settled here: it depends on whether a CreateMap for the pair exists somewhere
+                // in the mapper, possibly further down the constructor or in another file. So the
+                // pair is recorded and the verdict left to the resolve pass.
+                if (ConversionResolver.DescribeComplex(compilation, sourceProperty.Type, destinationProperty.Type) is { } complex)
+                {
+                    nested.Add(new NestedProperty(
+                        destination: destinationProperty.Name,
+                        source: sourceProperty.Name,
+                        sourceElementType: complex.Source.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+                        destinationElementType: complex.Destination.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+                        destinationElementName: complex.Destination.Name,
+                        collectionBuilder: complex.Builder,
+                        destinationCollectionType: destinationProperty.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+                        sourceIsNullable: !sourceProperty.Type.IsValueType,
+                        canSetAfterConstruction: !setter.IsInitOnly));
+                    continue;
+                }
+
                 unmapped.Add(new UnmappedProperty(
                     destinationProperty.Name,
                     UnmappedReason.NotConvertible,
@@ -957,7 +1076,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         }
 
         return new PropertyAnalysis(
-            all.ToImmutable(), writable.ToImmutable(), unmapped.ToImmutable(), converted.ToImmutable());
+            all.ToImmutable(), writable.ToImmutable(), unmapped.ToImmutable(), converted.ToImmutable(),
+            nested.ToImmutable());
     }
 
     /// <summary>Readable type name for warning messages, e.g. <c>List&lt;InvoiceLine&gt;</c>.</summary>
@@ -1077,7 +1197,10 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                 }
             }
 
-            ImmutableArray<MapModel> maps = merged.ToImmutable();
+            // Nested objects can only be settled now. Whether ProductDto can be filled depends
+            // on whether a CreateMap<Product, ProductDto> exists ANYWHERE in this mapper, and
+            // until the parts are merged there is no "anywhere" to look in.
+            ImmutableArray<MapModel> maps = ResolveNested(context, merged.ToImmutable());
 
             // Tell the developer about everything we could not map. These show up in the
             // Error List / build output exactly like compiler warnings, because that is
@@ -1092,6 +1215,167 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                 first.IsPublic,
                 maps));
         }
+    }
+
+    /// <summary>
+    /// Settles every nested object property, now that all of the mapper's maps are known.
+    ///
+    /// Each candidate has one of three fates:
+    ///
+    ///   * NO MAP for its pair — SM0011, a build ERROR. The developer adds one line, either the
+    ///     CreateMap or an Ignore. This is the only error ShiftMapper reports, because it is the
+    ///     only case where doing nothing would silently produce a null that looks like data.
+    ///
+    ///   * PAST MaxDepth — SM0012, informational, and the property is dropped. Reached either by
+    ///     a genuinely deep graph or by DTOs that point back at each other, which no limit can
+    ///     finish.
+    ///
+    ///   * OTHERWISE it is kept, and the emitter fills it.
+    ///
+    /// The depth arithmetic is what the rest of this method is about. A nested map is emitted in
+    /// memory as a CALL to the mapper's own Map method, which is small, keeps each map in one
+    /// place, and picks up that map's own MapFrom customizations for free. But a call is
+    /// all-or-nothing: <c>Map&lt;ProductDto&gt;</c> fills a ProductDto the way the Product map
+    /// says to, and cannot be asked to stop halfway. So delegating is only correct when the
+    /// nested map's own REACH fits in the budget left at that point. When it does not, the
+    /// emitter writes the body out inline instead and cuts it at the limit — which is also what
+    /// keeps a cycle finite, since a cyclic map's reach never fits.
+    /// </summary>
+    private static ImmutableArray<MapModel> ResolveNested(
+        SourceProductionContext context,
+        ImmutableArray<MapModel> maps)
+    {
+        if (maps.All(map => map.NestedProperties.IsEmpty))
+            return maps;
+
+        var byKey = new Dictionary<string, MapModel>(StringComparer.Ordinal);
+        foreach (MapModel map in maps)
+            byKey[map.Key] = map;
+
+        // Reach is expensive enough to be worth remembering, and is asked for repeatedly: every
+        // map that nests a ProductDto asks the same question about it.
+        var reach = new Dictionary<string, int>(StringComparer.Ordinal);
+
+        var resolved = ImmutableArray.CreateBuilder<MapModel>(maps.Length);
+
+        foreach (MapModel map in maps)
+        {
+            if (map.NestedProperties.IsEmpty)
+            {
+                resolved.Add(map);
+                continue;
+            }
+
+            var kept = ImmutableArray.CreateBuilder<NestedProperty>();
+
+            foreach (NestedProperty nested in map.NestedProperties)
+            {
+                if (!byKey.TryGetValue(nested.Key, out MapModel? nestedMap))
+                {
+                    context.ReportDiagnostic(Diagnostic.Create(
+                        DiagnosticDescriptors.NoMapForNestedProperty,
+                        map.Location?.ToLocation(),
+                        map.DestinationName,
+                        nested.Destination,
+                        ShortName(nested.SourceElementType),
+                        nested.DestinationElementName));
+                    continue;
+                }
+
+                // The property itself sits at level 2 of this map — level 1 being the map's own
+                // destination — so it needs a budget of at least 2 to exist at all.
+                if (map.MaxDepth < 2)
+                {
+                    context.ReportDiagnostic(Diagnostic.Create(
+                        DiagnosticDescriptors.NestedPropertyTooDeep,
+                        map.Location?.ToLocation(),
+                        map.DestinationName,
+                        nested.Destination,
+                        2,
+                        map.MaxDepth));
+                    continue;
+                }
+
+                int budget = map.MaxDepth - 1;
+                int nestedReach = ReachOf(nestedMap, byKey, reach, new HashSet<string>(StringComparer.Ordinal));
+
+                // The nested graph runs past what is left, so this property is left unset.
+                //
+                // Dropping the WHOLE property rather than mapping it partly is what keeps the two
+                // paths honest. A nested map is emitted as a CALL to the mapper's own Map method,
+                // and a call cannot be asked to stop halfway — Map<ProductDto> fills a ProductDto
+                // the way the Product map says to. Filling it in memory and cutting it short in
+                // the projection would make the same declaration mean two different things.
+                //
+                // This is also what makes a loop terminate: DTOs that point back at each other
+                // have a reach that never fits any budget, so the loop is cut here rather than
+                // followed. SM0012 says where, and .Ignore records the decision permanently.
+                if (nestedReach > budget)
+                {
+                    context.ReportDiagnostic(Diagnostic.Create(
+                        DiagnosticDescriptors.NestedPropertyTooDeep,
+                        map.Location?.ToLocation(),
+                        map.DestinationName,
+                        nested.Destination,
+                        nestedReach + 1,
+                        map.MaxDepth));
+                    continue;
+                }
+
+                kept.Add(nested);
+            }
+
+            resolved.Add(map.WithNested(kept.ToImmutable()));
+        }
+
+        return resolved.ToImmutable();
+    }
+
+    /// <summary>
+    /// How many levels one map reaches, counting itself as 1 — capped by its own
+    /// <c>MaxDepth</c>, because a map never generates deeper than it was told to.
+    ///
+    /// <paramref name="onPath"/> is what makes this terminate on a cyclic graph. A map already
+    /// on the current path is reported as reaching its own limit, which is the largest answer it
+    /// could ever have; that is enough for every caller, which only ever asks whether the reach
+    /// FITS in a budget.
+    /// </summary>
+    private static int ReachOf(
+        MapModel map,
+        Dictionary<string, MapModel> byKey,
+        Dictionary<string, int> cache,
+        HashSet<string> onPath)
+    {
+        if (cache.TryGetValue(map.Key, out int cached))
+            return cached;
+
+        if (!onPath.Add(map.Key))
+            return map.MaxDepth;
+
+        int deepest = 1;
+
+        foreach (NestedProperty nested in map.NestedProperties)
+        {
+            if (!byKey.TryGetValue(nested.Key, out MapModel? nestedMap))
+                continue;
+
+            deepest = Math.Max(deepest, 1 + ReachOf(nestedMap, byKey, cache, onPath));
+
+            if (deepest >= map.MaxDepth)
+            {
+                deepest = map.MaxDepth;
+                break;
+            }
+        }
+
+        onPath.Remove(map.Key);
+
+        // Only a result reached without a cycle on the path is worth keeping: one computed while
+        // a loop was being broken is an answer about that path, not about the map.
+        if (onPath.Count == 0)
+            cache[map.Key] = deepest;
+
+        return deepest;
     }
 
     /// <summary>
@@ -1327,6 +1611,15 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
             if (creatable.Count > 0)
             {
+                foreach (MapModel map in creatable)
+                {
+                    if (wroteMember)
+                        sb.AppendLine();
+
+                    AppendProjectionMember(sb, indent, model, map);
+                    wroteMember = true;
+                }
+
                 if (wroteMember)
                     sb.AppendLine();
 
@@ -1439,6 +1732,10 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             {
                 sb.AppendLine($"{indent}                {custom.Name} = {CustomValueExpression(map, custom)}(source),");
             }
+            foreach (NestedProperty nested in map.NestedProperties)
+            {
+                sb.AppendLine($"{indent}                {nested.Destination} = {NestedValueExpression(nested, "source")},");
+            }
             sb.AppendLine($"{indent}            }};");
             sb.AppendLine();
             sb.AppendLine($"{indent}            return (TDestination)(object)destination;");
@@ -1486,6 +1783,14 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             sb.AppendLine($"{indent}        destination.{custom.Name} = {CustomValueExpression(map, custom)}(source);");
         }
 
+        foreach (NestedProperty nested in map.NestedProperties)
+        {
+            if (!nested.CanSetAfterConstruction)
+                continue;
+
+            sb.AppendLine($"{indent}        destination.{nested.Destination} = {NestedValueExpression(nested, "source")};");
+        }
+
         sb.AppendLine();
         sb.AppendLine($"{indent}        return destination;");
         sb.AppendLine($"{indent}    }}");
@@ -1505,6 +1810,106 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// </summary>
     private static string CustomValueExpression(MapModel map, CustomProperty custom) =>
         $"Customizations.Value<{map.SourceType}, {map.DestinationType}, {custom.PropertyType}>(\"{custom.Name}\")";
+
+    /// <summary>
+    /// The C# that fills one nested object property in the IN-MEMORY maps.
+    ///
+    /// It CALLS the mapper's own Map method rather than writing the nested map out:
+    ///
+    /// <code>
+    /// Product = source.Product is null ? null : Map&lt;ProductDto&gt;(source.Product),
+    ///
+    /// Lines   = global::ShiftMapper.ValueConverter.ToList&lt;InvoiceLine, InvoiceLineDto&gt;(
+    ///               source.Lines, item =&gt; Map&lt;InvoiceLineDto&gt;(item)),
+    /// </code>
+    ///
+    /// Delegating is what keeps each map defined in exactly one place. It also means the nested
+    /// map's own <c>MapFrom</c> customizations apply here without this emitter knowing they exist
+    /// — <c>Map&lt;ProductDto&gt;</c> is the Product map, whatever that map has been told to do.
+    ///
+    /// It is only correct because the resolve pass already checked that the nested map fits
+    /// inside this one's remaining depth. A call cannot be asked to stop halfway, so a nested
+    /// graph that would run past MaxDepth is dropped there rather than delegated to from here.
+    ///
+    /// The collection form goes through the SAME <c>ValueConverter</c> helpers a collection of
+    /// ints uses, which is what makes <c>List&lt;InvoiceLine&gt;</c> fill an
+    /// <c>IReadOnlyList&lt;InvoiceLineDto&gt;</c> for the same reason <c>List&lt;int&gt;</c> fills
+    /// an <c>IReadOnlyList&lt;string&gt;</c>. The lambda is NOT <c>static</c> here, unlike the one
+    /// for simple elements: it calls an instance method, so it has to capture the mapper.
+    /// </summary>
+    private static string NestedValueExpression(NestedProperty nested, string parameter)
+    {
+        string access = $"{parameter}.{nested.Source}";
+
+        if (nested.CollectionBuilder is not null)
+        {
+            return $"global::ShiftMapper.ValueConverter.{nested.CollectionBuilder}" +
+                   $"<{nested.SourceElementType}, {nested.DestinationElementType}>" +
+                   $"({access}, item => Map<{nested.DestinationElementType}>(item))";
+        }
+
+        string mapped = $"Map<{nested.DestinationElementType}>({access})";
+
+        // Map throws on a null source — deliberately, since asking to map nothing is a mistake
+        // worth hearing about. A nested property is the one place where null is ordinary data:
+        // an optional relationship, or one that simply was not Included.
+        return nested.SourceIsNullable ? $"{access} is null ? null : {mapped}" : mapped;
+    }
+
+    /// <summary>
+    /// The <c>NestedBinding</c> the generated projection hands to <c>Compose</c> for one nested
+    /// property.
+    ///
+    /// The projection cannot delegate the way the in-memory map does. EF has to see the whole
+    /// thing as one expression to turn it into one SELECT; a call to another method is opaque to
+    /// it, and it would fall back to loading entities and running the map in C#.
+    ///
+    /// So the nested map's own composed projection is passed in and grafted into the parent's
+    /// initializer at runtime. Passing the COMPOSED one is what makes this work at any depth
+    /// without this emitter recursing: that expression already has its own customizations spliced
+    /// in and its own children grafted on, so one level of grafting brings the whole subtree.
+    /// </summary>
+    private static string NestedBindingExpression(MapperClassModel model, NestedProperty nested)
+    {
+        string builder = nested.CollectionBuilder is null ? "null" : $"\"{nested.CollectionBuilder}\"";
+
+        return $"new global::ShiftMapper.MapCustomizations.NestedBinding(" +
+               $"\"{nested.Destination}\", \"{nested.Source}\", " +
+               $"{ProjectionMemberName(nested.SourceElementType, nested.DestinationElementType)}, {builder})";
+    }
+
+    /// <summary>
+    /// The name of the generated property holding one map's composed projection.
+    ///
+    /// Each map gets one so that a nested map can be REFERRED to by the maps above it, which is
+    /// what lets a projection be assembled from the parts rather than written out in full at
+    /// every level.
+    /// </summary>
+    private static string ProjectionMemberName(string sourceType, string destinationType) =>
+        "ShiftMapperProjection_" + Identifier(sourceType) + "_To_" + Identifier(destinationType);
+
+    /// <summary>
+    /// Just the type's own name, for a message a developer reads. SM0011 suggests a line to
+    /// TYPE, and nobody types the namespace when a using directive already covers it.
+    /// </summary>
+    private static string ShortName(string fullyQualifiedName)
+    {
+        string readable = Readable(fullyQualifiedName);
+        int lastDot = readable.LastIndexOf('.');
+
+        return lastDot < 0 ? readable : readable.Substring(lastDot + 1);
+    }
+
+    /// <summary>Turns a fully qualified type name into something usable as an identifier.</summary>
+    private static string Identifier(string fullyQualifiedName)
+    {
+        var sb = new StringBuilder(fullyQualifiedName.Length);
+
+        foreach (char c in Readable(fullyQualifiedName))
+            sb.Append(char.IsLetterOrDigit(c) ? c : '_');
+
+        return sb.ToString();
+    }
 
     /// <summary>
     /// Writes <c>IQueryable&lt;TDestination&gt; ProjectTo&lt;TDestination&gt;(IQueryable&lt;Brand&gt;)</c>
@@ -1552,11 +1957,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
             sb.AppendLine($"{indent}        if (typeof(TDestination) == typeof({map.DestinationType}))");
             sb.AppendLine($"{indent}        {{");
-
-            AppendProjectionExpression(sb, $"{indent}            ", map);
-
-            sb.AppendLine();
-            sb.AppendLine($"{indent}            return (global::System.Linq.IQueryable<TDestination>)(object)global::System.Linq.Queryable.Select(source, projection);");
+            sb.AppendLine($"{indent}            return (global::System.Linq.IQueryable<TDestination>)(object)global::System.Linq.Queryable.Select(");
+            sb.AppendLine($"{indent}                source, {ProjectionMemberName(map.SourceType, map.DestinationType)});");
             sb.AppendLine($"{indent}        }}");
             sb.AppendLine();
         }
@@ -1568,35 +1970,52 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     }
 
     /// <summary>
-    /// Writes the projection expression for one map, and runs it through
-    /// <c>Customizations.Compose</c>.
+    /// Writes the property holding one map's projection, ready for EF to translate.
     ///
-    /// Customized properties are absent from what is written here — the generator knows which
-    /// ones you wrote a <c>MapFrom</c> for and never emits a convention for them — and Compose
-    /// adds them from the expression trees the compiler built in your file. Splicing rather than
-    /// calling is the point: the result is still one member initializer, which is the only shape
-    /// EF can read as a SELECT list.
+    /// <code>
+    /// private Expression&lt;Func&lt;Invoice, InvoiceDto&gt;&gt; ShiftMapperProjection_Invoice_To_InvoiceDto =&gt;
+    ///     Customizations.Compose&lt;Invoice, InvoiceDto&gt;(
+    ///         source =&gt; new InvoiceDto { Id = source.Id, /* conventions only */ },
+    ///         new NestedBinding("Lines", "Lines", ShiftMapperProjection_InvoiceLine_To_InvoiceLineDto, "ToList"));
+    /// </code>
+    ///
+    /// Three kinds of property meet here, and only the first is written out literally:
+    ///
+    ///   * CONVENTIONS, in their query spelling — <c>{0}.ToString()</c> where the in-memory map
+    ///     would call a ValueConverter method no database can run.
+    ///   * MapFrom customizations, absent from the text and spliced in by Compose from the
+    ///     expression trees the compiler built in the developer's own file.
+    ///   * NESTED objects, absent from the text and grafted in by Compose from the nested map's
+    ///     OWN projection property.
+    ///
+    /// That last one is why each map gets a property instead of the projection being built inside
+    /// ProjectTo. A projection has to reach EF as one expression it can read all the way down, and
+    /// composing the parts is what produces that without this emitter ever recursing: each
+    /// property is complete on its own, so referring to one brings its whole subtree along.
     /// </summary>
-    private static void AppendProjectionExpression(StringBuilder sb, string indent, MapModel map)
+    private static void AppendProjectionMember(StringBuilder sb, string indent, MapperClassModel model, MapModel map)
     {
-        bool composed = map.CustomProperties.Length > 0;
+        string name = ProjectionMemberName(map.SourceType, map.DestinationType);
+        string type = $"global::System.Linq.Expressions.Expression<global::System.Func<{map.SourceType}, {map.DestinationType}>>";
 
-        sb.AppendLine($"{indent}var projection =");
-
-        if (composed)
-            sb.AppendLine($"{indent}    Customizations.Compose<{map.SourceType}, {map.DestinationType}>(");
-
-        string inner = composed ? $"{indent}        " : $"{indent}    ";
-
-        sb.AppendLine($"{inner}(global::System.Linq.Expressions.Expression<global::System.Func<{map.SourceType}, {map.DestinationType}>>)");
-        sb.AppendLine($"{inner}(source => new {map.DestinationType}");
-        sb.AppendLine($"{inner}{{");
+        sb.AppendLine($"{indent}    /// <summary>The {map.SourceName} to {map.DestinationName} map, as one expression EF can translate.</summary>");
+        sb.AppendLine($"{indent}    private {type} {name} =>");
+        sb.AppendLine($"{indent}        Customizations.Compose<{map.SourceType}, {map.DestinationType}>(");
+        sb.AppendLine($"{indent}            source => new {map.DestinationType}");
+        sb.AppendLine($"{indent}            {{");
 
         foreach (PropertyPair property in map.PropertyNames)
-            sb.AppendLine($"{inner}    {property.Destination} = {property.QueryValueExpression("source")},");
+            sb.AppendLine($"{indent}                {property.Destination} = {property.QueryValueExpression("source")},");
 
-        sb.Append($"{inner}}})");
-        sb.AppendLine(composed ? ");" : ";");
+        sb.Append($"{indent}            }}");
+
+        foreach (NestedProperty nested in map.NestedProperties)
+        {
+            sb.AppendLine(",");
+            sb.Append($"{indent}            {NestedBindingExpression(model, nested)}");
+        }
+
+        sb.AppendLine(");");
     }
 
     /// <summary>Writes <c>db.Brands.ProjectTo&lt;BrandDto&gt;(mapper)</c>, forwarding to the instance.</summary>

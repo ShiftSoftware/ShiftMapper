@@ -249,6 +249,97 @@ internal static class ConversionResolver
     /// throws — the decimal conversions ignore the checked context entirely — and writing it
     /// there would promise a truncation that never happens.
     /// </summary>
+    /// <summary>
+    /// Describes a pair of properties whose values are OBJECTS ShiftMapper maps, rather than
+    /// values it converts — <c>Product</c> to <c>ProductDto</c>, or <c>List&lt;Product&gt;</c> to
+    /// <c>IReadOnlyList&lt;ProductDto&gt;</c>.
+    ///
+    /// This runs only after <see cref="Resolve"/> has declined, so anything a conversion could
+    /// have handled has already been handled. What is left is the case the conversion rules
+    /// deliberately refuse: two class types that are not the same and have no conversion between
+    /// them, which is exactly the shape of an entity and its DTO.
+    ///
+    /// Returning a description rather than performing anything is the point. Whether the pair can
+    /// actually be mapped depends on whether a <c>CreateMap</c> for it exists somewhere in the
+    /// mapper, and that is not known until every part of the class has been read. So this answers
+    /// the question it CAN answer — are these two objects, and what shape is the collection — and
+    /// leaves the verdict to the resolve pass.
+    ///
+    /// Returns null when the pair is not object-to-object, in which case the caller reports
+    /// SM0002 exactly as before.
+    /// </summary>
+    public static ComplexPair? DescribeComplex(
+        Compilation compilation,
+        ITypeSymbol sourceType,
+        ITypeSymbol destinationType)
+    {
+        // A single object on both sides.
+        if (IsMappableObject(sourceType) && IsMappableObject(destinationType))
+            return new ComplexPair(sourceType, destinationType, builder: null);
+
+        // A collection on both sides, whose ELEMENTS are objects. The shape is settled by the
+        // same helpers a collection of ints uses, so `List<Product>` fills an
+        // `IReadOnlyList<ProductDto>` for the same reason `List<int>` fills an
+        // `IReadOnlyList<string>` — only the per-element step is different.
+        if (sourceType.SpecialType == SpecialType.System_String
+            || destinationType.SpecialType == SpecialType.System_String)
+        {
+            return null;
+        }
+
+        if (GetElementType(compilation, sourceType) is not ITypeSymbol sourceElement)
+            return null;
+
+        if (GetDestinationShape(compilation, destinationType) is not (string method, ITypeSymbol destinationElement))
+            return null;
+
+        return IsMappableObject(sourceElement) && IsMappableObject(destinationElement)
+            ? new ComplexPair(sourceElement, destinationElement, method)
+            : null;
+    }
+
+    /// <summary>
+    /// Whether a type is the kind of thing a <c>CreateMap</c> could be written for: an ordinary
+    /// class or struct of the developer's own.
+    ///
+    /// The exclusions are what stop this swallowing cases that belong elsewhere. <c>string</c> is
+    /// a class and is emphatically a value here. <c>object</c> and interfaces have no properties
+    /// worth mapping and no single type to construct. Anything in the BCL is out because a
+    /// mapper is for YOUR types — a <c>Uri</c> or a <c>Stream</c> appearing on both sides is a
+    /// reference to carry across, not a graph to copy, and SM0002 says so far more usefully than
+    /// SM0011 demanding a CreateMap for it would.
+    /// </summary>
+    private static bool IsMappableObject(ITypeSymbol type)
+    {
+        if (type.SpecialType != SpecialType.None)
+            return false;
+
+        if (type is not INamedTypeSymbol named || named.TypeKind is not (TypeKind.Class or TypeKind.Struct))
+            return false;
+
+        if (named.IsAbstract || named.IsAnonymousType || named.IsTupleType)
+            return false;
+
+        // Nullable<T> is a struct, but the thing worth mapping is whatever is inside it, and that
+        // has already been unwrapped and offered to the conversion rules.
+        if (named.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T)
+            return false;
+
+        return !IsFrameworkType(named);
+    }
+
+    /// <summary>Whether a type ships with .NET rather than with the developer's project.</summary>
+    private static bool IsFrameworkType(INamedTypeSymbol type)
+    {
+        for (INamespaceSymbol? ns = type.ContainingNamespace; ns is { IsGlobalNamespace: false }; ns = ns.ContainingNamespace)
+        {
+            if (ns.ContainingNamespace is { IsGlobalNamespace: true })
+                return ns.Name is "System" or "Microsoft";
+        }
+
+        return false;
+    }
+
     private static ValueConversion Cast(
         ITypeSymbol destinationType,
         ITypeSymbol sourceCore,
@@ -446,9 +537,16 @@ internal static class ConversionResolver
         // using directives, on purpose — which builds the identical expression tree either way.
         // `static` comes off the lambda too: it is meaningless in a tree, which is data rather
         // than a delegate to cache.
+        // The type arguments are stated for exactly the reason they are stated above, and leaving
+        // them off is a real bug rather than a tidier line. Select infers TResult from what the
+        // LAMBDA returns, so the identity conversion `item => item` over a List<int> filling a
+        // List<long> infers List<int> and the generated file does not compile. Naming both types
+        // makes the destination the compiler's problem instead of the inference algorithm's.
         string queryTemplate = sameElement
             ? $"{LinqType}.{method}({{0}})"
-            : $"{LinqType}.{method}({LinqType}.Select({{0}}, item => {element.ApplyQuery("item")}))";
+            : $"{LinqType}.{method}<{FullName(destinationElement)}>(" +
+              $"{LinqType}.Select<{FullName(sourceElement)}, {FullName(destinationElement)}>" +
+              $"({{0}}, item => {element.ApplyQuery("item")}))";
 
         return new ValueConversion(
             template, CollectionRisk(method, element), CollectionNote(method, element), queryTemplate);
@@ -885,6 +983,34 @@ internal enum ConversionRisk
 
     /// <summary>Text is read at runtime, so bad data throws — reported as SM0009.</summary>
     Parsed,
+}
+
+/// <summary>
+/// Two properties that hold OBJECTS ShiftMapper maps, as opposed to values it converts.
+///
+/// Carries symbols rather than strings because, unlike <see cref="ValueConversion"/>, this never
+/// reaches a cached model — the caller turns it into a <c>NestedProperty</c> immediately.
+/// </summary>
+internal sealed class ComplexPair
+{
+    public ComplexPair(ITypeSymbol source, ITypeSymbol destination, string? builder)
+    {
+        Source = source;
+        Destination = destination;
+        Builder = builder;
+    }
+
+    /// <summary>The object type on the source side — the ELEMENT type for a collection.</summary>
+    public ITypeSymbol Source { get; }
+
+    /// <summary>The object type on the destination side.</summary>
+    public ITypeSymbol Destination { get; }
+
+    /// <summary>
+    /// Which <c>ValueConverter</c> method builds the destination collection, or null when the
+    /// property holds a single object.
+    /// </summary>
+    public string? Builder { get; }
 }
 
 /// <summary>

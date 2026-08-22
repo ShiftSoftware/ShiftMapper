@@ -26,6 +26,8 @@ internal sealed class MapModel
         ImmutableArray<UnmappedProperty> unmappedProperties,
         ImmutableArray<ConvertedProperty> convertedProperties,
         ImmutableArray<CustomProperty> customProperties,
+        ImmutableArray<NestedProperty> nestedProperties,
+        int maxDepth,
         string destinationName,
         LocationInfo? location,
         bool isReverse)
@@ -34,6 +36,8 @@ internal sealed class MapModel
         UnmappedProperties = unmappedProperties;
         ConvertedProperties = convertedProperties;
         CustomProperties = customProperties;
+        NestedProperties = nestedProperties;
+        MaxDepth = maxDepth;
         DestinationName = destinationName;
         Location = location;
         SourceType = sourceType;
@@ -105,6 +109,18 @@ internal sealed class MapModel
     /// </summary>
     public ImmutableArray<CustomProperty> CustomProperties { get; }
 
+    /// <summary>
+    /// Properties holding objects to MAP rather than values to convert.
+    ///
+    /// Unresolved as built — whether each one can actually be filled depends on the maps declared
+    /// elsewhere in the mapper, which is not known until every part of the class has been read.
+    /// <c>ResolveNested</c> replaces this with the settled answer.
+    /// </summary>
+    public ImmutableArray<NestedProperty> NestedProperties { get; }
+
+    /// <summary>How many levels of nested objects this map follows. See MapOptions.MaxDepth.</summary>
+    public int MaxDepth { get; }
+
     /// <summary>Simple name of the destination type, e.g. <c>BrandDto</c>, used in messages.</summary>
     public string DestinationName { get; }
 
@@ -121,4 +137,17 @@ internal sealed class MapModel
 
     /// <summary>Identifies this map so duplicate registrations can be collapsed.</summary>
     public string Key => SourceType + "->" + DestinationType;
+
+    /// <summary>
+    /// The same map with its nested properties settled, produced by the resolve pass.
+    ///
+    /// A new instance rather than a mutation, so the analysis stays immutable — an incremental
+    /// generator hands these to a cache, and a model that changed after the fact would be a
+    /// genuinely difficult bug to find.
+    /// </summary>
+    public MapModel WithNested(ImmutableArray<NestedProperty> nestedProperties) =>
+        new(SourceType, DestinationType, SourceName, IsSourcePublic, IsDestinationPublic,
+            IsSourceValueType, IsDestinationValueType, CanConstructDestination, PropertyNames,
+            WritablePropertyNames, UnmappedProperties, ConvertedProperties, CustomProperties,
+            nestedProperties, MaxDepth, DestinationName, Location, IsReverse);
 }

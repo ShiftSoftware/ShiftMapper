@@ -1,4 +1,4 @@
-using Microsoft.CodeAnalysis;
+﻿using Microsoft.CodeAnalysis;
 
 namespace ShiftMapper.Generator;
 
@@ -212,6 +212,71 @@ internal static class DiagnosticDescriptors
                      "is exact. Outside that range the result is silently wrong rather than rejected, " +
                      "so this is a warning rather than a note: give the destination the source's type, " +
                      "or NoWarn it once you have decided the range is safe.");
+
+    /// <summary>
+    /// SM0011 — a nested object, and no map for it.
+    ///
+    /// The ONLY ERROR in ShiftMapper, and the severity is the point. Every other report here
+    /// describes a property left unmapped, which is a decision the developer may well have made
+    /// on purpose. This one describes a property that cannot be mapped YET — the types line up,
+    /// the intent is obvious, and the only thing missing is one line:
+    ///
+    /// <code>CreateMap&lt;Product, ProductDto&gt;();</code>
+    ///
+    /// A warning would let the build through with the object silently null, and a null nested
+    /// object in a response looks exactly like a null in the database. So it stops the build,
+    /// and there are only ever two ways forward, both of them one line:
+    ///
+    ///   * declare the map, and the property is filled;
+    ///   * <c>.Ignore(d =&gt; d.Product)</c>, and it is deliberately left alone.
+    ///
+    /// Either way, what the map does with that property is written down somewhere a reader can
+    /// find it, which is exactly what a silent skip fails to do.
+    ///
+    /// DECLARING IT MEANS EITHER DIRECTION. A map is a map however it was registered, so a pair
+    /// that exists only because some other map chained <c>ReverseMap()</c> satisfies this just as
+    /// well as its own <c>CreateMap</c>, and no error is reported. The message names both,
+    /// because which one reads better depends on what is already there: a nested
+    /// <c>BrandDto</c> to <c>Brand</c> is usually best filled by adding <c>.ReverseMap()</c> to
+    /// the <c>CreateMap&lt;Brand, BrandDto&gt;</c> already in the file, not by declaring a second
+    /// map pointing the other way.
+    /// </summary>
+    public static readonly DiagnosticDescriptor NoMapForNestedProperty = new(
+        id: "SM0011",
+        title: "Nested object property has no map",
+        messageFormat: "ShiftMapper: '{0}.{1}' needs a map from '{2}' to '{3}'. Add CreateMap<{2}, {3}>(), or CreateMap<{3}, {2}>().ReverseMap(), or .Ignore(d => d.{1}) to leave it unmapped on purpose.",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true,
+        description: "The names match and both sides are objects ShiftMapper could map, but nothing in " +
+                     "this mapper declares the pair — in either direction, since a map registered by " +
+                     "ReverseMap counts the same as one registered by CreateMap. Generating a null here " +
+                     "would be indistinguishable from a null in the data, so the build stops until the " +
+                     "map is declared or the property is explicitly ignored.");
+
+    /// <summary>
+    /// SM0012 — the graph goes deeper than <c>MaxDepth</c> allows, so following it stopped.
+    ///
+    /// INFORMATIONAL, because stopping is not a failure — it is what setting a limit asked for.
+    /// It is reported at all because the property arrives unset, and a quietly empty branch of a
+    /// response is the kind of thing that gets discovered in production rather than at build time.
+    ///
+    /// Two situations reach it. Either the graph is genuinely deeper than the limit, in which case
+    /// raising <c>MaxDepth</c> is the answer; or the DTOs point back at each other — a BrandDto
+    /// holding ProductDtos, each holding a BrandDto — in which case no limit is deep enough and
+    /// the answer is <c>.Ignore</c> on one side of the loop, which also says which side is the
+    /// view and which is the back-reference.
+    /// </summary>
+    public static readonly DiagnosticDescriptor NestedPropertyTooDeep = new(
+        id: "SM0012",
+        title: "Nested object property is deeper than MaxDepth",
+        messageFormat: "ShiftMapper: '{0}.{1}' needs {2} levels and this map allows {3}, so it is left unmapped. Raise MaxDepth, or .Ignore(d => d.{1}) to say so deliberately.",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Info,
+        isEnabledByDefault: true,
+        description: "Following nested objects stopped at MaxDepth and this property sits past it, so " +
+                     "it keeps whatever its own initializer gave it. Raise the limit to go further, or " +
+                     "ignore the property to record the decision where a reader will see it.");
 
     /// <summary>SM0005 — the whole mapper produced nothing.</summary>
     public static readonly DiagnosticDescriptor MapperSkipped = new(

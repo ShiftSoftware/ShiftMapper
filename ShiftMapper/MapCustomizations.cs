@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Linq.Expressions;
 using System.Reflection;
 
@@ -127,7 +127,8 @@ public sealed class MapCustomizations
     /// <see cref="ParameterReplacer"/> rewrites yours to the projection's before binding.
     /// </summary>
     public Expression<Func<TSource, TDestination>> Compose<TSource, TDestination>(
-        Expression<Func<TSource, TDestination>> conventions)
+        Expression<Func<TSource, TDestination>> conventions,
+        params NestedBinding[] nested)
     {
         if (conventions is null)
             throw new ArgumentNullException(nameof(conventions));
@@ -136,7 +137,7 @@ public sealed class MapCustomizations
             .Where(entry => entry.Key.Source == typeof(TSource) && entry.Key.Destination == typeof(TDestination))
             .ToList();
 
-        if (applicable.Count == 0)
+        if (applicable.Count == 0 && nested.Length == 0)
             return conventions;
 
         if (conventions.Body is not MemberInitExpression init)
@@ -167,9 +168,78 @@ public sealed class MapCustomizations
             bindings.Add(Expression.Bind(member, body));
         }
 
+        foreach (NestedBinding child in nested)
+            bindings.Add(Expression.Bind(MemberNamed(typeof(TDestination), child.Member), NestedValue(child, parameter)));
+
         return Expression.Lambda<Func<TSource, TDestination>>(
             Expression.MemberInit(init.NewExpression, bindings), parameter);
     }
+
+    /// <summary>
+    /// Builds the value expression for one nested object property, INLINED into the parent.
+    ///
+    /// Inlining is not an optimisation here, it is the only thing that works. A projection has to
+    /// reach EF as one expression it can read all the way down; a call to another mapping method
+    /// is opaque, and EF would have to load whole entities and run it in C#. So the nested map's
+    /// projection — already composed, so already carrying its own MapFrom customizations and its
+    /// own nested children — is grafted into the parent's initializer.
+    ///
+    /// That composition is what makes depth work without any depth logic here: each nested
+    /// projection was built the same way, so grafting one level in brings the whole subtree with
+    /// it. The generator has already decided which properties are shallow enough to exist.
+    /// </summary>
+    private static Expression NestedValue(NestedBinding child, ParameterExpression parameter)
+    {
+        Expression source = Expression.PropertyOrField(parameter, child.SourceMember);
+
+        if (child.Builder is null)
+        {
+            // A single object. The null guard is what turns an absent related row into a null
+            // DTO rather than an exception — and in SQL it is what a LEFT JOIN already means, so
+            // EF translates the whole conditional rather than running it.
+            Expression body = new ParameterReplacer(child.Projection.Parameters[0], source)
+                .Visit(child.Projection.Body)!;
+
+            return Expression.Condition(
+                Expression.Equal(source, Expression.Constant(null, source.Type)),
+                Expression.Constant(null, child.Projection.ReturnType),
+                body);
+        }
+
+        // A collection. Written as Select followed by the shape the destination wants — the same
+        // pair of calls the compiler would emit for a hand-written correlated projection, which
+        // is exactly why EF recognises it.
+        Type destinationElement = child.Projection.ReturnType;
+        Type sourceElement = child.Projection.Parameters[0].Type;
+
+        Expression select = Expression.Call(
+            typeof(Enumerable), nameof(Enumerable.Select), new[] { sourceElement, destinationElement },
+            source, child.Projection);
+
+        return Expression.Call(
+            typeof(Enumerable), child.Builder, new[] { destinationElement }, select);
+    }
+
+    /// <summary>
+    /// One nested object property, handed to <see cref="Compose{TSource, TDestination}"/> by the
+    /// generated code.
+    ///
+    /// <paramref name="Projection"/> is the nested map's OWN composed projection, which is what
+    /// makes this recursive without any recursion here: whatever that map customizes or nests is
+    /// already inside the expression before it arrives.
+    /// </summary>
+    /// <param name="Member">The destination property to fill.</param>
+    /// <param name="SourceMember">The source property to read.</param>
+    /// <param name="Projection">The nested map's composed projection.</param>
+    /// <param name="Builder">
+    /// The <see cref="Enumerable"/> method that builds the destination collection — ToList,
+    /// ToArray, ToHashSet — or null when the property holds a single object.
+    /// </param>
+    public sealed record NestedBinding(
+        string Member,
+        string SourceMember,
+        LambdaExpression Projection,
+        string? Builder);
 
     /// <summary>
     /// Reads the property name out of a selector such as <c>d =&gt; d.Country</c>.
@@ -228,9 +298,12 @@ public sealed class MapCustomizations
     private sealed class ParameterReplacer : ExpressionVisitor
     {
         private readonly ParameterExpression _from;
-        private readonly ParameterExpression _to;
+        private readonly Expression _to;
 
-        public ParameterReplacer(ParameterExpression from, ParameterExpression to)
+        // The replacement is any expression, not only another parameter. Splicing a MapFrom into
+        // a projection swaps one parameter for another; grafting a nested projection onto its
+        // parent swaps a parameter for a property access such as `source.Product`.
+        public ParameterReplacer(ParameterExpression from, Expression to)
         {
             _from = from;
             _to = to;

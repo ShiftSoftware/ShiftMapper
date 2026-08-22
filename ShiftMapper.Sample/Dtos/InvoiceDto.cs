@@ -15,5 +15,5 @@ public class InvoiceDto
     /// <summary>Sum of every line total on the invoice.</summary>
     public decimal Total { get; set; }
 
-    public List<InvoiceLineDto> Lines { get; set; } = new();
+    public IReadOnlyList<InvoiceLineDto> Lines { get; set; } = [];
 }
