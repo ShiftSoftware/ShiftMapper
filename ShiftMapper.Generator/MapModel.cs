@@ -1,4 +1,4 @@
-using System.Collections.Immutable;
+﻿using System.Collections.Immutable;
 
 namespace ShiftMapper.Generator;
 
@@ -25,6 +25,7 @@ internal sealed class MapModel
         ImmutableArray<PropertyPair> writablePropertyNames,
         ImmutableArray<UnmappedProperty> unmappedProperties,
         ImmutableArray<ConvertedProperty> convertedProperties,
+        ImmutableArray<CustomProperty> customProperties,
         string destinationName,
         LocationInfo? location,
         bool isReverse)
@@ -32,6 +33,7 @@ internal sealed class MapModel
         IsReverse = isReverse;
         UnmappedProperties = unmappedProperties;
         ConvertedProperties = convertedProperties;
+        CustomProperties = customProperties;
         DestinationName = destinationName;
         Location = location;
         SourceType = sourceType;
@@ -94,6 +96,14 @@ internal sealed class MapModel
     /// conversion carries a caveat.
     /// </summary>
     public ImmutableArray<ConvertedProperty> ConvertedProperties { get; }
+
+    /// <summary>
+    /// Properties filled by a <c>MapFrom</c> expression rather than by matching names.
+    ///
+    /// They are NOT in <see cref="PropertyNames"/>: the convention skipped them entirely, so the
+    /// emitter adds them separately, reading the expression out of the mapper's runtime store.
+    /// </summary>
+    public ImmutableArray<CustomProperty> CustomProperties { get; }
 
     /// <summary>Simple name of the destination type, e.g. <c>BrandDto</c>, used in messages.</summary>
     public string DestinationName { get; }

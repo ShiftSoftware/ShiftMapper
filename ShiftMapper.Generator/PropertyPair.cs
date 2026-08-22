@@ -1,4 +1,4 @@
-namespace ShiftMapper.Generator;
+﻿namespace ShiftMapper.Generator;
 
 /// <summary>
 /// One property the generator will copy: which destination property is being filled, which
@@ -12,11 +12,16 @@ namespace ShiftMapper.Generator;
 /// </summary>
 internal sealed class PropertyPair
 {
-    public PropertyPair(string destination, string source, string? conversionTemplate = null)
+    public PropertyPair(
+        string destination,
+        string source,
+        string? conversionTemplate = null,
+        string? queryConversionTemplate = null)
     {
         Destination = destination;
         Source = source;
         ConversionTemplate = conversionTemplate;
+        QueryConversionTemplate = queryConversionTemplate ?? conversionTemplate;
     }
 
     /// <summary>Name as the DESTINATION type declares it — the left side of the assignment.</summary>
@@ -35,6 +40,13 @@ internal sealed class PropertyPair
     /// </summary>
     public string? ConversionTemplate { get; }
 
+    /// <summary>
+    /// The same conversion written for a query projection — see
+    /// <c>ValueConversion.QueryTemplate</c>. Identical to
+    /// <see cref="ConversionTemplate"/> for every conversion that needs no second spelling.
+    /// </summary>
+    public string? QueryConversionTemplate { get; }
+
     /// <summary>True when the two sides are spelled differently, i.e. matched by the case-insensitive fallback.</summary>
     public bool DiffersInCase => !string.Equals(Destination, Source, System.StringComparison.Ordinal);
 
@@ -48,5 +60,13 @@ internal sealed class PropertyPair
         string access = $"{parameter}.{Source}";
 
         return ConversionTemplate is null ? access : ConversionTemplate.Replace("{0}", access);
+    }
+
+    /// <summary><see cref="ValueExpression"/> for the query projection.</summary>
+    public string QueryValueExpression(string parameter)
+    {
+        string access = $"{parameter}.{Source}";
+
+        return QueryConversionTemplate is null ? access : QueryConversionTemplate.Replace("{0}", access);
     }
 }

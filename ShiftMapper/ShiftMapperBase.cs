@@ -1,4 +1,4 @@
-namespace ShiftMapper;
+﻿namespace ShiftMapper;
 
 /// <summary>
 /// Base class for a mapper.
@@ -70,6 +70,21 @@ public abstract class ShiftMapperBase
     internal void SetServices(IServiceProvider services) => _services = services;
 
     /// <summary>
+    /// The expressions handed to <c>MapFrom</c>, kept so they can be used at runtime.
+    ///
+    /// Almost all of the declaration API is compile-time only — the generator reads your
+    /// <c>CreateMap</c> chain and then the calls do nothing. <c>MapFrom</c> cannot work that
+    /// way: it is given an <c>Expression&lt;&gt;</c> tree that the compiler built in YOUR file,
+    /// with your fields captured and your usings resolved, and reusing that tree is far more
+    /// robust than trying to copy your code into the generated file as text. So it survives
+    /// here, and the generated code reads it from this property.
+    ///
+    /// Protected because the generated half of your mapper is the only thing that should touch
+    /// it; that code lives in the same partial class, so protected is enough.
+    /// </summary>
+    protected MapCustomizations Customizations { get; } = new();
+
+    /// <summary>
     /// Declares that you want a map from <typeparamref name="TSource"/> to
     /// <typeparamref name="TDestination"/>. Call it from your constructor.
     ///
@@ -97,7 +112,7 @@ public abstract class ShiftMapperBase
     /// </code>
     /// </param>
     protected MapExpression<TSource, TDestination> CreateMap<TSource, TDestination>(
-        Action<MapOptions>? configure = null) => default;
+        Action<MapOptions>? configure = null) => new(Customizations);
 
     /// <summary>
     /// Sets the defaults every map in THIS mapper starts from. Override it when a whole

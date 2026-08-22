@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using ShiftMapper.Sample.Data;
 using ShiftMapper.Sample.Dtos;
 using ShiftMapper.Sample.Entities;
@@ -35,6 +35,56 @@ public static class InvoiceEndpoints
         .WithName("GetInvoiceById");
 
         // POST /api/invoices  -> create an invoice from a customer + list of (product, quantity).
+        // PROJECTION — the map as a QUERY, instead of as code that runs over loaded objects.
+        //
+        // Compare it with GET / just above. That one asks the database for whole invoices, with
+        // every line and every product and every brand attached, and then maps them in C#. This
+        // one hands the map itself to EF, which turns it into the SELECT list — so the database
+        // reads only the columns InvoiceDto actually uses, adds the lines up itself, and returns
+        // one flat row per invoice.
+        //
+        // Notice what still works AROUND it. ProjectTo returns an IQueryable, so OrderByDescending
+        // and Take below are part of the same single query rather than filtering in memory
+        // afterwards.
+        //
+        // Add ?sql=true to see exactly what EF made of it — including the correlated subquery that
+        // came from .MapFrom(d => d.Total, ...) and the parameter that came from _numbering.Prefix.
+        group.MapGet("/projected", (AppDbContext db, AppMapper mapper, bool sql = false) =>
+        {
+            IQueryable<InvoiceDto> query = db.Invoices
+                .AsNoTracking()
+                .ProjectTo<InvoiceDto>(mapper)
+                .OrderByDescending(i => i.IssuedAt)
+                .Take(20);
+
+            return sql
+                ? Results.Text(query.ToQueryString(), "text/plain")
+                : Results.Ok(query.ToList());
+        })
+        .WithName("GetProjectedInvoices");
+
+        // THE SAME TWO CUSTOMIZATIONS, RUN IN MEMORY.
+        //
+        // /projected hands the map to the database. This one loads an Invoice first and maps it
+        // in C#, and it is worth having both in front of you: ONE declaration in AppMapper feeds
+        // both, because MapFrom keeps the expression rather than a copy of your code.
+        //
+        // In this direction, Total is worked out by the compiled expression over an already
+        // loaded Lines collection, and _numbering.Prefix is just a property read. Same answers,
+        // reached completely differently.
+        group.MapGet("/{id:int}/mapped", async (int id, AppDbContext db, AppMapper mapper) =>
+        {
+            var invoice = await db.Invoices
+                .AsNoTracking()
+                .Include(i => i.Lines)
+                .FirstOrDefaultAsync(i => i.Id == id);
+
+            return invoice is null
+                ? Results.NotFound()
+                : Results.Ok(mapper.Map<InvoiceDto>(invoice));
+        })
+        .WithName("GetMappedInvoiceById");
+
         group.MapPost("/", async (CreateInvoiceRequest request, AppDbContext db) =>
         {
             if (request.Lines is null || request.Lines.Count == 0)

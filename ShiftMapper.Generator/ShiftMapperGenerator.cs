@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
@@ -163,7 +163,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                          context.SemanticModel,
                          invocation,
                          createMap,
-                         FindReverseMapName(context.SemanticModel, invocation, mapExpression, cancellationToken),
+                         mapExpression,
                          mapOptions,
                          classDefaultCaseSensitive,
                          cancellationToken))
@@ -320,22 +320,44 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     }
 
     /// <summary>
-    /// Looks for a <c>ReverseMap()</c> chained onto a CreateMap call and returns the name
-    /// node it was written at — used both as the yes/no answer and as the place to point
-    /// SM0006 at, so the message lands on the <c>.ReverseMap()</c> the developer typed
-    /// rather than on the CreateMap in front of it.
+    /// Walks the whole chain hanging off one <c>CreateMap</c> and reads every refinement written
+    /// on it — <c>Ignore</c>, <c>MapFrom</c>, and <c>ReverseMap</c>.
     ///
-    /// It walks the WHOLE chain rather than only looking one link ahead, so ReverseMap keeps
-    /// working when other refinements are added between it and CreateMap later on.
+    /// <code>
+    /// CreateMap&lt;Brand, BrandDto&gt;()
+    ///     .Ignore(d =&gt; d.ExternalIds)      // forward
+    ///     .MapFrom(d =&gt; d.Country, ...)    // forward
+    ///     .ReverseMap()                       // everything after this is the OTHER map
+    ///     .Ignore(d =&gt; d.Products);        // reverse
+    /// </code>
+    ///
+    /// Position in the chain is what assigns a refinement to a direction, and the C# type system
+    /// already agrees: <c>ReverseMap</c> returns
+    /// <c>MapExpression&lt;TDestination, TSource&gt;</c>, so after it <c>d</c> IS the other type,
+    /// and naming a property of the wrong one is a compile error rather than a silent miss.
+    ///
+    /// Same rule as everywhere else in this generator: a matching NAME gets a call looked at, and
+    /// the bound SYMBOL decides. Some other library's <c>Ignore</c> must not configure our map.
     /// </summary>
-    private static SimpleNameSyntax? FindReverseMapName(
+    private static ChainInfo ReadChain(
         SemanticModel semanticModel,
         InvocationExpressionSyntax createMap,
         INamedTypeSymbol? mapExpression,
+        INamedTypeSymbol sourceType,
+        INamedTypeSymbol destinationType,
         CancellationToken cancellationToken)
     {
+        var forward = new RefinementBuilder();
+        var reverse = new RefinementBuilder();
+
         if (mapExpression is null)
-            return null;
+            return new ChainInfo(null, forward.Build(), reverse.Build());
+
+        SimpleNameSyntax? reverseMapName = null;
+
+        // Before ReverseMap, `d` is the destination; after it, the two have swapped.
+        RefinementBuilder current = forward;
+        INamedTypeSymbol currentDestination = destinationType;
 
         for (SyntaxNode node = createMap; ;)
         {
@@ -343,20 +365,165 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             // it — including <node> being an ARGUMENT of the member access rather than its
             // target, which would be a different expression altogether.
             if (node.Parent is not MemberAccessExpressionSyntax memberAccess || memberAccess.Expression != node)
-                return null;
+                break;
 
             if (memberAccess.Parent is not InvocationExpressionSyntax invocation)
-                return null;
+                break;
 
-            // Same rule as CreateMap: the name gets it looked at, the symbol decides.
-            if (memberAccess.Name.Identifier.ValueText == "ReverseMap"
-                && IsDeclaredOn(semanticModel, invocation, mapExpression, cancellationToken))
+            if (IsDeclaredOn(semanticModel, invocation, mapExpression, cancellationToken))
             {
-                return memberAccess.Name;
+                switch (memberAccess.Name.Identifier.ValueText)
+                {
+                    case "ReverseMap":
+                        // Recorded as the place to point SM0006 at, so the message lands on the
+                        // `.ReverseMap()` the developer typed rather than on the CreateMap in
+                        // front of it. Only the first one switches sides; reversing twice gets
+                        // you back where you started and registers nothing new.
+                        if (reverseMapName is null)
+                        {
+                            reverseMapName = memberAccess.Name;
+                            current = reverse;
+                            currentDestination = sourceType;
+                        }
+
+                        break;
+
+                    case "Ignore":
+                        if (ReadMemberName(semanticModel, invocation, cancellationToken) is { } ignored)
+                            current.Ignored.Add(ignored);
+
+                        break;
+
+                    case "MapFrom":
+                        if (ReadMemberName(semanticModel, invocation, cancellationToken) is { } customized
+                            && DescribeProperty(currentDestination, customized) is { } described)
+                        {
+                            current.Customized.Add(described);
+                        }
+
+                        break;
+                }
             }
 
             node = invocation;
         }
+
+        return new ChainInfo(reverseMapName, forward.Build(), reverse.Build());
+    }
+
+    /// <summary>
+    /// Reads the property name out of a selector argument such as the <c>d =&gt; d.Country</c> in
+    /// <c>Ignore(d =&gt; d.Country)</c>.
+    ///
+    /// Resolved through the SYMBOL rather than by reading the identifier text, so it is the
+    /// property the compiler bound to — and half-written code that does not bind yet contributes
+    /// nothing, instead of a name that means nothing.
+    /// </summary>
+    private static string? ReadMemberName(
+        SemanticModel semanticModel,
+        InvocationExpressionSyntax invocation,
+        CancellationToken cancellationToken)
+    {
+        if (invocation.ArgumentList.Arguments.Count == 0)
+            return null;
+
+        if (invocation.ArgumentList.Arguments[0].Expression is not LambdaExpressionSyntax lambda)
+            return null;
+
+        // `d => d.Country` — the body is the member access we want. A block-bodied lambda is
+        // not a property selector, and the runtime half rejects it for the same reason.
+        if (lambda.Body is not MemberAccessExpressionSyntax memberAccess)
+            return null;
+
+        return semanticModel.GetSymbolInfo(memberAccess, cancellationToken).Symbol is IPropertySymbol property
+            ? property.Name
+            : null;
+    }
+
+    /// <summary>
+    /// Looks a customized property up on the destination and records what the emitter needs: its
+    /// fully qualified TYPE, which becomes the last type argument of the generated
+    /// <c>Customizations.Value&lt;...&gt;</c> call, and how it can be ASSIGNED.
+    ///
+    /// The two assignment questions are separate because the two generated methods differ. Both
+    /// build-then-assign forms can set an <c>init</c> property, since an object initializer runs
+    /// as part of construction; the update overload, which writes onto an object it was handed,
+    /// cannot.
+    ///
+    /// Returns null for a property with no public setter. Nothing can fill it, so the
+    /// customization is dropped rather than emitted as code that would not compile.
+    /// </summary>
+    private static CustomProperty? DescribeProperty(INamedTypeSymbol destination, string propertyName)
+    {
+        foreach (IPropertySymbol property in GetProperties(destination))
+        {
+            if (!string.Equals(property.Name, propertyName, StringComparison.Ordinal))
+                continue;
+
+            IMethodSymbol? setter = property.SetMethod;
+
+            if (setter is null || setter.DeclaredAccessibility != Accessibility.Public)
+                return null;
+
+            return new CustomProperty(
+                property.Name,
+                property.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+                canSetAfterConstruction: !setter.IsInitOnly);
+        }
+
+        return null;
+    }
+
+    /// <summary>Everything one CreateMap chain asked for, split by direction.</summary>
+    private readonly struct ChainInfo
+    {
+        public ChainInfo(SimpleNameSyntax? reverseMapName, Refinements forward, Refinements reverse)
+        {
+            ReverseMapName = reverseMapName;
+            Forward = forward;
+            Reverse = reverse;
+        }
+
+        /// <summary>Where <c>.ReverseMap()</c> was written, or null when it was not.</summary>
+        public SimpleNameSyntax? ReverseMapName { get; }
+
+        /// <summary>Refinements chained before <c>.ReverseMap()</c>.</summary>
+        public Refinements Forward { get; }
+
+        /// <summary>Refinements chained after it.</summary>
+        public Refinements Reverse { get; }
+    }
+
+    /// <summary>The refinements belonging to ONE direction of a map.</summary>
+    private readonly struct Refinements
+    {
+        public Refinements(ImmutableArray<string> ignored, ImmutableArray<CustomProperty> customized)
+        {
+            Ignored = ignored;
+            Customized = customized;
+        }
+
+        /// <summary>Destination properties to leave alone, and to stop reporting on.</summary>
+        public ImmutableArray<string> Ignored { get; }
+
+        /// <summary>Destination properties filled by a MapFrom expression instead of by name.</summary>
+        public ImmutableArray<CustomProperty> Customized { get; }
+
+        public static Refinements Empty { get; } =
+            new(ImmutableArray<string>.Empty, ImmutableArray<CustomProperty>.Empty);
+    }
+
+    /// <summary>Collects one direction's refinements while the chain is being walked.</summary>
+    private sealed class RefinementBuilder
+    {
+        public List<string> Ignored { get; } = new();
+
+        public List<CustomProperty> Customized { get; } = new();
+
+        public Refinements Build() =>
+            Ignored.Count == 0 && Customized.Count == 0
+                ? Refinements.Empty
+                : new Refinements(Ignored.ToImmutableArray(), Customized.ToImmutableArray());
     }
 
     /// <summary>
@@ -367,7 +534,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         SemanticModel semanticModel,
         InvocationExpressionSyntax invocation,
         GenericNameSyntax createMap,
-        SimpleNameSyntax? reverseMapName,
+        INamedTypeSymbol? mapExpression,
         INamedTypeSymbol? mapOptions,
         bool? classDefaultCaseSensitive,
         CancellationToken cancellationToken)
@@ -389,9 +556,21 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         if (semanticModel.GetSymbolInfo(destinationSyntax, cancellationToken).Symbol is not INamedTypeSymbol destinationType)
             yield break;
 
-        yield return BuildMapModel(semanticModel.Compilation, sourceType, destinationType, LocationInfo.CreateFrom(createMap), isReverse: false, caseSensitive: caseSensitive);
+        // Read once, for both directions. The chain cannot be walked before the two types are
+        // known, because a MapFrom needs its destination type to look the property up on.
+        ChainInfo chain = ReadChain(
+            semanticModel, invocation, mapExpression, sourceType, destinationType, cancellationToken);
 
-        if (reverseMapName is null)
+        yield return BuildMapModel(
+            semanticModel.Compilation,
+            sourceType,
+            destinationType,
+            LocationInfo.CreateFrom(createMap),
+            isReverse: false,
+            caseSensitive: caseSensitive,
+            refinements: chain.Forward);
+
+        if (chain.ReverseMapName is null)
             yield break;
 
         // The reverse is analysed from scratch with the types swapped, NOT derived from the
@@ -403,16 +582,23 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         // The reverse map inherits the forward map's settings unless ReverseMap states its
         // own — writing the option once on CreateMap and getting both directions is the
         // least surprising reading of `CreateMap(...).ReverseMap()`.
+        //
+        // Ignore and MapFrom are NOT inherited, which is why each direction carries its own
+        // refinements. An Ignore names a property of the destination, and the reverse map has a
+        // different destination; a MapFrom that composes two properties into one has no way back
+        // at all. Rather than carry over the few that happen to fit and silently drop the rest,
+        // the reverse starts clean and reports what it could not map, as it always has.
         bool? reverseDeclared = ReadCaseSensitive(
-            semanticModel, FirstArgument(FindInvocation(reverseMapName)), mapOptions, cancellationToken);
+            semanticModel, FirstArgument(FindInvocation(chain.ReverseMapName)), mapOptions, cancellationToken);
 
         yield return BuildMapModel(
             semanticModel.Compilation,
             destinationType,
             sourceType,
-            LocationInfo.CreateFrom(reverseMapName) ?? LocationInfo.CreateFrom(createMap),
+            LocationInfo.CreateFrom(chain.ReverseMapName) ?? LocationInfo.CreateFrom(createMap),
             isReverse: true,
-            caseSensitive: reverseDeclared ?? caseSensitive);
+            caseSensitive: reverseDeclared ?? caseSensitive,
+            refinements: chain.Reverse);
     }
 
     /// <summary>The configure lambda passed to a call, or null when it was left off.</summary>
@@ -531,9 +717,11 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         INamedTypeSymbol destinationType,
         LocationInfo? location,
         bool isReverse,
-        bool caseSensitive)
+        bool caseSensitive,
+        Refinements refinements)
     {
-        PropertyAnalysis analysis = FindMatchingProperties(compilation, sourceType, destinationType, caseSensitive);
+        PropertyAnalysis analysis = FindMatchingProperties(
+            compilation, sourceType, destinationType, caseSensitive, refinements);
 
         return new MapModel(
             sourceType: sourceType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
@@ -548,6 +736,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             writablePropertyNames: analysis.Writable,
             unmappedProperties: analysis.Unmapped,
             convertedProperties: analysis.Converted,
+            customProperties: refinements.Customized,
             destinationName: destinationType.Name,
             location: location,
             isReverse: isReverse);
@@ -604,8 +793,18 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         Compilation compilation,
         INamedTypeSymbol sourceType,
         INamedTypeSymbol destinationType,
-        bool caseSensitive)
+        bool caseSensitive,
+        Refinements refinements)
     {
+        // Properties the developer has already spoken for. Ignore says leave it alone; MapFrom
+        // supplies its own value. Either way the convention must not fill it, and — just as
+        // importantly — must not REPORT on it: SM0001 telling you a property you deliberately
+        // ignored is unmapped is exactly the noise Ignore exists to remove.
+        var spokenFor = new HashSet<string>(refinements.Ignored, StringComparer.Ordinal);
+
+        foreach (CustomProperty custom in refinements.Customized)
+            spokenFor.Add(custom.Name);
+
         // Index the source's readable properties by name so lookups are easy.
         // GetProperties yields the most-derived declaration first, so the first entry we
         // keep for a name is the one that would actually win at runtime.
@@ -643,6 +842,12 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             // An overriding or `new`-hiding property appears more than once in the base
             // chain. Assigning the same member twice in one object initializer is CS1912.
             if (!seen.Add(destinationProperty.Name))
+                continue;
+
+            // Ignored, or filled by a MapFrom. Skipped BEFORE any of the checks below, so the
+            // property is not merely left unmapped but goes entirely unreported: a property you
+            // deliberately ignored still producing SM0001 would defeat the point of ignoring it.
+            if (spokenFor.Contains(destinationProperty.Name))
                 continue;
 
             IMethodSymbol? setter = destinationProperty.SetMethod;
@@ -740,7 +945,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
             // Each side is spelled as its OWN type declares it, which is what makes a
             // case-insensitive match emit `destination.Sku = source.SKU`.
-            var pair = new PropertyPair(destinationProperty.Name, sourceProperty.Name, conversion.Template);
+            var pair = new PropertyPair(
+                destinationProperty.Name, sourceProperty.Name, conversion.Template, conversion.QueryTemplate);
             all.Add(pair);
 
             // `init` accessors are legal inside an object initializer but nowhere else,
@@ -1118,6 +1324,15 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                 AppendUpdateOverload(sb, indent, map);
                 wroteMember = true;
             }
+
+            if (creatable.Count > 0)
+            {
+                if (wroteMember)
+                    sb.AppendLine();
+
+                AppendProjectMethod(sb, indent, sourceGroup.Key, creatable);
+                wroteMember = true;
+            }
         }
 
         sb.AppendLine($"{indent}}}");
@@ -1162,6 +1377,15 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                     sb.AppendLine();
 
                 AppendUpdateExtension(sb, model, map);
+                wroteExtension = true;
+            }
+
+            if (destinations.Any(m => m.CanConstructDestination))
+            {
+                if (wroteExtension)
+                    sb.AppendLine();
+
+                AppendProjectExtension(sb, model, sourceGroup.Key, destinations[0]);
                 wroteExtension = true;
             }
         }
@@ -1211,6 +1435,10 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             {
                 sb.AppendLine($"{indent}                {property.Destination} = {property.ValueExpression("source")},");
             }
+            foreach (CustomProperty custom in map.CustomProperties)
+            {
+                sb.AppendLine($"{indent}                {custom.Name} = {CustomValueExpression(map, custom)}(source),");
+            }
             sb.AppendLine($"{indent}            }};");
             sb.AppendLine();
             sb.AppendLine($"{indent}            return (TDestination)(object)destination;");
@@ -1248,9 +1476,140 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             sb.AppendLine($"{indent}        destination.{property.Destination} = {property.ValueExpression("source")};");
         }
 
+        // An init-only property is settable while the object is being built and never again, so
+        // it is filled by the create method above and skipped here.
+        foreach (CustomProperty custom in map.CustomProperties)
+        {
+            if (!custom.CanSetAfterConstruction)
+                continue;
+
+            sb.AppendLine($"{indent}        destination.{custom.Name} = {CustomValueExpression(map, custom)}(source);");
+        }
+
         sb.AppendLine();
         sb.AppendLine($"{indent}        return destination;");
         sb.AppendLine($"{indent}    }}");
+    }
+
+    /// <summary>
+    /// The C# that fetches one <c>MapFrom</c> expression back out of the mapper, as a delegate
+    /// ready to be called:
+    ///
+    /// <code>Customizations.Value&lt;global::…Brand, global::…BrandDto, string&gt;("Country")</code>
+    ///
+    /// This is where the two halves of ShiftMapper meet. The generator knows at COMPILE time
+    /// which properties were customized and what type each one is, so it can write a fully typed
+    /// lookup with no casting and no reflection at the call site — but the VALUE stays where the
+    /// compiler put it, as a live expression tree in the developer's own file. The store hands it
+    /// back compiled, once, on first use.
+    /// </summary>
+    private static string CustomValueExpression(MapModel map, CustomProperty custom) =>
+        $"Customizations.Value<{map.SourceType}, {map.DestinationType}, {custom.PropertyType}>(\"{custom.Name}\")";
+
+    /// <summary>
+    /// Writes <c>IQueryable&lt;TDestination&gt; ProjectTo&lt;TDestination&gt;(IQueryable&lt;Brand&gt;)</c>
+    /// — the map as a QUERY rather than as code that runs over objects you already loaded.
+    ///
+    /// <code>
+    /// var dtos = await db.Brands.ProjectTo&lt;BrandDto&gt;(mapper).ToListAsync();
+    /// </code>
+    ///
+    /// The difference is where the work happens. <c>Map</c> needs a Brand in memory, so the
+    /// database is asked for every column of every row and the unwanted ones are thrown away.
+    /// <c>ProjectTo</c> hands Entity Framework the map itself, and EF turns it into the SELECT
+    /// list — so only the columns the DTO actually uses are read, and <c>Where</c>, <c>OrderBy</c>
+    /// and paging still compose around it because the result is still a query.
+    ///
+    /// That is why the body is ONE expression and not a method call. EF has to see INTO the
+    /// projection to translate it; an ordinary method it can only call, which would mean loading
+    /// everything first — exactly what this avoids. So the whole map is written as a single
+    /// member initializer, and <c>Customizations.Compose</c> merges any MapFrom expressions into
+    /// that same initializer rather than invoking them from it.
+    ///
+    /// The conversions use their QUERY spelling: <c>{0}.ToString()</c> where the in-memory map
+    /// would call <c>ValueConverter.ToInvariantString</c>, because a database cannot run a method
+    /// out of ShiftMapper's own assembly.
+    ///
+    /// Nothing here predicts what EF can translate. The projection is generated, EF is handed it,
+    /// and EF says whether it can — which is the only honest answer, and one that improves with
+    /// every EF release rather than with ShiftMapper's guesses.
+    /// </summary>
+    private static void AppendProjectMethod(StringBuilder sb, string indent, string sourceType, List<MapModel> destinations)
+    {
+        MapModel firstMap = destinations[0];
+
+        sb.AppendLine($"{indent}    /// <summary>Projects a query of {firstMap.SourceName} into <typeparamref name=\"TDestination\"/>, in the database.</summary>");
+        sb.AppendLine($"{indent}    {AccessibilityOf(firstMap.IsSourcePublic)} global::System.Linq.IQueryable<TDestination> ProjectTo<TDestination>(global::System.Linq.IQueryable<{sourceType}> source)");
+        sb.AppendLine($"{indent}    {{");
+        sb.AppendLine($"{indent}        if (source is null)");
+        sb.AppendLine($"{indent}            throw new global::System.ArgumentNullException(nameof(source));");
+        sb.AppendLine();
+
+        foreach (MapModel map in destinations)
+        {
+            if (map.IsReverse)
+                sb.AppendLine($"{indent}        //{OriginNote(map)}");
+
+            sb.AppendLine($"{indent}        if (typeof(TDestination) == typeof({map.DestinationType}))");
+            sb.AppendLine($"{indent}        {{");
+
+            AppendProjectionExpression(sb, $"{indent}            ", map);
+
+            sb.AppendLine();
+            sb.AppendLine($"{indent}            return (global::System.Linq.IQueryable<TDestination>)(object)global::System.Linq.Queryable.Select(source, projection);");
+            sb.AppendLine($"{indent}        }}");
+            sb.AppendLine();
+        }
+
+        sb.AppendLine($"{indent}        throw new global::System.InvalidOperationException(");
+        sb.AppendLine($"{indent}            $\"ShiftMapper: no map registered from '{Readable(sourceType)}' to '{{typeof(TDestination)}}'. \" +");
+        sb.AppendLine($"{indent}            \"Add CreateMap<Source, Destination>() in your mapper's constructor.\");");
+        sb.AppendLine($"{indent}    }}");
+    }
+
+    /// <summary>
+    /// Writes the projection expression for one map, and runs it through
+    /// <c>Customizations.Compose</c>.
+    ///
+    /// Customized properties are absent from what is written here — the generator knows which
+    /// ones you wrote a <c>MapFrom</c> for and never emits a convention for them — and Compose
+    /// adds them from the expression trees the compiler built in your file. Splicing rather than
+    /// calling is the point: the result is still one member initializer, which is the only shape
+    /// EF can read as a SELECT list.
+    /// </summary>
+    private static void AppendProjectionExpression(StringBuilder sb, string indent, MapModel map)
+    {
+        bool composed = map.CustomProperties.Length > 0;
+
+        sb.AppendLine($"{indent}var projection =");
+
+        if (composed)
+            sb.AppendLine($"{indent}    Customizations.Compose<{map.SourceType}, {map.DestinationType}>(");
+
+        string inner = composed ? $"{indent}        " : $"{indent}    ";
+
+        sb.AppendLine($"{inner}(global::System.Linq.Expressions.Expression<global::System.Func<{map.SourceType}, {map.DestinationType}>>)");
+        sb.AppendLine($"{inner}(source => new {map.DestinationType}");
+        sb.AppendLine($"{inner}{{");
+
+        foreach (PropertyPair property in map.PropertyNames)
+            sb.AppendLine($"{inner}    {property.Destination} = {property.QueryValueExpression("source")},");
+
+        sb.Append($"{inner}}})");
+        sb.AppendLine(composed ? ");" : ";");
+    }
+
+    /// <summary>Writes <c>db.Brands.ProjectTo&lt;BrandDto&gt;(mapper)</c>, forwarding to the instance.</summary>
+    private static void AppendProjectExtension(StringBuilder sb, MapperClassModel model, string sourceType, MapModel firstMap)
+    {
+        sb.AppendLine($"        /// <summary>Projects this query of {firstMap.SourceName} into <typeparamref name=\"TDestination\"/>, in the database.</summary>");
+        sb.AppendLine($"        {AccessibilityOf(model.IsPublic, firstMap.IsSourcePublic)} static global::System.Linq.IQueryable<TDestination> ProjectTo<TDestination>(this global::System.Linq.IQueryable<{sourceType}> source, {model.FullyQualifiedName} mapper)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            if (mapper is null)");
+        sb.AppendLine("                throw new global::System.ArgumentNullException(nameof(mapper));");
+        sb.AppendLine();
+        sb.AppendLine("            return mapper.ProjectTo<TDestination>(source);");
+        sb.AppendLine("        }");
     }
 
     /// <summary>Writes <c>brand.Map&lt;BrandDto&gt;(mapper)</c>, forwarding to the instance.</summary>

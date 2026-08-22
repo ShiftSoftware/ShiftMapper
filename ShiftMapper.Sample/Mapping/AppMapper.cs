@@ -1,6 +1,7 @@
-using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Logging;
 using ShiftMapper.Sample.Dtos;
 using ShiftMapper.Sample.Entities;
+using ShiftMapper.Sample.Services;
 
 namespace ShiftMapper.Sample.Mapping;
 
@@ -37,9 +38,12 @@ public partial class AppMapper : ShiftMapperBase
 {
     private readonly ILogger<AppMapper> _logger;
 
-    public AppMapper(ILogger<AppMapper> logger)
+    private readonly IInvoiceNumbering _numbering;
+
+    public AppMapper(ILogger<AppMapper> logger, IInvoiceNumbering numbering)
     {
         _logger = logger;
+        _numbering = numbering;
 
         // Maps cleanly, and demonstrates two things at once: CASE-INSENSITIVE MATCHING and
         // TYPE CONVERSION.
@@ -181,6 +185,81 @@ public partial class AppMapper : ShiftMapperBase
         // Quantity, UnitPrice) — ShiftMapper does what it can and tells you the rest.
         // Delete this line and the warnings go away.
         CreateMap<InvoiceLine, InvoiceLineDto>();
+
+        // ------------------------------------------------------------------
+        // IGNORE and MAPFROM — telling ShiftMapper what the conventions cannot work out.
+        // ------------------------------------------------------------------
+        //
+        // Invoice -> InvoiceDto does not map by name alone. Two of the DTO's properties have no
+        // counterpart on the entity at all, and they need opposite answers:
+        //
+        //   Total   is a number the entity never stores — it is the lines added up.
+        //   Lines   is a collection of a DIFFERENT type (InvoiceLine -> InvoiceLineDto), which is
+        //           nested mapping, and ShiftMapper does not do that yet.
+        //
+        // Left alone, both would be reported as SM0001 and stay empty. So:
+        //
+        //   MapFrom  supplies a value for Total.
+        //   Ignore   says Lines is deliberately not mapped — the caller fills it in.
+        //
+        // Ignore also SILENCES the report for that one property on this one map, which is the
+        // point of it: SM0001 telling you a property you decided to leave alone is unmapped is
+        // exactly the noise you wanted gone. Every other property keeps reporting.
+        CreateMap<Invoice, InvoiceDto>()
+            .Ignore(d => d.Lines)
+
+            // THE VALUE YOU WRITE HERE IS AN EXPRESSION, NOT A METHOD.
+            //
+            // Declared Expression<Func<...>>, so the compiler does not compile this lambda — it
+            // builds a TREE describing it, right here in this file, with _numbering captured and
+            // every name already resolved. ShiftMapper keeps that tree and uses it two ways:
+            //
+            //   mapper.Map<InvoiceDto>(invoice)      compiles it once and calls it.
+            //   db.Invoices.ProjectTo<InvoiceDto>()  splices it into the generated projection, so
+            //                                        EF sees ONE expression and writes ONE query.
+            //
+            // Which is why this line becomes a correlated subquery rather than loading every line
+            // of every invoice to add them up in C#:
+            //
+            //   SELECT (SELECT SUM([l].[Quantity] * [l].[UnitPrice]) FROM [InvoiceLines] AS [l]
+            //           WHERE [i].[Id] = [l].[InvoiceId]), ...
+            .MapFrom(d => d.Total, s => s.Lines.Sum(l => l.Quantity * l.UnitPrice))
+
+            // A SERVICE, inside a custom mapping. Nothing special is needed: _numbering is the
+            // field the constructor was handed, and the generated code lives in this same class.
+            //
+            // _numbering.Prefix never looks at the invoice, so EF works it out once before
+            // running anything and sends the answer as a parameter. The value is genuinely IN
+            // the SQL:
+            //
+            //   DECLARE @_numbering_Prefix nvarchar(4000) = N'IQ/';
+            //   SELECT ..., @_numbering_Prefix + [i].[Number] AS [Number]
+            //
+            // Now swap it for the other member of that same service:
+            //
+            //   .MapFrom(d => d.Number, s => _numbering.Format(s.Number, s.IssuedAt))
+            //
+            // That one takes the ROW's data, and no database can run a C# method out of this
+            // project. It still works — EF is allowed to evaluate a top-level projection on the
+            // client, so it selects the COLUMNS the call needs and runs Format per row as the
+            // results arrive. Still one query, still only the columns the DTO uses:
+            //
+            //   SELECT ..., [i].[Number], [i].[IssuedAt]     -- Format runs in C#
+            //
+            // The difference shows up when you ask the DATABASE about that property. Prefix is
+            // in the SQL, so filtering on it is fine. Format is not, so this throws:
+            //
+            //   db.Invoices.ProjectTo<InvoiceDto>(mapper)
+            //              .Where(i => i.Number.Contains("2026"))
+            //
+            //   InvalidOperationException: ... could not be translated. Translation of method
+            //   'IInvoiceNumbering.Format' failed.
+            //
+            // A Where decides which rows come back, so it cannot wait until they have. That is
+            // about databases rather than about ShiftMapper, which does not guess at any of it —
+            // it generates the projection and lets EF answer, so you get what today's EF can do
+            // rather than what ShiftMapper assumed when it was written.
+            .MapFrom(d => d.Number, s => _numbering.Prefix + s.Number);
     }
 
     /// <summary>Proof that constructor injection works on this class.</summary>

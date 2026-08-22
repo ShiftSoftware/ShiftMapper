@@ -1,4 +1,4 @@
-using System.Linq;
+﻿using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 
@@ -68,6 +68,9 @@ internal static class ConversionResolver
 {
     /// <summary>How the generated code spells the runtime helper.</summary>
     private const string ConverterType = "global::ShiftMapper.ValueConverter";
+
+    /// <summary>Where the LINQ operators used by the query spelling of a conversion live.</summary>
+    private const string LinqType = "global::System.Linq.Enumerable";
 
     /// <summary>How the compiler spells it when we ask the USER's compilation whether it is there.</summary>
     private const string ConverterMetadataName = "ShiftMapper.ValueConverter";
@@ -176,7 +179,12 @@ internal static class ConversionResolver
         if (destinationCore.SpecialType == SpecialType.System_String)
         {
             return CanFormat(compilation, sourceCore) && HasConverter(compilation, ScalarConversionApi)
-                ? ValueConversion.Call($"{ConverterType}.ToInvariantString({{0}})", ConversionRisk.None)
+                ? ValueConversion.Call(
+                    $"{ConverterType}.ToInvariantString({{0}})",
+                    ConversionRisk.None,
+                    // SQL decides the text format, so this is not the invariant-culture
+                    // guarantee its in-memory twin makes — it is the database's own CONVERT.
+                    queryTemplate: "{0}.ToString()")
                 : null;
         }
 
@@ -208,7 +216,8 @@ internal static class ConversionResolver
             return new ValueConversion(
                 inner.Apply("{0}.GetValueOrDefault()"),
                 inner.Risk == ConversionRisk.Narrowing ? ConversionRisk.Narrowing : ConversionRisk.Lossy,
-                inner.Note is null ? NullNote : $"{NullNote}, and {inner.Note}");
+                inner.Note is null ? NullNote : $"{NullNote}, and {inner.Note}",
+                queryTemplate: inner.ApplyQuery("{0}.GetValueOrDefault()"));
         }
 
         // 9. A CAST, between numbers and enums. Reference downcasts, unboxing and
@@ -430,7 +439,19 @@ internal static class ConversionResolver
             : $"{ConverterType}.{method}<{FullName(sourceElement)}, {FullName(destinationElement)}>" +
               $"({{0}}, static item => {element.Apply("item")})";
 
-        return new ValueConversion(template, CollectionRisk(method, element), CollectionNote(method, element));
+        // The query spelling is the same shape written with LINQ, because ValueConverter's
+        // overloads are ShiftMapper's own methods and no database can run them.
+        //
+        // Called as plain static methods rather than as extensions — the generated file has no
+        // using directives, on purpose — which builds the identical expression tree either way.
+        // `static` comes off the lambda too: it is meaningless in a tree, which is data rather
+        // than a delegate to cache.
+        string queryTemplate = sameElement
+            ? $"{LinqType}.{method}({{0}})"
+            : $"{LinqType}.{method}({LinqType}.Select({{0}}, item => {element.ApplyQuery("item")}))";
+
+        return new ValueConversion(
+            template, CollectionRisk(method, element), CollectionNote(method, element), queryTemplate);
     }
 
     /// <summary>
@@ -882,18 +903,40 @@ internal sealed class ValueConversion
     /// <summary>Assign the value across unchanged — no conversion code at all.</summary>
     public static readonly ValueConversion Direct = new(template: null, ConversionRisk.None, note: null);
 
-    public ValueConversion(string? template, ConversionRisk risk, string? note)
+    public ValueConversion(string? template, ConversionRisk risk, string? note, string? queryTemplate = null)
     {
         Template = template;
+        QueryTemplate = queryTemplate ?? template;
         Risk = risk;
         Note = note;
     }
 
     /// <summary>A conversion that needs code but has nothing extra to explain.</summary>
-    public static ValueConversion Call(string template, ConversionRisk risk) => new(template, risk, note: null);
+    public static ValueConversion Call(string template, ConversionRisk risk, string? queryTemplate = null) =>
+        new(template, risk, note: null, queryTemplate);
 
     /// <summary>The C# to emit, with <c>{0}</c> for the source expression. Null means a plain copy.</summary>
     public string? Template { get; }
+
+    /// <summary>
+    /// The same conversion written for a QUERY PROJECTION, where the code does not run in C# —
+    /// it is handed to Entity Framework to be turned into SQL.
+    ///
+    /// Most conversions need no second spelling and this is simply <see cref="Template"/>. The
+    /// ones that do are the conversions that call into <c>ValueConverter</c>, and the reason is
+    /// not that EF is limited: EF translates methods it has a translator for, and it can never
+    /// have one for a static method in someone else's library. A database cannot run
+    /// <c>ShiftMapper.ValueConverter.ToInvariantString</c>.
+    ///
+    /// So for those, the query spelling uses the ordinary BCL shape a developer would have
+    /// hand-written — <c>{0}.ToString()</c>, <c>Enumerable.ToList({0})</c> — which is exactly what
+    /// EF's translators are written against.
+    ///
+    /// This is NOT ShiftMapper predicting what EF can translate. It is choosing the standard
+    /// spelling and leaving the verdict to EF, which is the only thing that actually knows, and
+    /// which gets better at it with every release.
+    /// </summary>
+    public string? QueryTemplate { get; }
 
     public ConversionRisk Risk { get; }
 
@@ -906,4 +949,8 @@ internal sealed class ValueConversion
     /// </summary>
     public string Apply(string inner) =>
         Template is null ? inner : Template.Replace("{0}", inner);
+
+    /// <summary><see cref="Apply"/> for the query spelling.</summary>
+    public string ApplyQuery(string inner) =>
+        QueryTemplate is null ? inner : QueryTemplate.Replace("{0}", inner);
 }
