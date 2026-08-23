@@ -1,7 +1,7 @@
 namespace ShiftMapper.Generator;
 
 /// <summary>
-/// One destination property filled by a <c>MapFrom</c> call rather than by matching names.
+/// One destination property filled by an <c>opt.MapFrom</c> call rather than by matching names.
 ///
 /// Note what is NOT here: the expression itself. That is the whole design. The value you wrote
 /// stays a live <c>Expression&lt;&gt;</c> tree in your own file and is picked up at runtime from
@@ -30,7 +30,7 @@ internal sealed class CustomProperty
     /// <c>Customizations.Value&lt;TSource, TDestination, TProperty&gt;</c>.
     ///
     /// It is read from the destination type rather than from the lambda because they are the same
-    /// answer: <c>MapFrom(d =&gt; d.Country, ...)</c> infers its type parameter from that selector,
+    /// answer: <c>ForMember(d =&gt; d.Country, ...)</c> infers its type parameter from that selector,
     /// so the property's own type is what was registered.
     /// </summary>
     public string PropertyType { get; }

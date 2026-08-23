@@ -8,27 +8,36 @@ namespace ShiftMapper;
 ///
 /// <code>
 /// CreateMap&lt;Brand, BrandDto&gt;()
-///     .Ignore(d =&gt; d.ExternalIds)
-///     .MapFrom(d =&gt; d.Country, s =&gt; s.Country + " (" + s.ISOCode + ")")
+///     .ForMember(d =&gt; d.ExternalIds, opt =&gt; opt.Ignore())
+///     .ForMember(d =&gt; d.Country,     opt =&gt; opt.MapFrom(s =&gt; s.Country + " (" + s.ISOCode + ")"))
 ///     .ReverseMap();
 /// </code>
 ///
-/// MOSTLY this does no work at runtime. <c>CreateMap</c>, <c>ReverseMap</c> and
-/// <see cref="Ignore{TProperty}"/> are markers: they give you somewhere to write the shape of a
-/// map in ordinary C#, with full IntelliSense, and the ShiftMapper source generator READS them
-/// at COMPILE time and emits the mapping methods they describe.
+/// ONE ENTRY POINT PER PROPERTY. Everything you say about a single destination property is said
+/// inside <see cref="ForMember{TProperty}"/>, and WHAT you can say is
+/// <see cref="MemberOptions{TSource, TDestination, TProperty}"/>. That is AutoMapper's shape, and
+/// it is worth copying for AutoMapper's reason: the property is named once, everything true about
+/// it reads in one place, and a new kind of per-property setting arrives as another method on
+/// <c>opt</c> rather than as another method on this type.
 ///
-/// <see cref="MapFrom{TProperty}"/> is the exception, and deliberately so — see its own notes.
+/// MOSTLY THIS DOES NO WORK AT RUNTIME. <c>CreateMap</c>, <c>ReverseMap</c> and
+/// <c>opt.Ignore()</c> are markers: they give you somewhere to write the shape of a map in
+/// ordinary C#, with full IntelliSense, and the ShiftMapper source generator READS them at
+/// COMPILE time and emits the mapping methods they describe.
+///
+/// <see cref="MemberOptions{TSource, TDestination, TProperty}.MapFrom"/> is the exception, and
+/// deliberately so — see its own notes.
 /// </summary>
 /// <typeparam name="TSource">The type being mapped FROM.</typeparam>
 /// <typeparam name="TDestination">The type being mapped TO.</typeparam>
 public readonly struct MapExpression<TSource, TDestination>
 {
     /// <summary>
-    /// Where <see cref="MapFrom{TProperty}"/> puts the expressions it is given. Null when the
-    /// handle was produced by <c>default(MapExpression&lt;,&gt;)</c> rather than by
-    /// <c>CreateMap</c> — which no supported code path does, but a struct always has a
-    /// parameterless form and this one should not throw for it.
+    /// Where <see cref="MemberOptions{TSource, TDestination, TProperty}.MapFrom"/> puts the
+    /// expressions it is given. Null when the handle was produced by
+    /// <c>default(MapExpression&lt;,&gt;)</c> rather than by <c>CreateMap</c> — which no
+    /// supported code path does, but a struct always has a parameterless form and this one
+    /// should not throw for it.
     /// </summary>
     private readonly MapCustomizations? _customizations;
 
@@ -38,119 +47,60 @@ public readonly struct MapExpression<TSource, TDestination>
     internal MapExpression(MapCustomizations? customizations) => _customizations = customizations;
 
     /// <summary>
-    /// Leaves a destination property alone — ShiftMapper will not fill it, and will not
-    /// complain that it could not.
+    /// Configures ONE destination property, overriding what matching by name would have done.
     ///
     /// <code>
     /// CreateMap&lt;Brand, BrandDto&gt;()
-    ///     .Ignore(d =&gt; d.ExternalIds);    // the caller fills this in, not the map
+    ///     .ForMember(d =&gt; d.ExternalIds, opt =&gt; opt.Ignore())
+    ///     .ForMember(d =&gt; d.Country,     opt =&gt; opt.MapFrom(s =&gt; s.Country + " (" + s.ISOCode + ")"));
     /// </code>
     ///
-    /// This is how you settle a build-time report you have decided is fine. Ignoring a property
-    /// silences its SM0001/SM0002/SM0003 (or SM0006, in a reverse map) — not by turning the
-    /// message off across the project the way <c>NoWarn</c> would, but by saying THIS property,
-    /// on THIS map, is intentionally not mapped. Every other property keeps reporting.
+    /// The property is named here, and what to do with it is said on the <c>opt</c> your lambda
+    /// is handed — see <see cref="MemberOptions{TSource, TDestination, TProperty}"/> for the two
+    /// things it can be told and for how they differ.
     ///
-    /// The property keeps whatever its own initializer gave it, so
-    /// <c>public List&lt;int&gt; ExternalIds { get; set; } = new();</c> arrives empty rather
-    /// than null.
+    /// Naming the property with a LAMBDA rather than a string is what makes a rename update this
+    /// call and a misspelling a compile error. It also fixes <typeparamref name="TProperty"/>,
+    /// which is what lets <c>opt.MapFrom</c> check your value expression against the property it
+    /// is filling.
     ///
-    /// This does nothing at runtime. The generator reads the call, and the property is simply
-    /// absent from the generated code — there is no assignment to skip, and no cost to pay.
+    /// A property you configure here is not reported on and not filled by convention, whichever
+    /// of the two you asked for. That is the point of <c>opt.Ignore()</c> — SM0001 telling you a
+    /// property you deliberately left alone is unmapped would be exactly the noise it exists to
+    /// remove.
+    ///
+    /// A block-bodied lambda is fine when a property needs more than one thing said about it:
+    /// <code>.ForMember(d =&gt; d.Total, opt =&gt; { opt.MapFrom(s =&gt; s.Lines.Sum(l =&gt; l.Amount)); })</code>
+    ///
+    /// YOUR LAMBDA RUNS IMMEDIATELY, once, while your constructor is running — it is an
+    /// <see cref="Action{T}"/>, not an expression tree, so there is nothing deferred about it.
+    /// The generator reads the same call at compile time to decide what to emit.
     /// </summary>
     /// <param name="member">
-    /// The property to leave alone, as a plain property access on the destination:
-    /// <c>d =&gt; d.ExternalIds</c>. A lambda rather than a string so that renaming the property
-    /// updates this call, and misspelling it is a compile error.
+    /// The property to configure, as a plain property access on the destination:
+    /// <c>d =&gt; d.Country</c>. Anything more than a single member access on the parameter has no
+    /// property name to record and is rejected.
     /// </param>
-    public MapExpression<TSource, TDestination> Ignore<TProperty>(
-        Expression<Func<TDestination, TProperty>> member) => this;
-
-    /// <summary>
-    /// Fills one destination property from an expression of your own, instead of by matching
-    /// names.
-    ///
-    /// <code>
-    /// CreateMap&lt;Brand, BrandDto&gt;()
-    ///     .MapFrom(d =&gt; d.Country, s =&gt; s.Country + " (" + s.ISOCode + ")");
-    /// </code>
-    ///
-    /// UNLIKE everything else in this API, the expression you write here is kept and used at
-    /// runtime. That is the whole point. Because it is declared
-    /// <see cref="Expression{TDelegate}"/>, the C# compiler does not compile it — it builds a
-    /// TREE describing it, right where you wrote it, closing over your fields and resolving
-    /// every name against your file's usings. ShiftMapper stores that tree and uses it two ways:
-    ///
-    ///   * <c>Map&lt;BrandDto&gt;(brand)</c> compiles it once and calls it.
-    ///   * <c>ProjectTo&lt;BrandDto&gt;(db.Brands)</c> splices it into the generated projection,
-    ///     so Entity Framework receives one expression and issues one SQL query.
-    ///
-    /// A property you customize stops being matched by name, so this is also how you map a
-    /// property that has no counterpart, or override one that does.
-    ///
-    /// ON SERVICES. Inject them into your mapper's constructor and use them here as ordinary
-    /// fields — there is nothing else to set up:
-    ///
-    /// <code>
-    /// public AppMapper(ICountryNames countries)
-    /// {
-    ///     _countries = countries;
-    ///
-    ///     CreateMap&lt;Brand, BrandDto&gt;()
-    ///         .MapFrom(d =&gt; d.Country, s =&gt; _countries.Prefix + "-" + s.Country);
-    /// }
-    /// </code>
-    ///
-    /// In memory that always works, whatever the service does. In a PROJECTION there are three
-    /// cases, and only the last one fails:
-    ///
-    ///   1. A service VALUE that does not depend on the row — <c>_countries.Prefix</c>. EF works
-    ///      it out once in C# before running anything and sends the answer as a SQL parameter,
-    ///      so it becomes part of the query proper:
-    ///      <code>SELECT @p0 + '-' + [b].[Country] FROM [Brands] AS [b]</code>
-    ///
-    ///   2. A service CALL that does depend on the row — <c>_countries.Translate(s.Country)</c>.
-    ///      There is no SQL for your C# method, but EF does not give up: a top-level projection
-    ///      is allowed to be evaluated on the client, so EF selects the COLUMNS the call needs
-    ///      and runs your method per row as the results come back. Still one query, still only
-    ///      the columns the DTO uses:
-    ///      <code>SELECT [b].[Country] FROM [Brands] AS [b]   -- Translate runs in C#</code>
-    ///
-    ///   3. FILTERING OR SORTING on a property that was worked out that way. This is the one
-    ///      that throws. A <c>Where</c> or <c>OrderBy</c> has to become SQL — it decides which
-    ///      rows the database returns, so it cannot wait until they have arrived:
-    ///      <code>
-    ///      db.Brands.ProjectTo&lt;BrandDto&gt;(mapper)
-    ///               .Where(d =&gt; d.Country == "Iraq")   // InvalidOperationException:
-    ///                                                     // Translation of method
-    ///                                                     // 'ICountryNames.Translate' failed
-    ///      </code>
-    ///      Case 1 has no such limit, because there the value really is in the SQL.
-    ///
-    /// ShiftMapper does not try to predict any of this — it generates the projection and lets EF
-    /// decide, so you get whatever today's EF supports rather than whatever ShiftMapper guessed
-    /// when it was written.
-    /// </summary>
-    /// <param name="member">
-    /// The destination property to fill, as a plain property access: <c>d =&gt; d.Country</c>.
+    /// <param name="options">
+    /// What to do with it. Called straight away with a
+    /// <see cref="MemberOptions{TSource, TDestination, TProperty}"/> bound to
+    /// <paramref name="member"/>.
     /// </param>
-    /// <param name="value">
-    /// How to work the value out from the source. Anything at all is fine for the in-memory
-    /// maps. For a projection, see the three cases above — most things work, and what does not
-    /// is reported by EF when you run the query.
-    /// </param>
-    public MapExpression<TSource, TDestination> MapFrom<TProperty>(
+    /// <exception cref="ArgumentException">
+    /// <paramref name="member"/> is not a single property access on the lambda's parameter.
+    /// </exception>
+    public MapExpression<TSource, TDestination> ForMember<TProperty>(
         Expression<Func<TDestination, TProperty>> member,
-        Expression<Func<TSource, TProperty>> value)
+        Action<MemberOptions<TSource, TDestination, TProperty>> options)
     {
         if (member is null)
             throw new ArgumentNullException(nameof(member));
 
-        if (value is null)
-            throw new ArgumentNullException(nameof(value));
+        if (options is null)
+            throw new ArgumentNullException(nameof(options));
 
-        _customizations?.Register(
-            typeof(TSource), typeof(TDestination), MapCustomizations.MemberName(member), value);
+        options(new MemberOptions<TSource, TDestination, TProperty>(
+            _customizations, MapCustomizations.MemberName(member)));
 
         return this;
     }
@@ -180,15 +130,15 @@ public readonly struct MapExpression<TSource, TDestination>
     /// Returns the reverse map's own handle, so it reads naturally in a chain. Reversing
     /// twice simply gets you back where you started and registers nothing new.
     ///
-    /// IGNORE AND MAPFROM ARE NOT INHERITED. Everything you chain BEFORE <c>ReverseMap</c>
-    /// configures the forward map; everything after it configures the reverse. The types make
-    /// this read correctly on its own, because the handle it returns has the two swapped:
+    /// FORMEMBER IS NOT INHERITED. Everything you chain BEFORE <c>ReverseMap</c> configures the
+    /// forward map; everything after it configures the reverse. The types make this read
+    /// correctly on its own, because the handle it returns has the two swapped:
     ///
     /// <code>
     /// CreateMap&lt;Brand, BrandDto&gt;()
-    ///     .Ignore(d =&gt; d.ExternalIds)          // d is a BrandDto — forward
+    ///     .ForMember(d =&gt; d.ExternalIds, opt =&gt; opt.Ignore())   // d is a BrandDto — forward
     ///     .ReverseMap()
-    ///     .Ignore(d =&gt; d.Products);            // d is a Brand    — reverse
+    ///     .ForMember(d =&gt; d.Products, opt =&gt; opt.Ignore());     // d is a Brand    — reverse
     /// </code>
     ///
     /// They are not carried over because they generally cannot be. An <c>Ignore</c> names a

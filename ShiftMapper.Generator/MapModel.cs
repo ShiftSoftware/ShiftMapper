@@ -100,7 +100,7 @@ internal sealed class MapModel
     public ImmutableArray<ConvertedProperty> ConvertedProperties { get; }
 
     /// <summary>
-    /// Properties filled by a <c>MapFrom</c> expression rather than by matching names.
+    /// Properties filled by an <c>opt.MapFrom</c> expression rather than by matching names.
     ///
     /// They are NOT in <see cref="PropertyNames"/>: the convention skipped them entirely, so the
     /// emitter adds them separately, reading the expression out of the mapper's runtime store.

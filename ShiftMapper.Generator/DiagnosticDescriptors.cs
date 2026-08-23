@@ -228,7 +228,8 @@ internal static class DiagnosticDescriptors
     /// and there are only ever two ways forward, both of them one line:
     ///
     ///   * declare the map, and the property is filled;
-    ///   * <c>.Ignore(d =&gt; d.Product)</c>, and it is deliberately left alone.
+    ///   * <c>.ForMember(d =&gt; d.Product, opt =&gt; opt.Ignore())</c>, and it is deliberately
+    ///     left alone.
     ///
     /// Either way, what the map does with that property is written down somewhere a reader can
     /// find it, which is exactly what a silent skip fails to do.
@@ -244,7 +245,7 @@ internal static class DiagnosticDescriptors
     public static readonly DiagnosticDescriptor NoMapForNestedProperty = new(
         id: "SM0011",
         title: "Nested object property has no map",
-        messageFormat: "ShiftMapper: '{0}.{1}' needs a map from '{2}' to '{3}'. Add CreateMap<{2}, {3}>(), or CreateMap<{3}, {2}>().ReverseMap(), or .Ignore(d => d.{1}) to leave it unmapped on purpose.",
+        messageFormat: "ShiftMapper: '{0}.{1}' needs a map from '{2}' to '{3}'. Add CreateMap<{2}, {3}>(), or CreateMap<{3}, {2}>().ReverseMap(), or .ForMember(d => d.{1}, opt => opt.Ignore()) to leave it unmapped on purpose.",
         category: Category,
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true,
@@ -268,15 +269,15 @@ internal static class DiagnosticDescriptors
     /// avoids the crash but replaces it with a response whose shape depends on a number nobody
     /// chose, which is its own kind of bug.
     ///
-    /// So the loop is refused, and breaking it is one line: <c>.Ignore</c> on whichever side is
-    /// the back-reference. That is a decision only the developer can make — which of the two types
+    /// So the loop is refused, and breaking it is one line: <c>opt.Ignore()</c> on whichever side
+    /// is the back-reference. That is a decision only the developer can make — which of the two types
     /// is the view and which is the thing being viewed — and writing it down is worth more than
     /// any default.
     /// </summary>
     public static readonly DiagnosticDescriptor CircularNesting = new(
         id: "SM0012",
         title: "Nested object mapping is circular",
-        messageFormat: "ShiftMapper: nested mapping never finishes — {0}. Break the loop with .Ignore(d => d.{1}) on whichever side is the back-reference.",
+        messageFormat: "ShiftMapper: nested mapping never finishes — {0}. Break the loop with .ForMember(d => d.{1}, opt => opt.Ignore()) on whichever side is the back-reference.",
         category: Category,
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true,

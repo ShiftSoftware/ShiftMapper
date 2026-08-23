@@ -177,7 +177,7 @@ public partial class AppMapper : ShiftMapperBase
         CreateMap<Stock, StockDto>()
             .ReverseMap()
 
-            // IGNORE, ON THE REVERSE MAP. Everything chained before .ReverseMap() configures the
+            // FORMEMBER, ON THE REVERSE MAP. Everything chained before .ReverseMap() configures the
             // forward direction and everything after it configures the way back, and the types
             // enforce that on their own: ReverseMap returns MapExpression<StockDto, Stock>, so
             // here `d` IS a Stock and naming a StockDto property would not compile.
@@ -186,7 +186,7 @@ public partial class AppMapper : ShiftMapperBase
             // as SM0006 every build. It is not an oversight — a DTO being a subset of its entity
             // is the whole reason to reverse a map — so this says as much, once, and the message
             // stops. Delete the line and it comes back.
-            .Ignore(d => d.Products);
+            .ForMember(d => d.Products, opt => opt.Ignore());
 
         // This one does NOT map cleanly, on purpose — it is the live demonstration of the
         // build-time warnings. Building produces exactly two, both pointing at this line:
@@ -206,9 +206,9 @@ public partial class AppMapper : ShiftMapperBase
 
             // LineTotal has no counterpart on the entity — it is quantity times price, worked out
             // rather than stored. This is also the customization that proves nesting composes:
-            // this map is used NESTED inside Invoice -> InvoiceDto below, and this MapFrom still
+            // this map is used NESTED inside Invoice -> InvoiceDto below, and this opt.MapFrom still
             // applies there, in memory AND in SQL, without the outer map knowing about it.
-            .MapFrom(d => d.LineTotal, s => s.Quantity * s.UnitPrice);
+            .ForMember(d => d.LineTotal, opt => opt.MapFrom(s => s.Quantity * s.UnitPrice));
 
         // ------------------------------------------------------------------
         // NESTED OBJECTS — one line, and a whole graph maps.
@@ -223,7 +223,7 @@ public partial class AppMapper : ShiftMapperBase
         //
         //   error SM0011: 'InvoiceLineDto.Product' needs a map from 'Product' to 'ProductDto'.
         //                 Add CreateMap<Product, ProductDto>() to this mapper, or
-        //                 .Ignore(d => d.Product) to leave it unmapped on purpose
+        //                 .ForMember(d => d.Product, opt => opt.Ignore()) to leave it unmapped
         //
         // An ERROR rather than a warning, and it is the only one ShiftMapper reports. Every other
         // message describes a property left unmapped, which may well be deliberate. This one
@@ -233,14 +233,14 @@ public partial class AppMapper : ShiftMapperBase
         CreateMap<Product, ProductDto>();
 
         // ------------------------------------------------------------------
-        // IGNORE and MAPFROM — telling ShiftMapper what the conventions cannot work out.
+        // FORMEMBER — telling ShiftMapper what the conventions cannot work out.
         // ------------------------------------------------------------------
         //
         // Invoice -> InvoiceDto does not map by name alone. Two of the DTO's properties have no
         // counterpart on the entity at all, and they need opposite answers:
         //
-        //   Total   is a number the entity never stores — it is the lines added up, so MapFrom
-        //           supplies it.
+        //   Total   is a number the entity never stores — it is the lines added up, so
+        //           opt.MapFrom supplies it.
         //   Lines   is a COLLECTION OF OBJECTS: List<InvoiceLine> on the entity, and
         //           IReadOnlyList<InvoiceLineDto> on the DTO. Nothing here mentions it, and it maps
         //           anyway — the map for the two element types is declared above, which is all
@@ -268,7 +268,7 @@ public partial class AppMapper : ShiftMapperBase
         // that each hold a BrandDto. There is no depth at which that is finished, and generated
         // code following it would call itself until the stack ran out, which in .NET takes the
         // whole process down rather than failing one request. So it is a build ERROR (SM0012)
-        // naming the loop, and .Ignore on the back-reference is the one-line fix — which also
+        // naming the loop, and opt.Ignore() on the back-reference is the one-line fix — which also
         // records which of the two types is the view and which is the thing being viewed.
         CreateMap<Invoice, InvoiceDto>()
 
@@ -287,7 +287,7 @@ public partial class AppMapper : ShiftMapperBase
             //
             //   SELECT (SELECT SUM([l].[Quantity] * [l].[UnitPrice]) FROM [InvoiceLines] AS [l]
             //           WHERE [i].[Id] = [l].[InvoiceId]), ...
-            .MapFrom(d => d.Total, s => s.Lines.Sum(l => l.Quantity * l.UnitPrice))
+            .ForMember(d => d.Total, opt => opt.MapFrom(s => s.Lines.Sum(l => l.Quantity * l.UnitPrice)))
 
             // A SERVICE, inside a custom mapping. Nothing special is needed: _numbering is the
             // field the constructor was handed, and the generated code lives in this same class.
@@ -301,7 +301,7 @@ public partial class AppMapper : ShiftMapperBase
             //
             // Now swap it for the other member of that same service:
             //
-            //   .MapFrom(d => d.Number, s => _numbering.Format(s.Number, s.IssuedAt))
+            //   .ForMember(d => d.Number, opt => opt.MapFrom(s => _numbering.Format(s.Number, s.IssuedAt)))
             //
             // That one takes the ROW's data, and no database can run a C# method out of this
             // project. It still works — EF is allowed to evaluate a top-level projection on the
@@ -323,7 +323,7 @@ public partial class AppMapper : ShiftMapperBase
             // about databases rather than about ShiftMapper, which does not guess at any of it —
             // it generates the projection and lets EF answer, so you get what today's EF can do
             // rather than what ShiftMapper assumed when it was written.
-            .MapFrom(d => d.Number, s => _numbering.Prefix + s.Number);
+            .ForMember(d => d.Number, opt => opt.MapFrom(s => _numbering.Prefix + s.Number));
     }
 
     /// <summary>Proof that constructor injection works on this class.</summary>

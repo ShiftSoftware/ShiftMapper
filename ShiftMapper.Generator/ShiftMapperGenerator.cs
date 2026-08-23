@@ -51,6 +51,16 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// </summary>
     private const string MapExpressionMetadataName = "ShiftMapper.MapExpression`2";
 
+    /// <summary>
+    /// Full name of the <c>opt</c> object ForMember hands to its lambda, and so the type
+    /// <c>Ignore</c> and <c>MapFrom</c> must be declared on. Three type parameters: the two
+    /// being mapped, plus the property's own type.
+    ///
+    /// Looked up for the same reason as the name above — it is what tells an <c>opt.Ignore()</c>
+    /// apart from some other library's <c>Ignore()</c> that happens to be in scope.
+    /// </summary>
+    private const string MemberOptionsMetadataName = "ShiftMapper.MemberOptions`3";
+
     /// <summary>Full name of the per-map options object handed to the configure lambda.</summary>
     private const string MapOptionsMetadataName = "ShiftMapper.MapOptions";
 
@@ -137,6 +147,11 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         INamedTypeSymbol? mapExpression = context.SemanticModel.Compilation
             .GetTypeByMetadataName(MapExpressionMetadataName);
 
+        // Null on the same terms: a runtime that predates ForMember simply has no such type, and
+        // the chain walker then finds no per-property refinements rather than falling over.
+        INamedTypeSymbol? memberOptions = context.SemanticModel.Compilation
+            .GetTypeByMetadataName(MemberOptionsMetadataName);
+
         INamedTypeSymbol? mapOptions = context.SemanticModel.Compilation
             .GetTypeByMetadataName(MapOptionsMetadataName);
 
@@ -164,6 +179,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                          invocation,
                          createMap,
                          mapExpression,
+                         memberOptions,
                          mapOptions,
                          classDefaultCaseSensitive,
                          cancellationToken))
@@ -321,14 +337,14 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
     /// <summary>
     /// Walks the whole chain hanging off one <c>CreateMap</c> and reads every refinement written
-    /// on it — <c>Ignore</c>, <c>MapFrom</c>, and <c>ReverseMap</c>.
+    /// on it — <c>ForMember</c> and <c>ReverseMap</c>.
     ///
     /// <code>
     /// CreateMap&lt;Brand, BrandDto&gt;()
-    ///     .Ignore(d =&gt; d.ExternalIds)      // forward
-    ///     .MapFrom(d =&gt; d.Country, ...)    // forward
-    ///     .ReverseMap()                       // everything after this is the OTHER map
-    ///     .Ignore(d =&gt; d.Products);        // reverse
+    ///     .ForMember(d =&gt; d.ExternalIds, opt =&gt; opt.Ignore())      // forward
+    ///     .ForMember(d =&gt; d.Country, opt =&gt; opt.MapFrom(...))      // forward
+    ///     .ReverseMap()                                            // after this: the OTHER map
+    ///     .ForMember(d =&gt; d.Products, opt =&gt; opt.Ignore());        // reverse
     /// </code>
     ///
     /// Position in the chain is what assigns a refinement to a direction, and the C# type system
@@ -337,12 +353,13 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// and naming a property of the wrong one is a compile error rather than a silent miss.
     ///
     /// Same rule as everywhere else in this generator: a matching NAME gets a call looked at, and
-    /// the bound SYMBOL decides. Some other library's <c>Ignore</c> must not configure our map.
+    /// the bound SYMBOL decides. Some other library's <c>ForMember</c> must not configure our map.
     /// </summary>
     private static ChainInfo ReadChain(
         SemanticModel semanticModel,
         InvocationExpressionSyntax createMap,
         INamedTypeSymbol? mapExpression,
+        INamedTypeSymbol? memberOptions,
         INamedTypeSymbol sourceType,
         INamedTypeSymbol destinationType,
         CancellationToken cancellationToken)
@@ -388,18 +405,10 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
                         break;
 
-                    case "Ignore":
-                        if (ReadMemberName(semanticModel, invocation, cancellationToken) is { } ignored)
-                            current.Ignored.Add(ignored);
-
-                        break;
-
-                    case "MapFrom":
-                        if (ReadMemberName(semanticModel, invocation, cancellationToken) is { } customized
-                            && DescribeProperty(currentDestination, customized) is { } described)
-                        {
-                            current.Customized.Add(described);
-                        }
+                    case "ForMember":
+                        ReadForMember(
+                            semanticModel, invocation, memberOptions, currentDestination, current,
+                            cancellationToken);
 
                         break;
                 }
@@ -412,8 +421,91 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     }
 
     /// <summary>
+    /// Reads one <c>ForMember</c> call: which property it names, and what it asks for.
+    ///
+    /// <code>
+    /// .ForMember(d =&gt; d.ExternalIds, opt =&gt; opt.Ignore())
+    /// .ForMember(d =&gt; d.Total,       opt =&gt; opt.MapFrom(s =&gt; s.Lines.Sum(l =&gt; l.Amount)))
+    /// </code>
+    ///
+    /// The property comes from the FIRST argument, and what to do with it from the calls written
+    /// inside the SECOND. Those calls are found by walking the whole lambda rather than by
+    /// matching its shape, which is what makes a block body work as well as an expression body,
+    /// and two calls as well as one:
+    ///
+    /// <code>.ForMember(d =&gt; d.Total, opt =&gt; { opt.MapFrom(...); })</code>
+    ///
+    /// Walking everything means walking INTO the value expression too — <c>l =&gt; l.Amount</c>
+    /// above is full of invocations — so each candidate is checked against
+    /// <c>MemberOptions&lt;,,&gt;</c> before it counts. That is the same NAME-then-SYMBOL rule
+    /// used everywhere else here, and it is what stops a <c>Sum</c> or somebody else's
+    /// <c>Ignore</c> inside your own expression from configuring the map.
+    ///
+    /// LAST CALL WINS, which is why each branch clears the other. Writing both an
+    /// <c>opt.MapFrom</c> and an <c>opt.Ignore</c> for one property is contradictory, and the
+    /// alternative to picking one is emitting both — a property left out of the conventions AND
+    /// filled by a customization, which is neither of the two things that were asked for. The
+    /// runtime half settles it the same way, by dropping the abandoned expression as the
+    /// <c>Ignore</c> runs, so a projection agrees with the generated maps.
+    /// </summary>
+    private static void ReadForMember(
+        SemanticModel semanticModel,
+        InvocationExpressionSyntax invocation,
+        INamedTypeSymbol? memberOptions,
+        INamedTypeSymbol currentDestination,
+        RefinementBuilder current,
+        CancellationToken cancellationToken)
+    {
+        if (memberOptions is null)
+            return;
+
+        // Half-written code whose selector does not bind yet contributes nothing, rather than a
+        // name that means nothing.
+        if (ReadMemberName(semanticModel, invocation, cancellationToken) is not { } member)
+            return;
+
+        if (invocation.ArgumentList.Arguments.Count < 2)
+            return;
+
+        foreach (InvocationExpressionSyntax call in invocation.ArgumentList.Arguments[1]
+                     .DescendantNodes()
+                     .OfType<InvocationExpressionSyntax>())
+        {
+            if (call.Expression is not MemberAccessExpressionSyntax option)
+                continue;
+
+            if (!IsDeclaredOn(semanticModel, call, memberOptions, cancellationToken))
+                continue;
+
+            switch (option.Name.Identifier.ValueText)
+            {
+                case "Ignore":
+                    current.Customized.RemoveAll(custom => custom.Name == member);
+
+                    if (!current.Ignored.Contains(member))
+                        current.Ignored.Add(member);
+
+                    break;
+
+                case "MapFrom":
+                    // Dropped rather than recorded when the property has no public setter:
+                    // nothing could fill it, and emitting the assignment anyway would produce
+                    // generated code that does not compile.
+                    if (DescribeProperty(currentDestination, member) is not { } described)
+                        break;
+
+                    current.Ignored.Remove(member);
+                    current.Customized.RemoveAll(custom => custom.Name == member);
+                    current.Customized.Add(described);
+
+                    break;
+            }
+        }
+    }
+
+    /// <summary>
     /// Reads the property name out of a selector argument such as the <c>d =&gt; d.Country</c> in
-    /// <c>Ignore(d =&gt; d.Country)</c>.
+    /// <c>ForMember(d =&gt; d.Country, ...)</c>.
     ///
     /// Resolved through the SYMBOL rather than by reading the identifier text, so it is the
     /// property the compiler bound to — and half-written code that does not bind yet contributes
@@ -503,10 +595,10 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             Customized = customized;
         }
 
-        /// <summary>Destination properties to leave alone, and to stop reporting on.</summary>
+        /// <summary>Destination properties an opt.Ignore() left alone, and stopped reporting on.</summary>
         public ImmutableArray<string> Ignored { get; }
 
-        /// <summary>Destination properties filled by a MapFrom expression instead of by name.</summary>
+        /// <summary>Destination properties filled by an opt.MapFrom() expression instead of by name.</summary>
         public ImmutableArray<CustomProperty> Customized { get; }
 
         public static Refinements Empty { get; } =
@@ -535,6 +627,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         InvocationExpressionSyntax invocation,
         GenericNameSyntax createMap,
         INamedTypeSymbol? mapExpression,
+        INamedTypeSymbol? memberOptions,
         INamedTypeSymbol? mapOptions,
         bool? classDefaultCaseSensitive,
         CancellationToken cancellationToken)
@@ -559,7 +652,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         // Read once, for both directions. The chain cannot be walked before the two types are
         // known, because a MapFrom needs its destination type to look the property up on.
         ChainInfo chain = ReadChain(
-            semanticModel, invocation, mapExpression, sourceType, destinationType, cancellationToken);
+            semanticModel, invocation, mapExpression, memberOptions,
+            sourceType, destinationType, cancellationToken);
 
         yield return BuildMapModel(
             semanticModel.Compilation,
@@ -583,11 +677,11 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         // own — writing the option once on CreateMap and getting both directions is the
         // least surprising reading of `CreateMap(...).ReverseMap()`.
         //
-        // Ignore and MapFrom are NOT inherited, which is why each direction carries its own
-        // refinements. An Ignore names a property of the destination, and the reverse map has a
-        // different destination; a MapFrom that composes two properties into one has no way back
-        // at all. Rather than carry over the few that happen to fit and silently drop the rest,
-        // the reverse starts clean and reports what it could not map, as it always has.
+        // ForMember is NOT inherited, which is why each direction carries its own refinements.
+        // An Ignore names a property of the destination, and the reverse map has a different
+        // destination; a MapFrom that composes two properties into one has no way back at all.
+        // Rather than carry over the few that happen to fit and silently drop the rest, the
+        // reverse starts clean and reports what it could not map, as it always has.
         bool? reverseDeclared = ReadCaseSensitive(
             semanticModel, FirstArgument(FindInvocation(chain.ReverseMapName)), mapOptions, cancellationToken);
 
@@ -845,10 +939,11 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         bool caseSensitive,
         Refinements refinements)
     {
-        // Properties the developer has already spoken for. Ignore says leave it alone; MapFrom
-        // supplies its own value. Either way the convention must not fill it, and — just as
-        // importantly — must not REPORT on it: SM0001 telling you a property you deliberately
-        // ignored is unmapped is exactly the noise Ignore exists to remove.
+        // Properties the developer has already spoken for with a ForMember. opt.Ignore() says
+        // leave it alone; opt.MapFrom() supplies its own value. Either way the convention must
+        // not fill it, and — just as importantly — must not REPORT on it: SM0001 telling you a
+        // property you deliberately ignored is unmapped is exactly the noise Ignore exists to
+        // remove.
         var spokenFor = new HashSet<string>(refinements.Ignored, StringComparer.Ordinal);
 
         foreach (CustomProperty custom in refinements.Customized)
@@ -1174,7 +1269,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// Two things can be wrong, and both stop the build:
     ///
     ///   * SM0011 — the pair has no map, in either direction. One line fixes it, either the
-    ///     CreateMap or an Ignore, and either way the decision is written down.
+    ///     CreateMap or an opt.Ignore(), and either way the decision is written down.
     ///
     ///   * SM0012 — the maps nest each other in a LOOP. There is no depth at which such a graph
     ///     is complete, and generated code that followed it would call itself until the stack ran

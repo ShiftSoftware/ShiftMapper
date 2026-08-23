@@ -8,16 +8,17 @@ namespace ShiftMapper;
 /// Where the expressions you hand to <c>MapFrom</c> are kept, and the one piece of ShiftMapper
 /// that does real work at runtime.
 ///
-/// Everything else in the declaration API — <c>CreateMap</c>, <c>ReverseMap</c>, <c>Ignore</c> —
-/// is a marker the generator reads at COMPILE time and then forgets about. <c>MapFrom</c> cannot
-/// be, and the reason is worth understanding because it shapes this whole file.
+/// Everything else in the declaration API — <c>CreateMap</c>, <c>ReverseMap</c>,
+/// <c>opt.Ignore()</c> — is a marker the generator reads at COMPILE time and then forgets about.
+/// <c>MapFrom</c> cannot be, and the reason is worth understanding because it shapes this whole
+/// file.
 ///
 /// <code>
 /// CreateMap&lt;Brand, BrandDto&gt;()
-///     .MapFrom(d =&gt; d.Country, s =&gt; _countries.Prefix + "-" + s.Country);
+///     .ForMember(d =&gt; d.Country, opt =&gt; opt.MapFrom(s =&gt; _countries.Prefix + "-" + s.Country));
 /// </code>
 ///
-/// That second lambda is declared <see cref="Expression{TDelegate}"/>, so the C# compiler does
+/// That inner lambda is declared <see cref="Expression{TDelegate}"/>, so the C# compiler does
 /// not compile it to a method — it builds a TREE describing it, in the place you wrote it. That
 /// tree is the valuable thing. It already closes over <c>_countries</c> correctly, it already
 /// resolved every name against the usings in YOUR file, and it can be handed to Entity Framework
@@ -57,13 +58,37 @@ public sealed class MapCustomizations
     /// <summary>
     /// Records the expression a <c>MapFrom</c> call supplied. Internal because the only
     /// supported way to get here is through
-    /// <see cref="MapExpression{TSource, TDestination}.MapFrom{TProperty}"/>.
+    /// <see cref="MemberOptions{TSource, TDestination, TProperty}.MapFrom"/>.
     ///
     /// A later call for the same property wins, which makes a customization behave like an
     /// assignment rather than silently depending on declaration order.
     /// </summary>
     internal void Register(Type source, Type destination, string member, LambdaExpression value) =>
         _values[new CustomizationKey(source, destination, member)] = value;
+
+    /// <summary>
+    /// Drops the customization for one property, if it had one. This is what
+    /// <see cref="MemberOptions{TSource, TDestination, TProperty}.Ignore"/> does at runtime, and
+    /// it is the only runtime work an <c>Ignore</c> ever does.
+    ///
+    /// It exists so that "last call wins" means the same thing on both sides of ShiftMapper. The
+    /// generator settles a contradictory pair — a <c>MapFrom</c> and an <c>Ignore</c> on one
+    /// property — by taking the one written last, and simply omits the property when that is the
+    /// <c>Ignore</c>. Without this, the abandoned expression would still be sitting here, and
+    /// <see cref="Compose{TSource, TDestination}"/> binds everything it finds: the in-memory maps
+    /// would leave the property alone while a projection quietly filled it.
+    ///
+    /// The compiled copy goes too. Nothing would read it once the tree is gone, but a delegate
+    /// kept alive by a dictionary nobody consults is exactly the kind of thing that outlives its
+    /// reason for existing.
+    /// </summary>
+    internal void Remove(Type source, Type destination, string member)
+    {
+        CustomizationKey key = new(source, destination, member);
+
+        _values.Remove(key);
+        _compiled.TryRemove(key, out _);
+    }
 
     /// <summary>
     /// Whether a property was customized. The generator already knows the answer at compile time
