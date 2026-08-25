@@ -1,0 +1,31 @@
+name: CI
+
+# Step 1 of PLAN.md: the suite is only worth having if it runs on every change.
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          # Matches the TargetFramework the library and both test projects use.
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore ShiftMapper.slnx
+
+      # The generator reports SM0011 and SM0012 as ERRORS, so a mapping mistake anywhere in the
+      # solution already fails this step before a single test runs.
+      - name: Build
+        run: dotnet build ShiftMapper.slnx --no-restore --configuration Release
+
+      - name: Test
+        run: dotnet test ShiftMapper.slnx --no-build --configuration Release --verbosity normal

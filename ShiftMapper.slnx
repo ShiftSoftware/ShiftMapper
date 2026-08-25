@@ -5,4 +5,6 @@
   <Project Path="ShiftMapper.Sample/ShiftMapper.Sample.csproj" />
   <Project Path="ShiftMapper/ShiftMapper.csproj" />
   <Project Path="ShiftMapper.Generator/ShiftMapper.Generator.csproj" />
+  <Project Path="ShiftMapper.Generator.Tests/ShiftMapper.Generator.Tests.csproj" />
+  <Project Path="ShiftMapper.Tests/ShiftMapper.Tests.csproj" />
 </Solution>

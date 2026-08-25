@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The compiler API. The tests drive it directly: they build a small compilation from a
+         source snippet, run the generator over it, and assert on what came back. -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" />
+
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.0">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The runtime library is referenced so that ShiftMapper.dll lands in the test output and
+         can be handed to the snippet compilations as a metadata reference — the snippets say
+         `: ShiftMapperBase` and would not bind without it. -->
+    <ProjectReference Include="..\ShiftMapper\ShiftMapper.csproj" />
+
+    <!-- An ORDINARY reference, not an Analyzer one. We want the generator as a class we can
+         `new` up and drive, not as something the compiler runs over this project. -->
+    <ProjectReference Include="..\ShiftMapper.Generator\ShiftMapper.Generator.csproj" />
+  </ItemGroup>
+
+</Project>
