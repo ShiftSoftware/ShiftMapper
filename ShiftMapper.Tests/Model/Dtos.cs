@@ -18,6 +18,18 @@ public class BrandDto
     public string IsoCode { get; set; } = string.Empty;
 }
 
+/// <summary>
+/// A STRUCT destination, which exists to exercise the one thing the generic dispatcher cannot
+/// avoid: handing a value type back through <c>(TDestination)(object)</c> boxes it, every time.
+/// The generated <c>MapToBrandKeyDto</c> is the route that does not.
+/// </summary>
+public struct BrandKeyDto
+{
+    public int Id { get; set; }
+
+    public int FoundedYear { get; set; }
+}
+
 public class StockDto
 {
     /// <summary>A string here and an int on the entity — converted both ways.</summary>

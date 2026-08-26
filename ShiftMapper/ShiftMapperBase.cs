@@ -82,7 +82,15 @@ public abstract class ShiftMapperBase
     /// Protected because the generated half of your mapper is the only thing that should touch
     /// it; that code lives in the same partial class, so protected is enough.
     /// </summary>
-    protected MapCustomizations Customizations { get; } = new();
+    protected MapCustomizations Customizations { get; }
+
+    /// <summary>
+    /// Hands the customization store the mapper CLASS it belongs to, which is what lets a
+    /// compiled customization be reused by every later instance of the same mapper instead of
+    /// being compiled again per request. <c>GetType()</c> is the runtime type, so a mapper that
+    /// derives from another gets its own entries rather than sharing its base's.
+    /// </summary>
+    protected ShiftMapperBase() => Customizations = new MapCustomizations(GetType());
 
     /// <summary>
     /// Declares that you want a map from <typeparamref name="TSource"/> to

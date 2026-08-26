@@ -501,7 +501,9 @@ public class DiagnosticTests
             """);
 
         run.None("SM0011");
-        run.Compiles().Emits("Item = Map<global::ChildDto>(source.Item)");
+        // The DIRECT method, not the generic dispatcher — nested mapping does not pay for a
+        // typeof chain it can settle at compile time.
+        run.Compiles().Emits("Item = MapToChildDto(source.Item)");
     }
 
     // -----------------------------------------------------------------

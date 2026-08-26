@@ -1628,6 +1628,10 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         sb.AppendLine($"{indent}partial class {model.ClassName}");
         sb.AppendLine($"{indent}{{");
 
+        // Worked out for the whole mapper before anything is written, because a NESTED property
+        // calls the direct method of a map in a DIFFERENT source group.
+        Dictionary<string, string> directNames = DirectMapNames(model.Maps);
+
         bool wroteMember = false;
         foreach (IGrouping<string, MapModel> sourceGroup in bySource)
         {
@@ -1638,10 +1642,18 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             List<MapModel> creatable = destinations.Where(m => m.CanConstructDestination).ToList();
             if (creatable.Count > 0)
             {
-                if (wroteMember)
-                    sb.AppendLine();
+                // The real maps first, then the switchboard that routes to them.
+                foreach (MapModel map in creatable)
+                {
+                    if (wroteMember)
+                        sb.AppendLine();
 
-                AppendCreateMethod(sb, indent, sourceGroup.Key, creatable);
+                    AppendDirectCreateMethod(sb, indent, map, directNames[map.Key], directNames);
+                    wroteMember = true;
+                }
+
+                sb.AppendLine();
+                AppendCreateMethod(sb, indent, sourceGroup.Key, creatable, directNames);
                 wroteMember = true;
             }
 
@@ -1652,7 +1664,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                 if (wroteMember)
                     sb.AppendLine();
 
-                AppendUpdateOverload(sb, indent, map);
+                AppendUpdateOverload(sb, indent, map, directNames);
                 wroteMember = true;
             }
 
@@ -1739,18 +1751,84 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     private static string Indent(int depth) => new string(' ', depth * 4);
 
     /// <summary>
-    /// Writes <c>Map&lt;TDestination&gt;(Brand source)</c> — builds and returns a new object.
+    /// Writes <c>BrandDto MapToBrandDto(Brand source)</c> — ONE map, written out plainly.
+    ///
+    /// This is where the work actually lives; <see cref="AppendCreateMethod"/> above it is only a
+    /// switchboard. Splitting them buys three things:
+    ///
+    ///   * NO BOXING. The generic dispatcher can only hand a destination back through
+    ///     <c>(TDestination)(object)</c>, which for a struct destination means an allocation on
+    ///     every single map. This one returns the type itself.
+    ///   * NO TYPE TEST. The <c>typeof</c> chain costs nothing much once, and a great deal when a
+    ///     nested collection walks it per element — so nested mapping calls this directly.
+    ///   * A ROUTE IN THAT IS NOT THE CHAIN. Code that knows both types can say so, and get a
+    ///     compile error rather than a runtime exception when the map does not exist.
+    /// </summary>
+    private static void AppendDirectCreateMethod(
+        StringBuilder sb,
+        string indent,
+        MapModel map,
+        string name,
+        Dictionary<string, string> directNames)
+    {
+        sb.AppendLine($"{indent}    /// <summary>Creates a new {map.DestinationName} from a {map.SourceName}.{OriginNote(map)}</summary>");
+
+        // Unlike the update overload, this one DOES set init-only properties — it is building the
+        // object — so the remarks name every conversion rather than only the assignable ones.
+        AppendRemarks(sb, $"{indent}    ", map, setsInitOnly: true);
+
+        // A public method may not expose a less accessible type (CS0051), and here the
+        // destination is the return type rather than only a type argument.
+        sb.AppendLine($"{indent}    {AccessibilityOf(map.IsSourcePublic, map.IsDestinationPublic)} {map.DestinationType} {name}({map.SourceType} source)");
+        sb.AppendLine($"{indent}    {{");
+        AppendNullGuard(sb, $"{indent}        ", "source", map.IsSourceValueType);
+
+        sb.AppendLine($"{indent}        return new {map.DestinationType}");
+        sb.AppendLine($"{indent}        {{");
+
+        foreach (PropertyPair property in map.PropertyNames)
+            sb.AppendLine($"{indent}            {property.Destination} = {property.ValueExpression("source")},");
+
+        foreach (CustomProperty custom in map.CustomProperties)
+            sb.AppendLine($"{indent}            {custom.Name} = {CustomValueExpression(map, custom)}(source),");
+
+        foreach (NestedProperty nested in map.NestedProperties)
+            sb.AppendLine($"{indent}            {nested.Destination} = {NestedValueExpression(nested, "source", directNames)},");
+
+        sb.AppendLine($"{indent}        }};");
+        sb.AppendLine($"{indent}    }}");
+    }
+
+    /// <summary>
+    /// Writes <c>Map&lt;TDestination&gt;(Brand source)</c> — the generic dispatcher.
     ///
     /// This one HAS to be generic, unlike the update overloads below. The destination
     /// appears only as the return type, and C# cannot overload on return type: declaring
     /// both <c>BrandDto Map(Brand)</c> and <c>BrandSummaryDto Map(Brand)</c> is CS0111.
     /// So we take the destination as a type argument and pick the branch with typeof.
+    ///
+    /// It no longer contains a map. Each branch forwards to the direct method above, which is the
+    /// route worth taking when the caller knows both types — this one still has to box a struct
+    /// destination on the way back out, and there is no way around that in a generic method.
     /// </summary>
-    private static void AppendCreateMethod(StringBuilder sb, string indent, string sourceType, List<MapModel> destinations)
+    private static void AppendCreateMethod(
+        StringBuilder sb,
+        string indent,
+        string sourceType,
+        List<MapModel> destinations,
+        Dictionary<string, string> directNames)
     {
         MapModel firstMap = destinations[0];
 
         sb.AppendLine($"{indent}    /// <summary>Creates a new <typeparamref name=\"TDestination\"/> from a {firstMap.SourceName}.</summary>");
+        AppendWrapped(
+            sb,
+            $"{indent}    /// ",
+            "<remarks>Picks the map by type argument. Call the matching " +
+            $"{string.Join(" / ", destinations.Select(m => directNames[m.Key]))} method instead when the " +
+            "destination is known at the call site: it does not box, and a destination with no map is a " +
+            "compile error there rather than an exception here.</remarks>");
+
         // A public method may not expose a less accessible parameter type (CS0051).
         sb.AppendLine($"{indent}    {AccessibilityOf(firstMap.IsSourcePublic)} TDestination Map<TDestination>({sourceType} source)");
         sb.AppendLine($"{indent}    {{");
@@ -1761,32 +1839,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             if (map.IsReverse)
                 sb.AppendLine($"{indent}        //{OriginNote(map)}");
 
-            // One method serves every destination reachable from this source, so a shared
-            // <remarks> could not say which branch it was talking about. The note goes next
-            // to the branch it describes instead.
-            if (ConversionList(map) is string converted)
-                AppendWrapped(sb, $"{indent}        // ", $"Converted rather than copied straight across: {converted}.");
-
             sb.AppendLine($"{indent}        if (typeof(TDestination) == typeof({map.DestinationType}))");
-            sb.AppendLine($"{indent}        {{");
-            sb.AppendLine($"{indent}            var destination = new {map.DestinationType}");
-            sb.AppendLine($"{indent}            {{");
-            foreach (PropertyPair property in map.PropertyNames)
-            {
-                sb.AppendLine($"{indent}                {property.Destination} = {property.ValueExpression("source")},");
-            }
-            foreach (CustomProperty custom in map.CustomProperties)
-            {
-                sb.AppendLine($"{indent}                {custom.Name} = {CustomValueExpression(map, custom)}(source),");
-            }
-            foreach (NestedProperty nested in map.NestedProperties)
-            {
-                sb.AppendLine($"{indent}                {nested.Destination} = {NestedValueExpression(nested, "source")},");
-            }
-            sb.AppendLine($"{indent}            }};");
-            sb.AppendLine();
-            sb.AppendLine($"{indent}            return (TDestination)(object)destination;");
-            sb.AppendLine($"{indent}        }}");
+            sb.AppendLine($"{indent}            return (TDestination)(object){directNames[map.Key]}(source);");
             sb.AppendLine();
         }
 
@@ -1794,6 +1848,44 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         sb.AppendLine($"{indent}            $\"ShiftMapper: no map registered from '{Readable(sourceType)}' to '{{typeof(TDestination)}}'. \" +");
         sb.AppendLine($"{indent}            \"Add CreateMap<Source, Destination>() in your mapper's constructor.\");");
         sb.AppendLine($"{indent}    }}");
+    }
+
+    /// <summary>
+    /// The name of the direct create method for every map that has one, worked out for the whole
+    /// mapper at once.
+    ///
+    /// <c>MapToBrandDto</c> normally, and the fully qualified spelling when it would collide. Two
+    /// destinations with the same SIMPLE name reached from one source type — an
+    /// <c>Api.BrandDto</c> and a <c>Reporting.BrandDto</c> from <c>Brand</c> — would otherwise
+    /// produce two methods differing only in return type, which is CS0111.
+    ///
+    /// Maps with no create method (SM0004) are absent, and callers fall back to the dispatcher.
+    /// </summary>
+    private static Dictionary<string, string> DirectMapNames(ImmutableArray<MapModel> maps)
+    {
+        var names = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        IEnumerable<IGrouping<string, MapModel>> bySource = maps
+            .Where(map => map.CanConstructDestination)
+            .GroupBy(map => map.SourceType, StringComparer.Ordinal);
+
+        foreach (IGrouping<string, MapModel> sourceGroup in bySource)
+        {
+            var ambiguous = new HashSet<string>(
+                sourceGroup.GroupBy(map => map.DestinationName, StringComparer.Ordinal)
+                    .Where(byName => byName.Count() > 1)
+                    .Select(byName => byName.Key),
+                StringComparer.Ordinal);
+
+            foreach (MapModel map in sourceGroup)
+            {
+                names[map.Key] = ambiguous.Contains(map.DestinationName)
+                    ? "MapTo" + Identifier(map.DestinationType)
+                    : "MapTo" + map.DestinationName;
+            }
+        }
+
+        return names;
     }
 
     /// <summary>
@@ -1806,7 +1898,11 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// no cast, and passing a destination that was never registered is a COMPILE error
     /// rather than an exception.
     /// </summary>
-    private static void AppendUpdateOverload(StringBuilder sb, string indent, MapModel map)
+    private static void AppendUpdateOverload(
+        StringBuilder sb,
+        string indent,
+        MapModel map,
+        Dictionary<string, string> directNames)
     {
         sb.AppendLine($"{indent}    /// <summary>Copies a {map.SourceName} onto an existing <paramref name=\"destination\"/> and returns it.{OriginNote(map)}</summary>");
         AppendRemarks(sb, $"{indent}    ", map);
@@ -1835,7 +1931,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             if (!nested.CanSetAfterConstruction)
                 continue;
 
-            sb.AppendLine($"{indent}        destination.{nested.Destination} = {NestedValueExpression(nested, "source")};");
+            sb.AppendLine($"{indent}        destination.{nested.Destination} = {NestedValueExpression(nested, "source", directNames)};");
         }
 
         sb.AppendLine();
@@ -1884,10 +1980,20 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// an <c>IReadOnlyList&lt;string&gt;</c>. The lambda is NOT <c>static</c> here, unlike the one
     /// for simple elements: it calls an instance method, so it has to capture the mapper.
     /// </summary>
-    private static string NestedValueExpression(NestedProperty nested, string parameter)
+    private static string NestedValueExpression(
+        NestedProperty nested,
+        string parameter,
+        Dictionary<string, string> directNames)
     {
         string access = $"{parameter}.{nested.Source}";
-        string call = $"Map<{nested.DestinationElementType}>";
+
+        // The DIRECT method rather than the generic dispatcher, so the typeof chain is not walked
+        // once per element of a nested collection. Falls back to the dispatcher when the nested
+        // destination has no create method at all (SM0004) — the build is failing anyway, and a
+        // call to a method that was never written would bury that under a CS error.
+        string call = directNames.TryGetValue(nested.Key, out string? direct)
+            ? direct
+            : $"Map<{nested.DestinationElementType}>";
 
         if (nested.CollectionBuilder is not null)
         {
@@ -2046,11 +2152,20 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     private static void AppendProjectionMember(StringBuilder sb, string indent, MapModel map)
     {
         string name = ProjectionMemberName(map.SourceType, map.DestinationType);
+        string field = "_" + name;
         string type = $"global::System.Linq.Expressions.Expression<global::System.Func<{map.SourceType}, {map.DestinationType}>>";
 
+        sb.AppendLine($"{indent}    /// <summary>Holds the composed projection once it has been built.</summary>");
+        sb.AppendLine($"{indent}    private {type}? {field};");
+        sb.AppendLine();
         sb.AppendLine($"{indent}    /// <summary>The {map.SourceName} to {map.DestinationName} map, as one expression EF can translate.</summary>");
+        // A CACHED FIELD, not a computed property. As a property this rebuilt the whole member
+        // initializer, re-scanned the customization store and re-grafted every nested map on
+        // EVERY ProjectTo call — and, because a nested map is reached through the parent's
+        // member, once per level per call. The expression is immutable once built, so the worst
+        // a race here can do is build it twice and keep one.
         sb.AppendLine($"{indent}    private {type} {name} =>");
-        sb.AppendLine($"{indent}        Customizations.Compose<{map.SourceType}, {map.DestinationType}>(");
+        sb.AppendLine($"{indent}        {field} ??= Customizations.Compose<{map.SourceType}, {map.DestinationType}>(");
         sb.AppendLine($"{indent}            source => new {map.DestinationType}");
         sb.AppendLine($"{indent}            {{");
 
@@ -2131,7 +2246,12 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// member with two sibling remarks is malformed documentation — every viewer shows the
     /// first and silently drops the second, so whichever fact came second was invisible.
     /// </summary>
-    private static void AppendRemarks(StringBuilder sb, string indent, MapModel map)
+    /// <param name="setsInitOnly">
+    /// True for the create method, which builds the object and so CAN set an init-only property.
+    /// The update overload cannot, and passes false so it neither advertises a conversion it
+    /// never performs nor stays quiet about the properties it leaves alone.
+    /// </param>
+    private static void AppendRemarks(StringBuilder sb, string indent, MapModel map, bool setsInitOnly = false)
     {
         var sentences = new List<string>();
 
@@ -2139,10 +2259,10 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         // everything settable, init-only included; naming an init-only property here would
         // promise a conversion the update overload never performs, because it cannot assign
         // that property at all.
-        if (ConversionList(map, InitOnly(map)) is string converted)
+        if (ConversionList(map, setsInitOnly ? null : InitOnly(map)) is string converted)
             sentences.Add($"Converted rather than copied straight across: {XmlEscape(converted)}.");
 
-        if (InitOnly(map) is { Count: > 0 } initOnly)
+        if (!setsInitOnly && InitOnly(map) is { Count: > 0 } initOnly)
         {
             sentences.Add(
                 "Not copied because they are init-only and can only be set when the object is " +

@@ -43,8 +43,8 @@ public class NestedMappingTests
             """);
 
         run.Compiles()
-           // In memory: the child map is called.
-           .Emits("Item = Map<global::ChildDto>(source.Item),")
+           // In memory: the child's own direct method is called, so no typeof chain is walked.
+           .Emits("Item = MapToChildDto(source.Item),")
            // In a projection: the child's own composed projection is handed to Compose, which
            // inlines it. A required navigation needs no null guard — the join always matches.
            .Emits("new global::ShiftMapper.MapCustomizations.NestedBinding(\"Item\", \"Item\", ShiftMapperProjection_Child_To_ChildDto, null, false)");
@@ -108,7 +108,9 @@ public class NestedMappingTests
             """);
 
         run.Compiles()
-           .Emits($"Items = global::ShiftMapper.ValueConverter.{builder}<global::Child, global::ChildDto>(source.Items, item => Map<global::ChildDto>(item)),")
+           // The direct method per element. Through the dispatcher this would walk a typeof
+           // chain once for every item in the collection.
+           .Emits($"Items = global::ShiftMapper.ValueConverter.{builder}<global::Child, global::ChildDto>(source.Items, item => MapToChildDto(item)),")
            .Emits($"new global::ShiftMapper.MapCustomizations.NestedBinding(\"Items\", \"Items\", ShiftMapperProjection_Child_To_ChildDto, \"{builder}\", false)");
     }
 

@@ -1,6 +1,7 @@
 ﻿using System.Collections.Concurrent;
 using System.Linq.Expressions;
 using System.Reflection;
+using System.Threading;
 
 namespace ShiftMapper;
 
@@ -47,13 +48,48 @@ public sealed class MapCustomizations
     private readonly Dictionary<CustomizationKey, LambdaExpression> _values = new();
 
     /// <summary>
-    /// Compiled copies of the same trees, made on first use rather than up front — a mapper
-    /// whose customizations are only ever projected should never pay for compiling them.
+    /// Compiled copies of the trees, kept for the life of the PROCESS and keyed by the mapper's
+    /// TYPE rather than by the instance that registered them.
     ///
-    /// Concurrent because, unlike registration, this IS read on the hot path: a singleton mapper
-    /// serving several requests can reach it from more than one thread at once.
+    /// The type is the right key because a mapper's customizations are settled at COMPILE time:
+    /// the generator reads the <c>CreateMap</c> chain out of the constructor and bakes one
+    /// answer per (source, destination, property), so two instances of one mapper class cannot
+    /// disagree about which expression fills a property. What they CAN disagree about is what
+    /// that expression closes over — see <see cref="CarriesInstanceState"/>, which is what
+    /// decides whether a customization is allowed in here at all.
+    ///
+    /// This is the fix for the cost that only shows up under load. <c>AddShiftMapper</c>
+    /// registers mappers as Scoped by default, so before this every request compiled every
+    /// expression it touched, all over again, at hundreds of microseconds each.
     /// </summary>
-    private readonly ConcurrentDictionary<CustomizationKey, Delegate> _compiled = new();
+    private static readonly ConcurrentDictionary<SharedKey, Delegate> SharedCompiled = new();
+
+    /// <summary>
+    /// Whether each customization may live in <see cref="SharedCompiled"/>, worked out once per
+    /// process and remembered — the answer depends only on the shape of the tree, which is fixed
+    /// for a given mapper type, and walking it on every call would defeat the point.
+    /// </summary>
+    private static readonly ConcurrentDictionary<SharedKey, bool> Shareable = new();
+
+    /// <summary>
+    /// Compiled copies of the customizations that could NOT be shared, because they close over
+    /// this particular mapper — its injected services, or a local from its constructor.
+    ///
+    /// Created only when there is something to put in it, which for most mappers is never.
+    ///
+    /// Concurrent because, unlike registration, this IS read on the hot path: one mapper serving
+    /// several requests can reach it from more than one thread at once.
+    /// </summary>
+    private ConcurrentDictionary<CustomizationKey, Delegate>? _instanceCompiled;
+
+    /// <summary>The mapper class these customizations belong to — the key everything is shared by.</summary>
+    private readonly Type _owner;
+
+    /// <summary>
+    /// Internal because a <see cref="MapCustomizations"/> without an owner could not share
+    /// anything, and there is no reason for anyone outside the library to build one.
+    /// </summary>
+    internal MapCustomizations(Type owner) => _owner = owner;
 
     /// <summary>
     /// Records the expression a <c>MapFrom</c> call supplied. Internal because the only
@@ -87,7 +123,12 @@ public sealed class MapCustomizations
         CustomizationKey key = new(source, destination, member);
 
         _values.Remove(key);
-        _compiled.TryRemove(key, out _);
+        _instanceCompiled?.TryRemove(key, out _);
+
+        // Nothing is normally in the shared cache to remove — an Ignore runs during construction
+        // and a customization is only compiled on first USE — and if something were, every other
+        // instance of this mapper type would have withdrawn the same member for the same reason.
+        SharedCompiled.TryRemove(new SharedKey(_owner, key), out _);
     }
 
     /// <summary>
@@ -104,8 +145,18 @@ public sealed class MapCustomizations
     ///
     /// <code>Country = Customizations.Value&lt;Brand, BrandDto, string&gt;("Country")(source),</code>
     ///
-    /// Compiling an expression tree is not free, so the result is cached and each customization
-    /// is compiled at most once per mapper.
+    /// Compiling an expression tree is not free — hundreds of microseconds — so the result is
+    /// cached. WHERE it is cached is the interesting part, and it depends on the expression:
+    ///
+    ///   * One that closes over nothing (<c>s =&gt; s.Quantity * s.UnitPrice</c>) is compiled
+    ///     ONCE PER PROCESS and shared by every instance of the mapper class, because nothing
+    ///     about it can differ between them.
+    ///   * One that closes over the mapper — an injected service, a constructor local — is
+    ///     compiled once per INSTANCE, because the compiled delegate is bound to the state it
+    ///     captured. Sharing it would hand every later request the first request's services,
+    ///     which for a scoped DbContext or a per-request tenant is a bug nothing would report.
+    ///
+    /// See <see cref="CarriesInstanceState"/> for how the two are told apart.
     /// </summary>
     /// <exception cref="InvalidOperationException">
     /// The property was never customized. That means the generated code and this store disagree,
@@ -115,7 +166,7 @@ public sealed class MapCustomizations
     {
         CustomizationKey key = new(typeof(TSource), typeof(TDestination), member);
 
-        if (!_values.ContainsKey(key))
+        if (!_values.TryGetValue(key, out LambdaExpression? expression))
         {
             throw new InvalidOperationException(
                 $"ShiftMapper: no custom mapping was registered for '{typeof(TDestination).Name}.{member}', " +
@@ -123,8 +174,85 @@ public sealed class MapCustomizations
                 $"generated mapper is out of date with the CreateMap calls in your constructor.");
         }
 
-        return (Func<TSource, TProperty>)_compiled.GetOrAdd(
-            key, static (_, expression) => expression.Compile(), _values[key]);
+        SharedKey shared = new(_owner, key);
+
+        if (Shareable.GetOrAdd(shared, static (_, tree) => !CarriesInstanceState(tree), expression))
+        {
+            return (Func<TSource, TProperty>)SharedCompiled.GetOrAdd(
+                shared, static (_, tree) => tree.Compile(), expression);
+        }
+
+        return (Func<TSource, TProperty>)InstanceCompiled.GetOrAdd(
+            key, static (_, tree) => tree.Compile(), expression);
+    }
+
+    /// <summary>
+    /// The per-instance cache, created on demand — most mappers never need one, and an empty
+    /// ConcurrentDictionary per mapper per request is exactly the sort of allocation this step
+    /// exists to remove.
+    /// </summary>
+    private ConcurrentDictionary<CustomizationKey, Delegate> InstanceCompiled
+    {
+        get
+        {
+            ConcurrentDictionary<CustomizationKey, Delegate>? existing = _instanceCompiled;
+            if (existing is not null)
+                return existing;
+
+            // Two threads reaching here together must end up using the SAME dictionary, or one
+            // of them would cache into a copy nobody reads and recompile on every call.
+            Interlocked.CompareExchange(ref _instanceCompiled, new ConcurrentDictionary<CustomizationKey, Delegate>(), null);
+
+            return _instanceCompiled;
+        }
+    }
+
+    /// <summary>
+    /// Whether an expression is bound to the particular mapper that registered it, and so must
+    /// not be shared with the next one.
+    ///
+    /// THE TEST IS THE CONSTANTS. When a lambda reads a field, a local, or anything else from
+    /// around it, the compiler does not put a reference to "the mapper" in the tree — it puts the
+    /// OBJECT itself in, as a <see cref="ConstantExpression"/>, and reads the field off that.
+    /// So the captured state is not hiding: it is sitting in the tree as a constant.
+    ///
+    /// What is left after that is what the developer wrote literally — a number, a piece of text,
+    /// a <c>typeof</c> — and those are the same for every instance because they came from the
+    /// source file rather than from the object. A captured local is NOT one of them: the compiler
+    /// lifts it into a closure object, which arrives here as a reference constant and is refused
+    /// like any other.
+    ///
+    /// Conservative on purpose. A constant this cannot vouch for means "compile it per instance",
+    /// which costs time; the other kind of mistake costs correctness.
+    /// </summary>
+    private static bool CarriesInstanceState(LambdaExpression expression) =>
+        new CaptureDetector().Detects(expression);
+
+    private sealed class CaptureDetector : ExpressionVisitor
+    {
+        private bool _found;
+
+        public bool Detects(LambdaExpression expression)
+        {
+            Visit(expression);
+            return _found;
+        }
+
+        protected override Expression VisitConstant(ConstantExpression node)
+        {
+            if (node.Value is not null
+                && !node.Type.IsValueType
+                && node.Value is not string
+                && node.Value is not Type)
+            {
+                _found = true;
+            }
+
+            return node;
+        }
+
+        // Nothing below a constant can make it shareable again, so stop once one is found.
+        public override Expression? Visit(Expression? node) => _found ? node : base.Visit(node);
     }
 
     /// <summary>
@@ -324,6 +452,13 @@ public sealed class MapCustomizations
 
     /// <summary>Identifies one customization: which map it belongs to, and which property it fills.</summary>
     private readonly record struct CustomizationKey(Type Source, Type Destination, string Member);
+
+    /// <summary>
+    /// The same, plus the mapper class it was declared in — the key for anything kept for the
+    /// life of the process, since two mappers may perfectly well fill the same property of the
+    /// same pair in different ways.
+    /// </summary>
+    private readonly record struct SharedKey(Type Owner, CustomizationKey Key);
 
     /// <summary>
     /// Swaps one parameter for another throughout an expression.

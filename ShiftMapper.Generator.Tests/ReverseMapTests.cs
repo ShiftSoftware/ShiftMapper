@@ -247,6 +247,6 @@ public class ReverseMapTests
             """);
 
         run.None("SM0011");
-        run.Compiles().Emits("Item = Map<global::ChildDto>(source.Item)");
+        run.Compiles().Emits("Item = MapToChildDto(source.Item)");
     }
 }

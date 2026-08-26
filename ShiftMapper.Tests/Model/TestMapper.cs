@@ -34,6 +34,9 @@ public partial class TestMapper : ShiftMapperBase
         // and a collection whose shape differs but whose elements do not (Tags).
         CreateMap<Brand, BrandDto>();
 
+        // A struct destination, for the direct method that maps one without boxing it.
+        CreateMap<Brand, BrandKeyDto>();
+
         // Both directions, with the conversions running opposite ways: Id is int to string on the
         // way out and string to int on the way back.
         CreateMap<Stock, StockDto>()
