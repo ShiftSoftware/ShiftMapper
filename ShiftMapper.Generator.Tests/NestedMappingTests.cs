@@ -1,4 +1,4 @@
-using ShiftMapper.Generator.Tests.Infrastructure;
+﻿using ShiftMapper.Generator.Tests.Infrastructure;
 using Xunit;
 
 namespace ShiftMapper.Generator.Tests;
@@ -235,5 +235,43 @@ public class NestedMappingTests
 
         Assert.Equal(new[] { "SM0012" }, run.Ids());
         run.Compiles();
+    }
+
+    /// <summary>
+    /// The map that answers a nested property may live in ANOTHER PART of the same partial
+    /// mapper, and SM0011 must not fire for it.
+    ///
+    /// This is the case the reporting half is shaped around. It is a mapper-TYPE question, not a
+    /// file question, so the analyzer collects every declaration of the type and only then asks
+    /// whether a pair has a map. A check that looked at one file at a time would report a
+    /// missing CreateMap that is sitting in the file next door — and, being an error, would stop
+    /// a build over nothing.
+    /// </summary>
+    [Fact]
+    public void A_nested_map_declared_in_another_part_of_the_mapper_satisfies_the_check()
+    {
+        GeneratorRun run = GeneratorHarness.Run(
+            """
+            using ShiftMapper;
+
+            public class Product { public int Id { get; set; } }
+            public class ProductDto { public int Id { get; set; } }
+            public class Brand { public Product Product { get; set; } = new(); }
+            public class BrandDto { public ProductDto Product { get; set; } = new(); }
+
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper() => CreateMap<Brand, BrandDto>();
+            }
+
+            public partial class TestMapper
+            {
+                private void TheOtherHalf() => CreateMap<Product, ProductDto>();
+            }
+            """);
+
+        run.None("SM0011");
+        Assert.Empty(run.Ids());
+        run.Compiles().Emits("Product = MapToProductDto(source.Product)");
     }
 }

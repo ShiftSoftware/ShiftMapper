@@ -1,3 +1,5 @@
+﻿using System;
+using System.Collections.Generic;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Text;
 
@@ -24,8 +26,35 @@ internal sealed class LocationInfo
     public TextSpan TextSpan { get; }
     public LinePositionSpan LineSpan { get; }
 
-    /// <summary>Rebuilds a real <see cref="Location"/> for reporting.</summary>
+    /// <summary>
+    /// Rebuilds a <see cref="Location"/> from the coordinates alone.
+    ///
+    /// This is an EXTERNAL FILE location: it prints correctly in build output, and it is not
+    /// attached to a syntax tree. Prefer the overload below wherever the tree is at hand.
+    /// </summary>
     public Location ToLocation() => Location.Create(FilePath, TextSpan, LineSpan);
+
+    /// <summary>
+    /// Rebuilds a real, tree-attached <see cref="Location"/>, falling back to the external-file
+    /// one when the tree is not among <paramref name="treesByPath"/>.
+    ///
+    /// THE TREE IS THE POINT. .editorconfig is resolved PER SYNTAX TREE — that is how a
+    /// `dotnet_diagnostic.SM0001.severity` entry can say one thing under src/ and another under
+    /// tests/ — so a diagnostic reported without a tree cannot be retuned by a config file at
+    /// all, only by NoWarn. It is also what puts the squiggle under the code in the editor
+    /// rather than only a line in the build log.
+    /// </summary>
+    public Location ToLocation(IReadOnlyDictionary<string, SyntaxTree>? treesByPath)
+    {
+        if (treesByPath is not null
+            && treesByPath.TryGetValue(FilePath, out SyntaxTree tree)
+            && TextSpan.End <= tree.Length)
+        {
+            return Location.Create(tree, TextSpan);
+        }
+
+        return ToLocation();
+    }
 
     /// <summary>Captures the position of a node, or null for generated / in-memory code.</summary>
     public static LocationInfo? CreateFrom(SyntaxNode node)

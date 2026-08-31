@@ -1,0 +1,53 @@
+<Project>
+
+  <!--
+    Settings every project in the repository shares. MSBuild imports this automatically,
+    innermost file last, so anything here can still be overridden in a .csproj.
+  -->
+
+  <PropertyGroup>
+    <!-- ================= Identity =================================================== -->
+    <Product>ShiftMapper</Product>
+    <Authors>Shift Software</Authors>
+    <Company>Shift Software</Company>
+    <Copyright>Copyright (c) Shift Software</Copyright>
+    <PackageProjectUrl>https://github.com/ShiftSoftware/ShiftMapper</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/ShiftSoftware/ShiftMapper</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+
+    <!--
+      ONE version for the whole repository. The runtime library and the generator are two
+      halves of one thing and ship in one package, so there is nothing to version separately.
+
+      Pre-1.0 on purpose: Phases 2 and 3 of PLAN.md still add to the declaration API, and a
+      0.x minor is allowed to change it. See the versioning section of README.md.
+    -->
+    <Version>0.1.0</Version>
+
+    <!--
+      Nothing is packable unless it says so. Exactly one project opts back in - ShiftMapper -
+      and it carries the generator with it.
+    -->
+    <IsPackable>false</IsPackable>
+
+    <!-- ================= Reproducible builds ======================================== -->
+    <!--
+      A deterministic build produces byte-identical output from identical input, which is what
+      makes a published package verifiable against its source. The path mapping half of it is
+      only correct on a build machine, where every checkout lives somewhere different, so it is
+      switched on there rather than locally.
+    -->
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+
+    <!--
+      SourceLink. Since .NET 8 it is part of the SDK, so there is no package to reference: these
+      two properties are the whole opt-in. They put the commit and repository URL into the PDB,
+      so a debugger can step into ShiftMapper's own source from a consuming application.
+    -->
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+  </PropertyGroup>
+
+</Project>

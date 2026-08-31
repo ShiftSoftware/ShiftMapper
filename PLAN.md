@@ -19,6 +19,45 @@ in SQL. Phase 3 is that layer, and it is the reason the whole plan exists.
 
 ---
 
+## Status
+
+Every step heading below carries the same marker: ✅ done, ⬜ pending.
+
+**Phase 1 — Trust**
+
+- [x] **Step 1** — Tests
+- [x] **Step 2** — Fix the runtime cost
+- [x] **Step 3** — Ship it
+- [ ] **Step 4** — One entry point a library can be written against
+
+**Phase 2 — Close the mapping gaps**
+
+- [ ] **Step 5** — Collections and null policy at the top level
+- [ ] **Step 6** — Destinations that are not `new T { }`
+- [ ] **Step 7** — Per-member power tools
+- [ ] **Step 8** — Map-level hooks
+- [ ] **Step 9** — Flattening and naming conventions
+- [ ] **Step 10** — Inheritance, polymorphism, open generics
+
+**Phase 3 — The general layer**
+
+- [ ] **Step 11** — Profiles: maps declared outside the mapper class
+- [ ] **Step 12** — Global type-pair converters
+- [ ] **Step 13** — The compile-time extension contract for referenced assemblies
+- [ ] **Step 14** — Declarative member conventions
+- [ ] **Step 15** — What ShiftFramework then builds (ShiftEntity repository, not this one)
+
+**Phase 4 — Finish**
+
+- [ ] **Step 16** — Diagnostics and analyzer completeness
+- [ ] **Step 17** — Docs and sample
+- [ ] **Step 18** — Benchmarks
+
+Next is **Step 4**. From there the critical path is the one at the foot of this file:
+4 → 8 → 10 → 11 → 12 → 13 → 14 → 15.
+
+---
+
 ## 0. Where we are today
 
 ### What works
@@ -42,13 +81,21 @@ in SQL. Phase 3 is that layer, and it is the reason the whole plan exists.
   extension-method spellings of each.
 - DI registration through `AddShiftMapper<TMapper>()`, with constructor injection and a
   `Services` escape hatch.
+- **(Step 1)** `ShiftMapper.Tests` and `ShiftMapper.Generator.Tests` — 275 tests covering every
+  diagnostic, the conversion matrix, projections against real SQLite, and Map/ProjectTo parity —
+  running in CI on every push.
+- **(Step 2)** Customizations compiled once per mapper TYPE per process, projections held in
+  lazily-initialised cached fields, and a non-generic direct create method behind the generic
+  dispatcher. Measured by `ShiftMapper.Benchmarks`.
+- **(Step 3)** A NuGet package, `ShiftSoftware.ShiftMapper`, carrying the generator as an
+  analyzer; and the SM#### rules reported by a real `DiagnosticAnalyzer`, so `.editorconfig`
+  retunes them per folder.
 
 ### What is missing, in one paragraph
 
-There are no tests. There is no package. There is no interface a library can be written
-against. The mapper recompiles its `MapFrom` delegates and rebuilds its projection trees
-once per scope. Destinations must have a parameterless constructor, so records and
-constructor-initialised DTOs are out. There is no way to map a collection at the top level.
+There is no interface a library can be written against. Destinations must have a
+parameterless constructor, so records and constructor-initialised DTOs are out. There is no way
+to map a collection at the top level.
 There is no `Condition`, `NullSubstitute`, `BeforeMap`/`AfterMap`, `ConstructUsing`,
 `ConvertUsing`, flattening, inheritance or open generics. And — the item this plan is
 mostly about — there is no GLOBAL configuration layer at all: every rule has to be
@@ -61,7 +108,7 @@ applies everywhere.
 
 Nothing in Phase 2 or 3 is safe to build on top of an untested generator.
 
-### Step 1 — Tests
+### ✅ Step 1 — Tests
 
 Add `ShiftMapper.Tests` (xunit) and `ShiftMapper.Generator.Tests`.
 
@@ -86,7 +133,13 @@ Add `ShiftMapper.Tests` (xunit) and `ShiftMapper.Generator.Tests`.
 
 **Done when** the suite covers every diagnostic and every conversion pair, and runs in CI.
 
-### Step 2 — Fix the runtime cost
+**What landed.** `ShiftMapper.Generator.Tests` drives the generator AND the analyzer over source
+snippets and asserts on id, severity, location, emitted text and whether the result still
+compiles; `ShiftMapper.Tests` covers the runtime, projections against real SQLite, and
+Map/ProjectTo parity. `.github/workflows/ci.yml` restores, builds, tests and packs on every push
+and pull request.
+
+### ✅ Step 2 — Fix the runtime cost
 
 Two real problems, both invisible until load:
 
@@ -116,7 +169,13 @@ assumed.
 **Done when** a mapper resolved per request compiles each customization once per process and
 allocates no projection tree per `ProjectTo` call.
 
-### Step 3 — Ship it
+**What landed.** `MapCustomizations` keys its compiled delegates on the mapper TYPE in a static
+dictionary, falling back to a per-instance one only for a lambda that captured instance state;
+each projection is emitted as a lazily-initialised cached field rather than a computed property;
+and a non-generic direct create method sits behind the generic dispatcher.
+`ShiftMapper.Benchmarks` measures all three.
+
+### ✅ Step 3 — Ship it
 
 - Pack `ShiftMapper` as a NuGet package that carries the generator as an analyzer
   (`ShiftMapper.Generator.dll` under `analyzers/dotnet/cs`, `PrivateAssets`), so a consumer
@@ -134,7 +193,37 @@ allocates no projection tree per `ProjectTo` call.
 
 **Done when** `dotnet add package ShiftSoftware.ShiftMapper` is all a consumer needs.
 
-### Step 4 — One entry point a library can be written against
+**What landed.**
+
+- `ShiftMapper.csproj` packs as `ShiftSoftware.ShiftMapper` and copies
+  `ShiftMapper.Generator.dll` into `analyzers/dotnet/cs` from an analyzer-typed project
+  reference with `PrivateAssets="all"`, so one `PackageReference` installs both halves and the
+  generator never becomes a dependency. The pack FAILS if the generator is missing rather than
+  shipping a package that compiles and maps nothing.
+- `Directory.Build.props` carries the shared identity (authors, license, repository URL, one
+  `Version` for the whole repository), deterministic builds, `ContinuousIntegrationBuild` on CI,
+  and SourceLink — which is part of the SDK since .NET 8, so it is two properties rather than a
+  package. `IsPackable` defaults to false there and only `ShiftMapper` opts back in.
+- Symbols ship as a `.snupkg`, and the library's XML documentation ships in the package.
+- `README.md` (packed), `LICENSE` — MIT — and `ShiftMapper/Images/icon.png`, which is the
+  shared ShiftFramework icon, byte-identical to the one every ShiftEntity package ships and
+  packed from the same `Images\icon.png` location they use.
+- **Version and TFM policy**, stated in the README rather than left implied: runtime library
+  `net10.0` only, generator `netstandard2.0` because a Roslyn component has no choice, one
+  version number for both halves, and pre-1.0 while the declaration API is still growing.
+- **The diagnostics moved into a real `DiagnosticAnalyzer`** — `ShiftMapperAnalyzer` — and the
+  generator now reports nothing at all. Both halves read the maps through the same
+  `BuildMapperClass` and `MergeAndResolve`, so they cannot drift; the analyzer passes a
+  `DiagnosticReporter` and the generator passes null. The reporter attaches every message to a
+  real `SyntaxTree`, which is what `.editorconfig` resolution is keyed on — a file-path-only
+  location prints identically and cannot be retuned at all. `AnalyzerConfigTests` proves
+  promotion, suppression, raising an informational rule and turning an error down, all through
+  the real `SyntaxTreeOptionsProvider` the compiler builds from an .editorconfig.
+
+One consequence, and it is in the README: a project that turns analyzers off entirely still gets
+mapping code, but silently — including SM0011 and SM0012, the two that stop a build.
+
+### ⬜ Step 4 — One entry point a library can be written against
 
 Today a consumer must reference the concrete `AppMapper` type. A framework cannot: it has to
 be written against something it can resolve from DI without knowing the application's mapper
@@ -172,7 +261,7 @@ application's mapper type.
 This is the "as usable as AutoMapper" work. Each step is independent of the others; the
 order below is by how often the gap is actually hit.
 
-### Step 5 — Collections and null policy at the top level
+### ⬜ Step 5 — Collections and null policy at the top level
 
 ```csharp
 mapper.Map<List<BrandDto>>(brands);      // does not exist today
@@ -190,7 +279,7 @@ mapper.MapOrNull<BrandDto>(maybeNull);   // Map throws on null, deliberately
 - Add `Dictionary<K,V>` / `IDictionary` / `IReadOnlyDictionary` to the collection builders in
   `ConversionResolver` and `ValueConverter`. Today a dictionary is SM0002.
 
-### Step 6 — Destinations that are not `new T { }`
+### ⬜ Step 6 — Destinations that are not `new T { }`
 
 `MapModel.CanConstructDestination` requires a public parameterless constructor, so today a
 positional `record`, a DTO with a primary constructor, or one with `required` members cannot
@@ -205,7 +294,7 @@ be a destination at all — it is SM0004. Modern DTOs are exactly those shapes.
 
 This also unblocks projections into records, which EF handles fine.
 
-### Step 7 — Per-member power tools
+### ⬜ Step 7 — Per-member power tools
 
 Everything here is another method on `MemberOptions`, which is the shape `ForMember` was
 built for. Each needs a query form as well as an in-memory form.
@@ -225,7 +314,7 @@ The important design point: **a member option that cannot be translated must be 
 diagnostic on any map that is also projected**, not a runtime surprise. The generator already
 knows which maps get a `ProjectTo`, so it can say so.
 
-### Step 8 — Map-level hooks
+### ⬜ Step 8 — Map-level hooks
 
 ```csharp
 CreateMap<Brand, BrandDto>()
@@ -246,7 +335,7 @@ CreateMap<Brand, BrandDto>()
 - Emit a diagnostic when a map carrying an in-memory-only hook is used inside a projection —
   the hook will not run, and today nothing says so.
 
-### Step 9 — Flattening and naming conventions
+### ⬜ Step 9 — Flattening and naming conventions
 
 AutoMapper maps `Order.Customer.Name` onto `OrderDto.CustomerName` with no configuration.
 ShiftMapper reports SM0001 and stops.
@@ -260,7 +349,7 @@ ShiftMapper reports SM0001 and stops.
   how AutoMapper maps end up filling members nobody meant to fill, and this library's whole
   posture is to report rather than guess.
 
-### Step 10 — Inheritance, polymorphism, open generics
+### ⬜ Step 10 — Inheritance, polymorphism, open generics
 
 - `.IncludeBase<TSourceBase, TDestinationBase>()` — inherit a base map's members and its
   `ForMember` configuration. This is what makes "every entity to every DTO maps its audit
@@ -305,7 +394,7 @@ The concrete rules ShiftFramework has today, all currently hand-rolled in
 Phase 3 is done when ShiftFramework can express all of that in ShiftMapper's own vocabulary
 and delete its bespoke mapper generator.
 
-### Step 11 — Profiles: maps declared outside the mapper class
+### ⬜ Step 11 — Profiles: maps declared outside the mapper class
 
 Today every map lives in one class's constructor. A framework cannot add to it.
 
@@ -334,7 +423,7 @@ public partial class AppMapper : ShiftMapperBase
   scaffolder) can contribute `CreateMap` calls as generated source. State that as a supported
   extension route and test it.
 
-### Step 12 — Global type-pair converters
+### ⬜ Step 12 — Global type-pair converters
 
 The keystone. One registration, applied to every map, everywhere, in both backends.
 
@@ -371,7 +460,7 @@ Requirements:
 
 This one API covers the `ShiftFileDTO` case and the hash-id case outright.
 
-### Step 13 — The compile-time extension contract for referenced assemblies
+### ⬜ Step 13 — The compile-time extension contract for referenced assemblies
 
 Steps 11 and 12 work when the profile is source in the same compilation. ShiftFramework's is
 not — it arrives as a compiled DLL, and a source generator sees referenced assemblies as
@@ -426,7 +515,7 @@ the same declarations so they cannot disagree.
 - *The framework emits the entire mapper itself.* That is `ShiftEntityMapperGenerator` today,
   and the goal is to delete it, not to re-derive it.
 
-### Step 14 — Declarative member conventions
+### ⬜ Step 14 — Declarative member conventions
 
 Type-pair conversions (Steps 12 and 13) handle "this type becomes that type". They cannot
 express ShiftFramework's select-DTO rule, which is member-SHAPED:
@@ -471,7 +560,7 @@ rules that must apply to types the framework has never seen.
 projection contains an inline `Brand = new ShiftEntitySelectDTO { Value = ..., Text = ... }`
 member-init that SQL translates, with nothing written in the application.
 
-### Step 15 — What ShiftFramework then builds (checklist, not ShiftMapper work)
+### ⬜ Step 15 — What ShiftFramework then builds (checklist, not ShiftMapper work)
 
 Tracked here so Phase 3 can be validated against a real consumer. All of it lives in the
 ShiftEntity repository, none of it in ShiftMapper.
@@ -513,7 +602,7 @@ ShiftEntity repository, none of it in ShiftMapper.
 
 ## Phase 4 — Finish
 
-### Step 16 — Diagnostics and analyzer completeness
+### ⬜ Step 16 — Diagnostics and analyzer completeness
 
 - `CreateMap` called somewhere the generator cannot read it (inside an `if`, a loop, a ternary,
   a helper method) currently generates NOTHING and says nothing. ShiftEntity's generator
@@ -525,9 +614,13 @@ ShiftEntity repository, none of it in ShiftMapper.
   versa.
 - Code fixes for the common ones: SM0001 offers `opt.Ignore()`; SM0011 offers the missing
   `CreateMap`.
-- Move reporting into a `DiagnosticAnalyzer` (Step 3) so `.editorconfig` works.
+- ~~Move reporting into a `DiagnosticAnalyzer` (Step 3) so `.editorconfig` works.~~ Done in
+  Step 3 — `ShiftMapperAnalyzer` reports all twelve rules and the generator reports none. What is
+  left here is the CODE FIXES, which need `Microsoft.CodeAnalysis.CSharp.Workspaces` and a
+  second assembly under `analyzers/dotnet/cs`, since a code-fix provider must not be loaded into
+  the compiler's own analyzer context.
 
-### Step 17 — Docs and sample
+### ⬜ Step 17 — Docs and sample
 
 - `README.md`, plus a `docs/` folder: getting started, the conversion table, the diagnostics
   reference (one page per SM id, which is what people search for), and the extension-points
@@ -539,7 +632,7 @@ ShiftEntity repository, none of it in ShiftMapper.
   framework" project that registers a global conversion through Step 13 — so the extension
   contract is exercised by the sample, not only by the tests.
 
-### Step 18 — Benchmarks
+### ⬜ Step 18 — Benchmarks
 
 BenchmarkDotNet against AutoMapper and Mapperly: single map, nested graph, 10k collection, and
 a `ProjectTo` query-shape comparison. Publish the numbers in the README. A source-generated
@@ -549,13 +642,15 @@ mapper that cannot show its numbers has given up its main argument.
 
 ## Ordering summary
 
-| Phase | Steps | Blocking? |
-|---|---|---|
-| 1 — Trust | 1 Tests, 2 Runtime cost, 3 Packaging, 4 `IShiftMapper` | Yes — everything depends on 1 and 4 |
-| 2 — Gaps | 5 Collections, 6 Constructors/records, 7 Member options, 8 Map hooks, 9 Flattening, 10 Inheritance/generics | 8 and 10 block Phase 3 |
-| 3 — General layer | 11 Profiles, 12 Global conversions, 13 Compile-time contract, 14 Member conventions, 15 ShiftFramework port | The goal |
-| 4 — Finish | 16 Diagnostics, 17 Docs, 18 Benchmarks | Can run alongside 2 and 3 |
+| Phase | Steps | State | Blocking? |
+|---|---|---|---|
+| 1 — Trust | 1 Tests, 2 Runtime cost, 3 Packaging | ✅ done | Everything depended on 1 |
+| 1 — Trust | 4 `IShiftMapper` | ⬜ pending | Yes — Phase 3 depends on it |
+| 2 — Gaps | 5 Collections, 6 Constructors/records, 7 Member options, 8 Map hooks, 9 Flattening, 10 Inheritance/generics | ⬜ pending | 8 and 10 block Phase 3 |
+| 3 — General layer | 11 Profiles, 12 Global conversions, 13 Compile-time contract, 14 Member conventions, 15 ShiftFramework port | ⬜ pending | The goal |
+| 4 — Finish | 16 Diagnostics, 17 Docs, 18 Benchmarks | ⬜ pending | Can run alongside 2 and 3 |
 
 The shortest path to ShiftFramework being able to adopt this is
-**1 → 4 → 8 → 10 → 11 → 12 → 13 → 14 → 15**. Steps 5, 6, 7 and 9 are needed for ShiftMapper to
-be a good general-purpose mapper, but they are not on ShiftFramework's critical path.
+**1 → 4 → 8 → 10 → 11 → 12 → 13 → 14 → 15**; with 1 done, it starts at **4**. Steps 5, 6, 7 and 9
+are needed for ShiftMapper to be a good general-purpose mapper, but they are not on
+ShiftFramework's critical path.

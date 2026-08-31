@@ -1,4 +1,5 @@
-﻿using Microsoft.CodeAnalysis;
+﻿using System.Collections.Immutable;
+using Microsoft.CodeAnalysis;
 
 namespace ShiftMapper.Generator;
 
@@ -7,15 +8,23 @@ namespace ShiftMapper.Generator;
 /// *definition* of a warning (its id, wording and severity); a <see cref="Diagnostic"/> is
 /// one actual occurrence of it, attached to a location in your code.
 ///
-/// The ids are what you use to silence a rule, in a .csproj:
+/// The ids are what you use to retune a rule. In .editorconfig, which is the usual place and
+/// works per folder:
+/// <code>
+/// [*.cs]
+/// dotnet_diagnostic.SM0010.severity = error
+///
+/// [tests/**.cs]
+/// dotnet_diagnostic.SM0001.severity = none
+/// </code>
+/// or in a .csproj, for the whole project at once:
 ///   &lt;NoWarn&gt;$(NoWarn);SM0001&lt;/NoWarn&gt;
-/// and to promote one, the same way:
 ///   &lt;WarningsAsErrors&gt;$(WarningsAsErrors);SM0002&lt;/WarningsAsErrors&gt;
 ///
-/// NOTE — .editorconfig does NOT work on these. A `dotnet_diagnostic.SM0001.severity` entry
-/// retunes diagnostics that come from an ANALYZER; ours come from a SOURCE GENERATOR, and
-/// the compiler treats those like its own CS diagnostics. They honour NoWarn and
-/// WarningsAsErrors, and ignore analyzer config entirely.
+/// That .editorconfig support is why these are reported by <see cref="ShiftMapperAnalyzer"/>
+/// and not by the generator: a diagnostic a source generator reports is treated by the
+/// compiler like one of its own CS ones, which honours NoWarn and ignores analyzer config
+/// entirely.
 /// </summary>
 internal static class DiagnosticDescriptors
 {
@@ -98,8 +107,8 @@ internal static class DiagnosticDescriptors
     /// make ReverseMap unusable on exactly the shape it exists to serve, so this is
     /// informational: visible in the IDE and under `dotnet build -v d`, silent in a normal build.
     ///
-    /// If you want these enforced, map the DTO to a type you own end-to-end instead — an
-    /// informational diagnostic cannot be promoted to a warning from outside the generator.
+    /// If you want these enforced, raise it where it matters:
+    /// <c>dotnet_diagnostic.SM0006.severity = warning</c>.
     /// </summary>
     public static readonly DiagnosticDescriptor NoSourcePropertyInReverseMap = new(
         id: "SM0006",
@@ -197,8 +206,9 @@ internal static class DiagnosticDescriptors
     /// It fires on collections too, once for the property rather than once per element:
     /// mapping a <c>List&lt;long&gt;</c> onto a <c>List&lt;int&gt;</c> narrows every item in it.
     ///
-    /// Silence it per project with &lt;NoWarn&gt;$(NoWarn);SM0010&lt;/NoWarn&gt;, or make it
-    /// impossible to ignore with &lt;WarningsAsErrors&gt;$(WarningsAsErrors);SM0010&lt;/WarningsAsErrors&gt;.
+    /// Silence it where you have decided the range is safe with
+    /// <c>dotnet_diagnostic.SM0010.severity = none</c>, or make it impossible to ignore with
+    /// <c>= error</c> — per folder, in .editorconfig.
     /// The real fix is usually to give the destination property the source's type.
     /// </summary>
     public static readonly DiagnosticDescriptor NarrowingConversion = new(
@@ -296,4 +306,28 @@ internal static class DiagnosticDescriptors
         isEnabledByDefault: true,
         description: "The class derives from ShiftMapperBase, so it was clearly meant to be a mapper, " +
                      "but the generator cannot add code to it in its current shape.");
+
+
+    /// <summary>
+    /// Every rule, in id order — what <see cref="ShiftMapperAnalyzer.SupportedDiagnostics"/>
+    /// hands back.
+    ///
+    /// A rule missing from this list is a rule the compiler will refuse to let the analyzer
+    /// report, so this is the one place that has to stay in step with the fields below — and
+    /// with AnalyzerReleases.Unshipped.md, which the release-tracking analyzers check for us.
+    /// </summary>
+    public static readonly ImmutableArray<DiagnosticDescriptor> All = ImmutableArray.Create(
+        NoSourceProperty,
+        NotConvertible,
+        SetterNotAccessible,
+        CannotConstructDestination,
+        MapperSkipped,
+        NoSourcePropertyInReverseMap,
+        AmbiguousCaseInsensitiveMatch,
+        LossyConversion,
+        ParsedConversion,
+        NarrowingConversion,
+        NoMapForNestedProperty,
+        CircularNesting);
 }
+

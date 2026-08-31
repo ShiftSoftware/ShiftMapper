@@ -37,7 +37,7 @@ namespace ShiftMapper.Generator;
 public sealed class ShiftMapperGenerator : IIncrementalGenerator
 {
     /// <summary>Full name of the base class a mapper must derive from.</summary>
-    private const string BaseClassMetadataName = "ShiftMapper.ShiftMapperBase";
+    internal const string BaseClassMetadataName = "ShiftMapper.ShiftMapperBase";
 
     /// <summary>
     /// Full name of the handle CreateMap returns, and so the type ReverseMap must be
@@ -78,7 +78,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         IncrementalValuesProvider<MapperClassModel> declarations = context.SyntaxProvider
             .CreateSyntaxProvider(
                 predicate: static (node, _) => IsCandidateClass(node),
-                transform: static (ctx, ct) => BuildMapperClass(ctx, ct))
+                transform: static (ctx, ct) => BuildMapperClass(
+                    ctx.SemanticModel, (ClassDeclarationSyntax)ctx.Node, ct))
             .Where(static model => model is not null)
             .Select(static (model, _) => model!);
 
@@ -112,15 +113,21 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// have type information (the "semantic model"), so we can confirm the base class and
     /// resolve what `Brand` and `BrandDto` really are.
     /// Returns null when the class is not a usable ShiftMapper mapper, and it is skipped.
+    ///
+    /// Takes a plain <see cref="SemanticModel"/> rather than the generator's own context
+    /// because <see cref="ShiftMapperAnalyzer"/> runs the very same analysis from a symbol
+    /// action, and reading the maps twice from two pieces of code is how a diagnostic ends up
+    /// describing something the generated file does not do.
     /// </summary>
-    private static MapperClassModel? BuildMapperClass(GeneratorSyntaxContext context, CancellationToken cancellationToken)
+    internal static MapperClassModel? BuildMapperClass(
+        SemanticModel semanticModel,
+        ClassDeclarationSyntax classDeclaration,
+        CancellationToken cancellationToken)
     {
-        var classDeclaration = (ClassDeclarationSyntax)context.Node;
-
-        if (context.SemanticModel.GetDeclaredSymbol(classDeclaration, cancellationToken) is not INamedTypeSymbol classSymbol)
+        if (semanticModel.GetDeclaredSymbol(classDeclaration, cancellationToken) is not INamedTypeSymbol classSymbol)
             return null;
 
-        INamedTypeSymbol? baseClass = context.SemanticModel.Compilation
+        INamedTypeSymbol? baseClass = semanticModel.Compilation
             .GetTypeByMetadataName(BaseClassMetadataName);
 
         if (baseClass is null || !DerivesFrom(classSymbol, baseClass))
@@ -144,21 +151,21 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
         // Null when the referenced ShiftMapper runtime predates MapExpression. ReverseMap
         // simply goes unrecognised in that case rather than the generator falling over.
-        INamedTypeSymbol? mapExpression = context.SemanticModel.Compilation
+        INamedTypeSymbol? mapExpression = semanticModel.Compilation
             .GetTypeByMetadataName(MapExpressionMetadataName);
 
         // Null on the same terms: a runtime that predates ForMember simply has no such type, and
         // the chain walker then finds no per-property refinements rather than falling over.
-        INamedTypeSymbol? memberOptions = context.SemanticModel.Compilation
+        INamedTypeSymbol? memberOptions = semanticModel.Compilation
             .GetTypeByMetadataName(MemberOptionsMetadataName);
 
-        INamedTypeSymbol? mapOptions = context.SemanticModel.Compilation
+        INamedTypeSymbol? mapOptions = semanticModel.Compilation
             .GetTypeByMetadataName(MapOptionsMetadataName);
 
         // Resolved once per declaration, from the class symbol, so an override living in
         // another part of a partial mapper still counts.
         bool? classDefaultCaseSensitive = ReadClassDefaultCaseSensitive(
-            context.SemanticModel.Compilation, classSymbol, baseClass, mapOptions, cancellationToken);
+            semanticModel.Compilation, classSymbol, baseClass, mapOptions, cancellationToken);
 
         var maps = ImmutableArray.CreateBuilder<MapModel>();
         var seen = new HashSet<string>();
@@ -168,14 +175,14 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         foreach (InvocationExpressionSyntax invocation in classDeclaration.DescendantNodes().OfType<InvocationExpressionSyntax>())
         {
             GenericNameSyntax? createMap = GetCreateMapName(
-                context.SemanticModel, invocation, baseClass, cancellationToken);
+                semanticModel, invocation, baseClass, cancellationToken);
 
             if (createMap is null)
                 continue;
 
             // One CreateMap normally means one map — but a chained ReverseMap() means two.
             foreach (MapModel map in BuildMapModels(
-                         context.SemanticModel,
+                         semanticModel,
                          invocation,
                          createMap,
                          mapExpression,
@@ -225,19 +232,11 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         return MapperSkipReason.None;
     }
 
-    /// <summary>Human wording for <see cref="MapperSkipReason"/>, used in SM0005.</summary>
-    private static string DescribeSkipReason(MapperSkipReason reason) => reason switch
-    {
-        MapperSkipReason.NotPartial => "it is not declared partial, so no code can be added to it",
-        MapperSkipReason.ContainerNotPartial => "a type it is nested inside is not declared partial",
-        _ => "generic mapper classes are not supported",
-    };
-
     /// <summary>
     /// Walks the whole base chain, so a mapper that inherits an intermediate base of your
     /// own (for shared helpers) is still recognised.
     /// </summary>
-    private static bool DerivesFrom(INamedTypeSymbol type, INamedTypeSymbol baseClass)
+    internal static bool DerivesFrom(INamedTypeSymbol type, INamedTypeSymbol baseClass)
     {
         for (INamedTypeSymbol? current = type.BaseType; current is not null; current = current.BaseType)
         {
@@ -1213,6 +1212,14 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
     /// <summary>
     /// Merges the declarations belonging to each mapper type and emits one file per type.
+    ///
+    /// NOTHING IS REPORTED FROM HERE. Every SM#### message is raised by
+    /// <see cref="ShiftMapperAnalyzer"/> instead, because a diagnostic a source generator
+    /// reports is treated by the compiler like one of its own CS ones: it honours NoWarn and
+    /// WarningsAsErrors and ignores .editorconfig entirely, so a team cannot turn a rule down
+    /// in one folder and up in another. This half only writes code; the analyzer half runs the
+    /// same analysis (<see cref="BuildMapperClass"/>, <see cref="MergeAndResolve"/>) and does
+    /// the talking.
     /// </summary>
     private static void EmitAll(SourceProductionContext context, ImmutableArray<MapperClassModel> declarations)
     {
@@ -1220,38 +1227,12 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         {
             MapperClassModel first = parts.First();
 
-            // SM0005 — the class is a mapper but nothing could be generated for it.
+            // The class is a mapper we cannot add a part to. The analyzer says so as SM0005;
+            // here there is simply nothing to write.
             if (first.SkipReason != MapperSkipReason.None)
-            {
-                context.ReportDiagnostic(Diagnostic.Create(
-                    DiagnosticDescriptors.MapperSkipped,
-                    first.Location?.ToLocation(),
-                    first.ClassName,
-                    DescribeSkipReason(first.SkipReason)));
                 continue;
-            }
 
-            // Maps may be declared in any part of the class; gather them all.
-            var merged = ImmutableArray.CreateBuilder<MapModel>();
-            var seen = new HashSet<string>();
-            foreach (MapperClassModel part in parts)
-            {
-                foreach (MapModel map in part.Maps)
-                {
-                    if (seen.Add(map.Key))
-                        merged.Add(map);
-                }
-            }
-
-            // Nested objects can only be settled now. Whether ProductDto can be filled depends
-            // on whether a CreateMap<Product, ProductDto> exists ANYWHERE in this mapper, and
-            // until the parts are merged there is no "anywhere" to look in.
-            ImmutableArray<MapModel> maps = ResolveNested(context, merged.ToImmutable());
-
-            // Tell the developer about everything we could not map. These show up in the
-            // Error List / build output exactly like compiler warnings, because that is
-            // precisely what they are.
-            ReportSkippedProperties(context, maps);
+            ImmutableArray<MapModel> maps = MergeAndResolve(parts, report: null);
 
             Emit(context, new MapperClassModel(
                 first.NamespaceName,
@@ -1261,6 +1242,38 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                 first.IsPublic,
                 maps));
         }
+    }
+
+    /// <summary>
+    /// Merges the parts of one partial mapper into a single set of maps, then settles every
+    /// nested object property against that merged set.
+    ///
+    /// Maps may be declared in any part of the class, and a nested property can only be judged
+    /// once they are all in hand: whether <c>ProductDto</c> can be filled depends on whether a
+    /// <c>CreateMap&lt;Product, ProductDto&gt;</c> exists ANYWHERE in this mapper, and until the
+    /// parts are merged there is no "anywhere" to look in.
+    ///
+    /// Both halves of ShiftMapper come through here — the analyzer passing a
+    /// <paramref name="report"/> so it can talk, the generator passing null so it can emit —
+    /// which is what stops a diagnostic from describing a graph the generated file does not have.
+    /// </summary>
+    internal static ImmutableArray<MapModel> MergeAndResolve(
+        IEnumerable<MapperClassModel> parts,
+        DiagnosticReporter? report)
+    {
+        var merged = ImmutableArray.CreateBuilder<MapModel>();
+        var seen = new HashSet<string>();
+
+        foreach (MapperClassModel part in parts)
+        {
+            foreach (MapModel map in part.Maps)
+            {
+                if (seen.Add(map.Key))
+                    merged.Add(map);
+            }
+        }
+
+        return ResolveNested(report, merged.ToImmutable());
     }
 
     /// <summary>
@@ -1280,7 +1293,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// makes "all the way down" a finite instruction.
     /// </summary>
     private static ImmutableArray<MapModel> ResolveNested(
-        SourceProductionContext context,
+        DiagnosticReporter? report,
         ImmutableArray<MapModel> maps)
     {
         if (maps.All(map => map.NestedProperties.IsEmpty))
@@ -1313,13 +1326,13 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                     continue;
                 }
 
-                context.ReportDiagnostic(Diagnostic.Create(
+                report?.Report(
                     DiagnosticDescriptors.NoMapForNestedProperty,
-                    map.Location?.ToLocation(),
+                    map.Location,
                     map.DestinationName,
                     nested.Destination,
                     ShortName(nested.SourceElementType),
-                    nested.DestinationElementName));
+                    nested.DestinationElementName);
             }
 
             validated[map.Key] = map.WithNested(kept.ToImmutable());
@@ -1332,7 +1345,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         var reported = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (MapModel map in validated.Values.OrderBy(m => m.Key, StringComparer.Ordinal))
-            FindCycles(context, map, validated, new List<(string Key, NestedProperty Via)>(), cut, reported);
+            FindCycles(report, map, validated, new List<(string Key, NestedProperty Via)>(), cut, reported);
 
         if (cut.Count == 0)
             return validated.Values.ToImmutableArray();
@@ -1361,7 +1374,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// names with no indication of which property to remove.
     /// </summary>
     private static void FindCycles(
-        SourceProductionContext context,
+        DiagnosticReporter? report,
         MapModel map,
         Dictionary<string, MapModel> byKey,
         List<(string Key, NestedProperty Via)> path,
@@ -1387,18 +1400,18 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
                 if (reported.Add(nested.Key + "|" + map.Key + "|" + nested.Destination))
                 {
-                    context.ReportDiagnostic(Diagnostic.Create(
+                    report?.Report(
                         DiagnosticDescriptors.CircularNesting,
-                        map.Location?.ToLocation(),
+                        map.Location,
                         DescribeLoop(path, closes, map, nested, child),
-                        nested.Destination));
+                        nested.Destination);
                 }
 
                 continue;
             }
 
             path.Add((map.Key, nested));
-            FindCycles(context, child, byKey, path, cut, reported);
+            FindCycles(report, child, byKey, path, cut, reported);
             path.RemoveAt(path.Count - 1);
         }
     }
@@ -1423,142 +1436,6 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         parts.Add(child.DestinationName);
 
         return string.Join(" -> ", parts);
-    }
-
-    /// <summary>
-    /// Turns every skipped property, and every destination we cannot construct, into a real
-    /// build warning pointing at the CreateMap call that asked for the map.
-    /// </summary>
-    private static void ReportSkippedProperties(SourceProductionContext context, ImmutableArray<MapModel> maps)
-    {
-        foreach (MapModel map in maps)
-        {
-            Location? location = map.Location?.ToLocation();
-
-            // SM0004 — we cannot write `new TDestination { ... }`, so there is no create method.
-            if (!map.CanConstructDestination)
-            {
-                context.ReportDiagnostic(Diagnostic.Create(
-                    DiagnosticDescriptors.CannotConstructDestination,
-                    location,
-                    map.DestinationName));
-            }
-
-            foreach (UnmappedProperty unmapped in map.UnmappedProperties)
-            {
-                Diagnostic diagnostic = unmapped.Reason switch
-                {
-                    // SM0001: nothing on the source is called this. The same situation in a
-                    // reverse map is SM0006 instead — informational, because mapping back to
-                    // a richer type is expected to leave properties behind.
-                    UnmappedReason.NoSourceProperty => Diagnostic.Create(
-                        map.IsReverse
-                            ? DiagnosticDescriptors.NoSourcePropertyInReverseMap
-                            : DiagnosticDescriptors.NoSourceProperty,
-                        location,
-                        map.DestinationName,
-                        unmapped.PropertyName,
-                        map.SourceName),
-
-                    // SM0003: it looks assignable, but the setter cannot be called.
-                    UnmappedReason.SetterNotAccessible => Diagnostic.Create(
-                        DiagnosticDescriptors.SetterNotAccessible,
-                        location,
-                        map.DestinationName,
-                        unmapped.PropertyName),
-
-                    // SM0007: the case-insensitive fallback found several candidates and
-                    // there was no exact match to settle it.
-                    UnmappedReason.AmbiguousCaseInsensitiveMatch => Diagnostic.Create(
-                        DiagnosticDescriptors.AmbiguousCaseInsensitiveMatch,
-                        location,
-                        map.DestinationName,
-                        unmapped.PropertyName,
-                        map.SourceName,
-                        unmapped.Candidates),
-
-                    // SM0002: same name on both sides, and nothing bridges the two types.
-                    _ => Diagnostic.Create(
-                        DiagnosticDescriptors.NotConvertible,
-                        location,
-                        map.DestinationName,
-                        unmapped.PropertyName,
-                        unmapped.SourcePropertyType,
-                        unmapped.DestinationPropertyType),
-                };
-
-                context.ReportDiagnostic(diagnostic);
-            }
-
-            // Only when a method that PERFORMS these conversions is actually emitted. A map
-            // whose destination cannot be constructed (SM0004) and is a value type — so gets
-            // no update overload either — produces no code at all, and telling the developer
-            // that a conversion in it is lossy would be describing code that does not exist.
-            if (map.CanConstructDestination || !map.IsDestinationValueType)
-                ReportConversions(context, map, location);
-        }
-    }
-
-    /// <summary>
-    /// Reports the properties that ARE mapped, but only because their type was converted on
-    /// the way — and only the ones with something to answer for.
-    ///
-    /// Widening an <c>int</c> into a <c>long</c>, or writing a number out as text, cannot go
-    /// wrong, so nothing is said about it; the generated file shows the conversion plainly
-    /// enough for anyone who looks. What IS reported is the pair of cases where a map that
-    /// compiles can still surprise you at runtime: a conversion that quietly changes a value
-    /// (SM0008) and one that reads text and can throw on it (SM0009).
-    ///
-    /// Both are INFORMATIONAL. These conversions are the feature working — the developer
-    /// wrote two types that do not match and asked ShiftMapper to cope — so making every one
-    /// of them a build warning would teach people to tune ShiftMapper out. They show in the
-    /// IDE and under <c>dotnet build -v d</c>.
-    /// </summary>
-    private static void ReportConversions(SourceProductionContext context, MapModel map, Location? location)
-    {
-        foreach (ConvertedProperty conversion in map.ConvertedProperties)
-        {
-            Diagnostic? diagnostic = conversion.Risk switch
-            {
-                // SM0010 is the WARNING half of this pair — an ordinary value coming out
-                // different — and SM0008 the note half, for the losses the conversion is
-                // there to perform. Same five arguments, deliberately: the only thing that
-                // differs is how loudly it is said.
-                ConversionRisk.Narrowing => Diagnostic.Create(
-                    DiagnosticDescriptors.NarrowingConversion,
-                    location,
-                    map.DestinationName,
-                    conversion.PropertyName,
-                    conversion.SourcePropertyType,
-                    conversion.DestinationPropertyType,
-                    conversion.Note),
-
-                ConversionRisk.Lossy => Diagnostic.Create(
-                    DiagnosticDescriptors.LossyConversion,
-                    location,
-                    map.DestinationName,
-                    conversion.PropertyName,
-                    conversion.SourcePropertyType,
-                    conversion.DestinationPropertyType,
-                    conversion.Note),
-
-                // No type in this message on purpose. For a scalar it would have named the
-                // destination's type; for a collection it would have named the COLLECTION
-                // ("parsing text into 'int[]'"), when what actually gets parsed is each
-                // element. Naming the property and leaving the types to the code is the one
-                // wording that is true of both.
-                ConversionRisk.Parsed => Diagnostic.Create(
-                    DiagnosticDescriptors.ParsedConversion,
-                    location,
-                    map.DestinationName,
-                    conversion.PropertyName),
-
-                _ => null,
-            };
-
-            if (diagnostic is not null)
-                context.ReportDiagnostic(diagnostic);
-        }
     }
 
     /// <summary>

@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 
 namespace ShiftMapper;
 
@@ -509,6 +509,7 @@ public static class ValueConverter
     public static T[]? ToArray<T>(IEnumerable<T>? source) => source?.ToArray();
 
     /// <summary>Copies a sequence into a new array, converting each element on the way.</summary>
+    /// <param name="source">The sequence to copy. A null source stays null.</param>
     /// <param name="convert">
     /// Applied to every element. The generator passes a <c>static</c> lambda, so it is
     /// allocated once for the life of the process rather than once per mapped property.

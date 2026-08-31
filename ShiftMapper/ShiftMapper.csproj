@@ -1,13 +1,91 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
+    <!--
+      TFM POLICY, stated rather than implied: the runtime library targets net10.0 and nothing
+      else. ShiftFramework, the consumer this library exists for, is on net10.0, and every
+      earlier target would have to be tested for the conversions and the projection shapes it
+      changes. The generator is a separate matter - it MUST be netstandard2.0, because the C#
+      compiler loads it as a plugin and the compiler itself runs on netstandard2.0.
+    -->
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+
+    <!--
+      The XML docs in this library are the reference documentation, so they ship: a consumer
+      gets the full text of every remark in IntelliSense rather than a bare signature.
+    -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
+
+  <!-- ================= The package ================================================== -->
+
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <PackageId>ShiftSoftware.ShiftMapper</PackageId>
+    <Title>ShiftMapper</Title>
+    <Description>A compile-time object mapper for .NET. Declare maps with CreateMap in a partial class and a source generator writes the mapping code - in-memory Map methods and an EF Core ProjectTo expression that translates to SQL - reporting anything it cannot map as a build diagnostic instead of guessing.</Description>
+    <PackageTags>mapper;mapping;dto;source-generator;projection;entity-framework;efcore;linq;automapper</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageIcon>icon.png</PackageIcon>
+
+    <!--
+      A .snupkg alongside the .nupkg. With SourceLink (see Directory.Build.props) this is what
+      lets someone debugging their own application step into ShiftMapper's source.
+    -->
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\README.md" Pack="true" PackagePath="\" Visible="false" />
+
+    <!-- The shared ShiftFramework icon, in the place and shape every other Shift package uses. -->
+    <None Include="Images\icon.png" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.11" />
   </ItemGroup>
+
+  <!-- ================= Carrying the generator ====================================== -->
+
+  <ItemGroup>
+    <!--
+      The generator is referenced the way any consumer would reference it: as an ANALYZER, not
+      as a library. ReferenceOutputAssembly="false" keeps its DLL out of the runtime output;
+      PrivateAssets="all" keeps it out of the package's dependency list, which matters because
+      it is not a package at all - it is a file we copy in below.
+    -->
+    <ProjectReference Include="..\ShiftMapper.Generator\ShiftMapper.Generator.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false"
+                      PrivateAssets="all" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetsForTfmSpecificContentInPackage>$(TargetsForTfmSpecificContentInPackage);_PackShiftMapperGenerator</TargetsForTfmSpecificContentInPackage>
+  </PropertyGroup>
+
+  <!--
+    ONE PackageReference, both halves. NuGet gives analyzers/dotnet/cs to the compiler and
+    lib/net10.0 to the application, so `dotnet add package ShiftSoftware.ShiftMapper` installs
+    the runtime types AND the generator that writes against them. Shipping them separately
+    would let a project end up with two versions that disagree about what CreateMap means.
+  -->
+  <Target Name="_PackShiftMapperGenerator" DependsOnTargets="ResolveProjectReferences">
+    <ItemGroup>
+      <_ShiftMapperGenerator Include="@(Analyzer)" Condition="'%(Filename)%(Extension)' == 'ShiftMapper.Generator.dll'" />
+      <TfmSpecificPackageFile Include="@(_ShiftMapperGenerator)" PackagePath="analyzers/dotnet/cs" />
+    </ItemGroup>
+
+    <!--
+      A package that quietly lost its generator would still restore, still compile, and produce
+      no Map methods at all - a failure that looks like a mapping bug. Cheaper to fail here.
+    -->
+    <Error Condition="'@(_ShiftMapperGenerator)' == ''"
+           Text="ShiftMapper.Generator.dll was not found among the resolved analyzers, so the package would ship without its source generator." />
+  </Target>
 
 </Project>

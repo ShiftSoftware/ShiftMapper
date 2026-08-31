@@ -13,6 +13,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # SourceLink stamps the commit into the PDBs, and a shallow clone with no history is
+          # enough for that. Nothing here needs more.
+          fetch-depth: 1
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -22,10 +26,45 @@ jobs:
       - name: Restore
         run: dotnet restore ShiftMapper.slnx
 
-      # The generator reports SM0011 and SM0012 as ERRORS, so a mapping mistake anywhere in the
-      # solution already fails this step before a single test runs.
+      # ShiftMapperAnalyzer reports SM0011 and SM0012 as ERRORS, so a mapping mistake anywhere in
+      # the solution already fails this step before a single test runs.
       - name: Build
         run: dotnet build ShiftMapper.slnx --no-restore --configuration Release
 
       - name: Test
         run: dotnet test ShiftMapper.slnx --no-build --configuration Release --verbosity normal
+
+      # Step 3 of PLAN.md. Packing on every change is what keeps "one PackageReference gets you
+      # both halves" true, rather than true on the day it was set up.
+      - name: Pack
+        # Not --no-build: resolving the generator project reference so it can be copied into
+        # analyzers/dotnet/cs counts as invoking its Build target, which NoBuild forbids. The
+        # rebuild is incremental and costs seconds.
+        run: dotnet pack ShiftMapper/ShiftMapper.csproj --configuration Release --output artifacts
+
+      # A package that lost its generator would still restore and still compile — and produce no
+      # Map methods at all, which reads like a mapping bug rather than a packaging one. The
+      # .csproj fails the pack if the analyzer is missing; this checks the file that came out.
+      - name: Verify the package carries both halves
+        run: |
+          set -euo pipefail
+          package=$(ls artifacts/*.nupkg)
+          echo "Inspecting $package"
+          contents=$(unzip -Z1 "$package")
+          echo "$contents"
+          for required in \
+            analyzers/dotnet/cs/ShiftMapper.Generator.dll \
+            lib/net10.0/ShiftMapper.dll \
+            lib/net10.0/ShiftMapper.xml \
+            README.md \
+            icon.png
+          do
+            grep -qx "$required" <<< "$contents" || { echo "::error::$package is missing $required"; exit 1; }
+          done
+          ls artifacts/*.snupkg > /dev/null
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nuget
+          path: artifacts/*
+          if-no-files-found: error
