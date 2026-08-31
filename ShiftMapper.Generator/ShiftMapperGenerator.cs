@@ -70,6 +70,13 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// </summary>
     private const string GeneratedNamespace = "ShiftMapper.Generated";
 
+    /// <summary>
+    /// The interface every generated mapper implements, so a LIBRARY can be written against a
+    /// mapper without naming the application's mapper class. Spelled with global:: because a
+    /// mapper may well live in a namespace of the developer's own that starts with ShiftMapper.
+    /// </summary>
+    private const string MapperInterfaceType = "global::ShiftMapper.IShiftMapper";
+
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
         // Build a pipeline: for every syntax node in the project, run `predicate`
@@ -1502,7 +1509,12 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         sb.AppendLine($"{indent}/// </summary>");
         // No accessibility modifier: the part you wrote already decides that, and repeating
         // it here would clash if you ever mark your class internal.
-        sb.AppendLine($"{indent}partial class {model.ClassName}");
+        //
+        // The INTERFACE is added here rather than by the developer. A base list may name a base
+        // CLASS in only one part, but any part may add interfaces, so this is the one thing the
+        // generated half can contribute to the type's shape without the hand-written half
+        // repeating it.
+        sb.AppendLine($"{indent}partial class {model.ClassName} : {MapperInterfaceType}");
         sb.AppendLine($"{indent}{{");
 
         // Worked out for the whole mapper before anything is written, because a NESTED property
@@ -1563,6 +1575,13 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                 wroteMember = true;
             }
         }
+
+        // Last, and deliberately so: everything above is the strongly typed API, and this is the
+        // one door that finds its map at runtime.
+        if (wroteMember)
+            sb.AppendLine();
+
+        AppendInterfaceImplementation(sb, indent, bySource);
 
         sb.AppendLine($"{indent}}}");
 
@@ -2058,6 +2077,264 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         }
 
         sb.AppendLine(");");
+    }
+
+    /// <summary>
+    /// Writes the explicit implementation of <c>IShiftMapper</c> — the door a LIBRARY comes in
+    /// through when it has to map for an application whose mapper class it cannot name.
+    ///
+    /// EXPLICIT, every member of it, and that is the decision worth explaining. An implicit
+    /// <c>Map&lt;TDestination&gt;(object)</c> would sit on the mapper class beside the typed
+    /// <c>Map&lt;TDestination&gt;(Brand)</c> overloads and quietly ACCEPT the calls they refuse:
+    /// passing a type with no map would stop being a compile error and start being a runtime
+    /// exception. Explicit members are invisible on the class and reachable only through the
+    /// interface, so the typed API goes on failing at build time — which is the whole posture of
+    /// this library, and not something to trade away for one convenience method.
+    ///
+    /// Nothing here re-implements a map. Each method works out which map applies and then calls
+    /// the generated method that already exists, so the two doors cannot come to disagree, and a
+    /// caller coming through this one gets the same errors the typed API raises.
+    /// </summary>
+    private static void AppendInterfaceImplementation(
+        StringBuilder sb,
+        string indent,
+        List<IGrouping<string, MapModel>> bySource)
+    {
+        // Source types that HAVE a create method. A group whose destinations are all
+        // unconstructible (SM0004) has no Map<TDestination> to forward to.
+        List<string> creatableSources = bySource
+            .Where(group => group.Any(map => map.CanConstructDestination))
+            .Select(group => group.Key)
+            .ToList();
+
+        List<MapModel> creatable = bySource
+            .SelectMany(group => group
+                .Where(map => map.CanConstructDestination)
+                .OrderBy(map => map.DestinationType, StringComparer.Ordinal))
+            .ToList();
+
+        // A struct destination gets no update overload — mutating a copy would do nothing — so
+        // the pair cannot be offered here either.
+        List<MapModel> updatable = bySource
+            .SelectMany(group => group
+                .Where(map => !map.IsDestinationValueType)
+                .OrderBy(map => map.DestinationType, StringComparer.Ordinal))
+            .ToList();
+
+        AppendMapFromObject(sb, indent, creatableSources);
+        sb.AppendLine();
+        AppendMapByTypeArguments(sb, indent, creatableSources);
+        sb.AppendLine();
+        AppendUpdateByTypeArguments(sb, indent, updatable);
+        sb.AppendLine();
+        AppendProjectByTypeArguments(sb, indent, creatableSources);
+        sb.AppendLine();
+        AppendCanMap(sb, indent, creatable);
+    }
+
+    /// <summary>
+    /// <c>IShiftMapper.Map&lt;TDestination&gt;(object)</c> — the only door where the source type
+    /// is not known until the value arrives.
+    ///
+    /// Two passes, and their order is the design. EXACT runtime type first, so a mapper holding
+    /// maps for both a base and a derived type answers with the one registered for what it was
+    /// actually handed. Then ASSIGNABILITY, which is how an instance of an UNREGISTERED subclass
+    /// — an EF proxy, most often — maps through its base instead of being refused.
+    ///
+    /// Where several mapped source types match by assignability, the first written here wins.
+    /// That is only reachable when two mapped types are related by inheritance AND the value is a
+    /// subclass of both; choosing properly between them is what Step 10 of the plan is for, and
+    /// guessing at it now would be a rule to unpick later.
+    /// </summary>
+    private static void AppendMapFromObject(StringBuilder sb, string indent, List<string> sources)
+    {
+        sb.AppendLine($"{indent}    /// <summary>Creates a new <typeparamref name=\"TDestination\"/> from a source whose type is only known at runtime.</summary>");
+        sb.AppendLine($"{indent}    TDestination {MapperInterfaceType}.Map<TDestination>(object source)");
+        sb.AppendLine($"{indent}    {{");
+        sb.AppendLine($"{indent}        if (source is null)");
+        sb.AppendLine($"{indent}            throw new global::System.ArgumentNullException(nameof(source));");
+        sb.AppendLine();
+
+        if (sources.Count > 0)
+        {
+            sb.AppendLine($"{indent}        global::System.Type sourceType = source.GetType();");
+            sb.AppendLine();
+            sb.AppendLine($"{indent}        // The exact type it really is.");
+
+            foreach (string source in sources)
+            {
+                sb.AppendLine($"{indent}        if (sourceType == typeof({source}))");
+                sb.AppendLine($"{indent}            return Map<TDestination>(({source})source);");
+                sb.AppendLine();
+            }
+
+            sb.AppendLine($"{indent}        // Nothing matched exactly, so a subclass maps through its base.");
+
+            foreach (string source in sources)
+            {
+                sb.AppendLine($"{indent}        if (source is {source})");
+                sb.AppendLine($"{indent}            return Map<TDestination>(({source})source);");
+                sb.AppendLine();
+            }
+
+            AppendNoMapThrow(sb, indent, "{sourceType}", "{typeof(TDestination)}");
+        }
+        else
+        {
+            AppendNoMapThrow(sb, indent, "{source.GetType()}", "{typeof(TDestination)}");
+        }
+
+        sb.AppendLine($"{indent}    }}");
+    }
+
+    /// <summary>
+    /// <c>IShiftMapper.Map&lt;TSource, TDestination&gt;(TSource)</c> — both types named, which is
+    /// how a generic library method usually has them.
+    ///
+    /// It ends by falling through to the object door rather than throwing. TSource is whatever
+    /// the caller's own type parameter happened to be bound to, and that is very often a BASE of
+    /// the thing actually being mapped; refusing there would make the interface useless to
+    /// exactly the generic code it exists for. The object door raises the same error when the
+    /// runtime type has no map either.
+    /// </summary>
+    private static void AppendMapByTypeArguments(StringBuilder sb, string indent, List<string> sources)
+    {
+        sb.AppendLine($"{indent}    /// <summary>Creates a new <typeparamref name=\"TDestination\"/> from a <typeparamref name=\"TSource\"/>.</summary>");
+        sb.AppendLine($"{indent}    TDestination {MapperInterfaceType}.Map<TSource, TDestination>(TSource source)");
+        sb.AppendLine($"{indent}    {{");
+        sb.AppendLine($"{indent}        if (source is null)");
+        sb.AppendLine($"{indent}            throw new global::System.ArgumentNullException(nameof(source));");
+        sb.AppendLine();
+
+        foreach (string source in sources)
+        {
+            sb.AppendLine($"{indent}        if (typeof(TSource) == typeof({source}))");
+            sb.AppendLine($"{indent}            return Map<TDestination>(({source})(object)source!);");
+            sb.AppendLine();
+        }
+
+        sb.AppendLine($"{indent}        // TSource is not itself a mapped type. What is in front of us still might be.");
+        sb.AppendLine($"{indent}        return (({MapperInterfaceType})this).Map<TDestination>((object)source!);");
+        sb.AppendLine($"{indent}    }}");
+    }
+
+    /// <summary>
+    /// <c>IShiftMapper.Map&lt;TSource, TDestination&gt;(TSource, TDestination)</c> — copying onto
+    /// an object the caller already has.
+    ///
+    /// The EXACT declared pair, with no runtime-type fallback, and unlike everywhere else that is
+    /// not a limitation to apologise for: the destination handed in is the object being written
+    /// to, and choosing a different map for it would mean writing different members onto it than
+    /// the caller asked for.
+    /// </summary>
+    private static void AppendUpdateByTypeArguments(StringBuilder sb, string indent, List<MapModel> maps)
+    {
+        sb.AppendLine($"{indent}    /// <summary>Copies a <typeparamref name=\"TSource\"/> onto an existing <typeparamref name=\"TDestination\"/> and returns it.</summary>");
+        sb.AppendLine($"{indent}    TDestination {MapperInterfaceType}.Map<TSource, TDestination>(TSource source, TDestination destination)");
+        sb.AppendLine($"{indent}    {{");
+        sb.AppendLine($"{indent}        if (source is null)");
+        sb.AppendLine($"{indent}            throw new global::System.ArgumentNullException(nameof(source));");
+        sb.AppendLine();
+        sb.AppendLine($"{indent}        if (destination is null)");
+        sb.AppendLine($"{indent}            throw new global::System.ArgumentNullException(nameof(destination));");
+        sb.AppendLine();
+
+        foreach (MapModel map in maps)
+        {
+            if (map.IsReverse)
+                sb.AppendLine($"{indent}        //{OriginNote(map)}");
+
+            sb.AppendLine($"{indent}        if (typeof(TSource) == typeof({map.SourceType}) && typeof(TDestination) == typeof({map.DestinationType}))");
+            sb.AppendLine($"{indent}            return (TDestination)(object)Map(({map.SourceType})(object)source!, ({map.DestinationType})(object)destination!);");
+            sb.AppendLine();
+        }
+
+        sb.AppendLine($"{indent}        throw new global::System.InvalidOperationException(");
+        sb.AppendLine($"{indent}            $\"ShiftMapper: no map registered from '{{typeof(TSource)}}' onto an existing '{{typeof(TDestination)}}'. \" +");
+        sb.AppendLine($"{indent}            \"Add CreateMap<Source, Destination>() in your mapper's constructor. A struct destination \" +");
+        sb.AppendLine($"{indent}            \"has no update method on purpose, because copying onto one would write to a copy.\");");
+        sb.AppendLine($"{indent}    }}");
+    }
+
+    /// <summary>
+    /// <c>IShiftMapper.ProjectTo&lt;TSource, TDestination&gt;</c> — the reason the interface is
+    /// worth having at all.
+    ///
+    /// A framework writing a list endpoint can hand EF one expression covering the whole graph,
+    /// selecting only the columns the DTO needs and leaving filtering and paging to SQL, without
+    /// knowing which mapper the application registered. Everything else here has an in-memory
+    /// answer a library could have written by hand; this one does not.
+    ///
+    /// Exact TSource only, and here there is genuinely nothing else available: a queryable's
+    /// element type is fixed when it is created, so there is no runtime value to look at.
+    /// </summary>
+    private static void AppendProjectByTypeArguments(StringBuilder sb, string indent, List<string> sources)
+    {
+        sb.AppendLine($"{indent}    /// <summary>Projects a query of <typeparamref name=\"TSource\"/> into <typeparamref name=\"TDestination\"/>, in the database.</summary>");
+        sb.AppendLine($"{indent}    global::System.Linq.IQueryable<TDestination> {MapperInterfaceType}.ProjectTo<TSource, TDestination>(global::System.Linq.IQueryable<TSource> source)");
+        sb.AppendLine($"{indent}    {{");
+        sb.AppendLine($"{indent}        if (source is null)");
+        sb.AppendLine($"{indent}            throw new global::System.ArgumentNullException(nameof(source));");
+        sb.AppendLine();
+
+        foreach (string source in sources)
+        {
+            sb.AppendLine($"{indent}        if (typeof(TSource) == typeof({source}))");
+            sb.AppendLine($"{indent}            return ProjectTo<TDestination>((global::System.Linq.IQueryable<{source}>)(object)source);");
+            sb.AppendLine();
+        }
+
+        AppendNoMapThrow(sb, indent, "{typeof(TSource)}", "{typeof(TDestination)}");
+        sb.AppendLine($"{indent}    }}");
+    }
+
+    /// <summary>
+    /// <c>IShiftMapper.CanMap</c> — asked, rather than discovered by catching an exception.
+    ///
+    /// One test per map, and <c>IsAssignableFrom</c> rather than <c>==</c> so that the answer
+    /// matches the create methods rule for rule: they accept a subclass of a mapped type, and an
+    /// answer here that did not would send framework code down a fallback path for a map that
+    /// works perfectly well.
+    ///
+    /// Only maps that can CREATE a destination are listed. A destination ShiftMapper cannot
+    /// construct (SM0004 at build time) is absent, because nothing on this interface can produce
+    /// one, and saying otherwise would be an invitation to call something that throws.
+    /// </summary>
+    private static void AppendCanMap(StringBuilder sb, string indent, List<MapModel> maps)
+    {
+        sb.AppendLine($"{indent}    /// <summary>Whether Map can produce a <paramref name=\"destination\"/> from a <paramref name=\"source\"/>.</summary>");
+        sb.AppendLine($"{indent}    bool {MapperInterfaceType}.CanMap(global::System.Type source, global::System.Type destination)");
+        sb.AppendLine($"{indent}    {{");
+        sb.AppendLine($"{indent}        if (source is null)");
+        sb.AppendLine($"{indent}            throw new global::System.ArgumentNullException(nameof(source));");
+        sb.AppendLine();
+        sb.AppendLine($"{indent}        if (destination is null)");
+        sb.AppendLine($"{indent}            throw new global::System.ArgumentNullException(nameof(destination));");
+        sb.AppendLine();
+
+        foreach (MapModel map in maps)
+        {
+            if (map.IsReverse)
+                sb.AppendLine($"{indent}        //{OriginNote(map)}");
+
+            sb.AppendLine($"{indent}        if (destination == typeof({map.DestinationType}) && typeof({map.SourceType}).IsAssignableFrom(source))");
+            sb.AppendLine($"{indent}            return true;");
+            sb.AppendLine();
+        }
+
+        sb.AppendLine($"{indent}        return false;");
+        sb.AppendLine($"{indent}    }}");
+    }
+
+    /// <summary>
+    /// The message every runtime-dispatched door ends with. Same wording as the typed dispatchers
+    /// use, because it is the same mistake and the same one-line fix.
+    /// </summary>
+    private static void AppendNoMapThrow(StringBuilder sb, string indent, string source, string destination)
+    {
+        sb.AppendLine($"{indent}        throw new global::System.InvalidOperationException(");
+        sb.AppendLine($"{indent}            $\"ShiftMapper: no map registered from '{source}' to '{destination}'. \" +");
+        sb.AppendLine($"{indent}            \"Add CreateMap<Source, Destination>() in your mapper's constructor.\");");
     }
 
     /// <summary>Writes <c>db.Brands.ProjectTo&lt;BrandDto&gt;(mapper)</c>, forwarding to the instance.</summary>

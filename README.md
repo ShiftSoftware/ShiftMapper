@@ -112,6 +112,52 @@ paging happen in SQL against the projected shape.
 Both backends are generated from the same analysis, so `Map` and `ProjectTo` agree on what a
 map means.
 
+### For libraries: `IShiftMapper`
+
+The methods above are strongly typed, and that is the point of them: a destination with no map is
+a compile error at the call site. A **library** cannot use them — code in a shared package has to
+map an entity to a DTO in an application it has never seen, whose mapper class it cannot name. So
+every generated mapper also implements one interface:
+
+```csharp
+public interface IShiftMapper
+{
+    TDestination Map<TDestination>(object source);
+    TDestination Map<TSource, TDestination>(TSource source);
+    TDestination Map<TSource, TDestination>(TSource source, TDestination destination);
+    IQueryable<TDestination> ProjectTo<TSource, TDestination>(IQueryable<TSource> source);
+    bool CanMap(Type source, Type destination);
+}
+```
+
+`AddShiftMapper<AppMapper>()` registers it alongside the mapper's own type, and both resolve to
+the same instance:
+
+```csharp
+public class Repository<TEntity, TDto>(IShiftMapper mapper, DbContext db)
+{
+    public IQueryable<TDto> List() => mapper.ProjectTo<TEntity, TDto>(db.Set<TEntity>());
+
+    public TDto? Read(TEntity entity) =>
+        mapper.CanMap(typeof(TEntity), typeof(TDto)) ? mapper.Map<TEntity, TDto>(entity) : default;
+}
+```
+
+Worth knowing:
+
+- **It is the slower door, on purpose.** Every method finds its map by comparing types at runtime,
+  and a struct destination is boxed on the way back. Use the generated methods wherever the call
+  site knows both types.
+- **The members are implemented explicitly**, so they stay invisible on your mapper class.
+  `mapper.Map<SomeDto>(unmappedThing)` keeps failing to compile rather than binding to the
+  `object` overload and throwing at runtime.
+- **`CanMap` is there so you never have to catch an exception to find out.** It answers for the
+  create methods and matches them rule for rule, subclasses included.
+- **The create doors accept a subclass** of a mapped type — exact runtime type first, then
+  assignability — so an EF proxy maps through its base. The update overload needs the exact
+  declared pair, because the destination you passed in is the object being written to.
+- Registering two mappers is allowed; the last one wins for `IShiftMapper`, as DI always does.
+
 ### What it deliberately refuses
 
 Four conversions are refused because the answer would come from something other than the two

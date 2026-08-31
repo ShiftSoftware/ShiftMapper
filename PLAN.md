@@ -28,7 +28,7 @@ Every step heading below carries the same marker: ✅ done, ⬜ pending.
 - [x] **Step 1** — Tests
 - [x] **Step 2** — Fix the runtime cost
 - [x] **Step 3** — Ship it
-- [ ] **Step 4** — One entry point a library can be written against
+- [x] **Step 4** — One entry point a library can be written against
 
 **Phase 2 — Close the mapping gaps**
 
@@ -53,8 +53,8 @@ Every step heading below carries the same marker: ✅ done, ⬜ pending.
 - [ ] **Step 17** — Docs and sample
 - [ ] **Step 18** — Benchmarks
 
-Next is **Step 4**. From there the critical path is the one at the foot of this file:
-4 → 8 → 10 → 11 → 12 → 13 → 14 → 15.
+Phase 1 is complete. Next on ShiftFramework's critical path is **Step 8**, then
+8 → 10 → 11 → 12 → 13 → 14 → 15 (the summary at the foot of this file).
 
 ---
 
@@ -90,12 +90,14 @@ Next is **Step 4**. From there the critical path is the one at the foot of this 
 - **(Step 3)** A NuGet package, `ShiftSoftware.ShiftMapper`, carrying the generator as an
   analyzer; and the SM#### rules reported by a real `DiagnosticAnalyzer`, so `.editorconfig`
   retunes them per folder.
+- **(Step 4)** `IShiftMapper`, implemented explicitly on every generated mapper and registered by
+  `AddShiftMapper`, so a library can map, update, project and ask `CanMap` without naming the
+  application's mapper class.
 
 ### What is missing, in one paragraph
 
-There is no interface a library can be written against. Destinations must have a
-parameterless constructor, so records and constructor-initialised DTOs are out. There is no way
-to map a collection at the top level.
+Destinations must have a parameterless constructor, so records and constructor-initialised
+DTOs are out. There is no way to map a collection at the top level.
 There is no `Condition`, `NullSubstitute`, `BeforeMap`/`AfterMap`, `ConstructUsing`,
 `ConvertUsing`, flattening, inheritance or open generics. And — the item this plan is
 mostly about — there is no GLOBAL configuration layer at all: every rule has to be
@@ -223,7 +225,7 @@ and a non-generic direct create method sits behind the generic dispatcher.
 One consequence, and it is in the README: a project that turns analyzers off entirely still gets
 mapping code, but silently — including SM0011 and SM0012, the two that stop a build.
 
-### ⬜ Step 4 — One entry point a library can be written against
+### ✅ Step 4 — One entry point a library can be written against
 
 Today a consumer must reference the concrete `AppMapper` type. A framework cannot: it has to
 be written against something it can resolve from DI without knowing the application's mapper
@@ -253,6 +255,45 @@ libraries and for reflection-driven call sites, and it is explicitly the slower 
 
 **Done when** ShiftFramework can be compiled against `IShiftMapper` with no reference to any
 application's mapper type.
+
+**What landed.**
+
+- `IShiftMapper` in the runtime library, with the five members above.
+- The generator implements every one of them on the mapper, and adds the interface to the class
+  from the GENERATED part — a base list may name a base class in only one part, but any part may
+  add interfaces, so the hand-written half still reads `: ShiftMapperBase` and nothing else.
+- **Implemented EXPLICITLY**, which is the decision worth recording. An implicit
+  `Map<TDestination>(object)` would sit on the mapper class beside the typed
+  `Map<TDestination>(Brand)` overloads and accept the calls they refuse — a destination with no
+  map would stop being a compile error and start being a runtime exception. Explicit members are
+  invisible on the class and reachable only through the interface, so the typed API keeps failing
+  at build time.
+- **Nothing is re-implemented.** Each member works out which map applies and calls the generated
+  method that already exists, so the two doors cannot come to disagree and both raise the same
+  errors.
+- **Runtime dispatch rules**, chosen rather than inherited: the create doors try the EXACT runtime
+  type first and then assignability, so an EF proxy maps through its base while a mapper holding
+  maps for both a base and a derived type still answers with the one registered for what it was
+  handed. `Map<TSource, TDestination>(source)` falls through to the object door when `TSource` is
+  not itself mapped, because generic library code binds `TSource` to whatever its own caller had.
+  The UPDATE overload needs the exact declared pair — no fallback — since the destination handed
+  in is the object being written to. `ProjectTo` is exact only, because a queryable's element type
+  is fixed when it is created and there is no runtime value to look at.
+- `CanMap` answers for the create doors and matches them rule for rule, subclasses included. A
+  destination ShiftMapper cannot construct (SM0004) is absent from it, because nothing on the
+  interface can produce one.
+- `AddShiftMapper<TMapper>()` registers `IShiftMapper` alongside `TMapper`, resolving THROUGH it
+  so both hand back one instance per scope. A mapper the generator produced nothing for cannot
+  implement the interface, and registering one now throws at registration naming SM0005 rather
+  than handing the application a mapper whose every call fails.
+- 30 tests: nine on the emitted shape, twenty-one at runtime — including `PretendFramework`, a
+  class written the way ShiftFramework has to write one, which reads, updates and projects
+  without naming `TestMapper` anywhere.
+
+Two things this step deliberately does NOT do. Where several mapped source types match a value by
+assignability the first declared wins; choosing properly between them is Step 10, and a rule
+invented here would be one to unpick there. And `IShiftMapper` has no collection overloads — those
+arrive with Step 5, on the typed API first.
 
 ---
 
@@ -644,13 +685,12 @@ mapper that cannot show its numbers has given up its main argument.
 
 | Phase | Steps | State | Blocking? |
 |---|---|---|---|
-| 1 — Trust | 1 Tests, 2 Runtime cost, 3 Packaging | ✅ done | Everything depended on 1 |
-| 1 — Trust | 4 `IShiftMapper` | ⬜ pending | Yes — Phase 3 depends on it |
+| 1 — Trust | 1 Tests, 2 Runtime cost, 3 Packaging, 4 `IShiftMapper` | ✅ done | Everything depended on 1 and 4 |
 | 2 — Gaps | 5 Collections, 6 Constructors/records, 7 Member options, 8 Map hooks, 9 Flattening, 10 Inheritance/generics | ⬜ pending | 8 and 10 block Phase 3 |
 | 3 — General layer | 11 Profiles, 12 Global conversions, 13 Compile-time contract, 14 Member conventions, 15 ShiftFramework port | ⬜ pending | The goal |
 | 4 — Finish | 16 Diagnostics, 17 Docs, 18 Benchmarks | ⬜ pending | Can run alongside 2 and 3 |
 
 The shortest path to ShiftFramework being able to adopt this is
-**1 → 4 → 8 → 10 → 11 → 12 → 13 → 14 → 15**; with 1 done, it starts at **4**. Steps 5, 6, 7 and 9
-are needed for ShiftMapper to be a good general-purpose mapper, but they are not on
+**1 → 4 → 8 → 10 → 11 → 12 → 13 → 14 → 15**; with 1 and 4 done, it starts at **8**. Steps 5, 6, 7
+and 9 are needed for ShiftMapper to be a good general-purpose mapper, but they are not on
 ShiftFramework's critical path.
