@@ -1,4 +1,4 @@
-using Microsoft.Data.Sqlite;
+﻿using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
@@ -64,6 +64,7 @@ public sealed class DatabaseFixture : IDisposable
             ISOCode = "IQ",
             FoundedYear = 1994,
             Tags = new List<string> { "tools", "industrial" },
+            Aliases = new List<string> { "ACME Corp" },
         };
 
         var globex = new Brand
@@ -74,6 +75,10 @@ public sealed class DatabaseFixture : IDisposable
             ISOCode = "TR",
             FoundedYear = 2001,
             Tags = new List<string> { "electronics" },
+
+            // LEFT NULL ON PURPOSE. This is the row the null-collection policy is measured on,
+            // and a seeded empty list would have proved nothing.
+            Aliases = null,
         };
 
         var erbil = new Stock

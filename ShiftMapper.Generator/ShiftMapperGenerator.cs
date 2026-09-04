@@ -174,6 +174,10 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         bool? classDefaultCaseSensitive = ReadClassDefaultCaseSensitive(
             semanticModel.Compilation, classSymbol, baseClass, mapOptions, cancellationToken);
 
+        bool? classDefaultAllowNullCollections = ReadClassDefault(
+            semanticModel.Compilation, classSymbol, baseClass, mapOptions,
+            AllowNullCollectionsOption, cancellationToken) as bool?;
+
         var maps = ImmutableArray.CreateBuilder<MapModel>();
         var seen = new HashSet<string>();
 
@@ -196,6 +200,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                          memberOptions,
                          mapOptions,
                          classDefaultCaseSensitive,
+                         classDefaultAllowNullCollections,
                          cancellationToken))
             {
                 if (seen.Add(map.Key))
@@ -636,6 +641,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         INamedTypeSymbol? memberOptions,
         INamedTypeSymbol? mapOptions,
         bool? classDefaultCaseSensitive,
+        bool? classDefaultAllowNullCollections,
         CancellationToken cancellationToken)
     {
         TypeSyntax sourceSyntax = createMap.TypeArgumentList.Arguments[0];
@@ -647,6 +653,14 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             semanticModel, FirstArgument(invocation), mapOptions, cancellationToken);
 
         bool caseSensitive = declared ?? classDefaultCaseSensitive ?? false;
+
+        // The same three-step precedence, for the other option. Its default is false, which
+        // means a null source collection becomes an EMPTY destination collection.
+        bool? declaredNullCollections = ReadOption(
+            semanticModel, FirstArgument(invocation), mapOptions,
+            AllowNullCollectionsOption, cancellationToken) as bool?;
+
+        bool allowNullCollections = declaredNullCollections ?? classDefaultAllowNullCollections ?? false;
 
         // Ask the compiler: what type does the text "Brand" actually refer to here?
         if (semanticModel.GetSymbolInfo(sourceSyntax, cancellationToken).Symbol is not INamedTypeSymbol sourceType)
@@ -668,6 +682,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             LocationInfo.CreateFrom(createMap),
             isReverse: false,
             caseSensitive: caseSensitive,
+            allowNullCollections: allowNullCollections,
             refinements: chain.Forward);
 
         if (chain.ReverseMapName is null)
@@ -688,8 +703,14 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         // destination; a MapFrom that composes two properties into one has no way back at all.
         // Rather than carry over the few that happen to fit and silently drop the rest, the
         // reverse starts clean and reports what it could not map, as it always has.
+        SyntaxNode? reverseArgument = FirstArgument(FindInvocation(chain.ReverseMapName));
+
         bool? reverseDeclared = ReadCaseSensitive(
-            semanticModel, FirstArgument(FindInvocation(chain.ReverseMapName)), mapOptions, cancellationToken);
+            semanticModel, reverseArgument, mapOptions, cancellationToken);
+
+        bool? reverseNullCollections = ReadOption(
+            semanticModel, reverseArgument, mapOptions,
+            AllowNullCollectionsOption, cancellationToken) as bool?;
 
         yield return BuildMapModel(
             semanticModel.Compilation,
@@ -698,6 +719,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             LocationInfo.CreateFrom(chain.ReverseMapName) ?? LocationInfo.CreateFrom(createMap),
             isReverse: true,
             caseSensitive: reverseDeclared ?? caseSensitive,
+            allowNullCollections: reverseNullCollections ?? allowNullCollections,
             refinements: chain.Reverse);
     }
 
@@ -713,6 +735,13 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
     /// <summary>Underlying value of <c>PropertyMatching.CaseSensitive</c>.</summary>
     private const int CaseSensitiveValue = 1;
+
+    /// <summary>
+    /// The <c>MapOptions</c> property that says what a null source collection becomes. Read by
+    /// name, the same way <c>Matching</c> is, which is what makes a new option cost one call to
+    /// <see cref="ReadOption"/> rather than a parser of its own.
+    /// </summary>
+    private const string AllowNullCollectionsOption = "AllowNullCollections";
 
     /// <summary>
     /// Reads the options a configure lambda sets, e.g. the <c>o =&gt; o.Matching = ...</c> in
@@ -858,10 +887,18 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         LocationInfo? location,
         bool isReverse,
         bool caseSensitive,
+        bool allowNullCollections,
         Refinements refinements)
     {
+        // ONE PLACE where "what the developer asked for" becomes "what the generated code does".
+        // A runtime older than the OrEmpty builders cannot be asked to invent an empty
+        // collection, so a map compiled against one is analysed as though it had asked for the
+        // other policy. Everything downstream — the conversions, the emitter, the collection
+        // overloads — then reads one flag and agrees with itself.
+        allowNullCollections |= !ConversionResolver.SupportsNullCollectionPolicy(compilation);
+
         PropertyAnalysis analysis = FindMatchingProperties(
-            compilation, sourceType, destinationType, caseSensitive, refinements);
+            compilation, sourceType, destinationType, caseSensitive, allowNullCollections, refinements);
 
         return new MapModel(
             sourceType: sourceType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
@@ -880,7 +917,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             nestedProperties: analysis.Nested,
             destinationName: destinationType.Name,
             location: location,
-            isReverse: isReverse);
+            isReverse: isReverse,
+            allowNullCollections: allowNullCollections);
     }
 
     /// <summary>The result of comparing one source type against one destination type.</summary>
@@ -943,6 +981,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         INamedTypeSymbol sourceType,
         INamedTypeSymbol destinationType,
         bool caseSensitive,
+        bool allowNullCollections,
         Refinements refinements)
     {
         // Properties the developer has already spoken for with a ForMember. opt.Ignore() says
@@ -1069,7 +1108,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                 compilation,
                 sourceProperty.Type,
                 destinationProperty.Type,
-                $"{sourceType.Name}.{sourceProperty.Name} -> {destinationType.Name}.{destinationProperty.Name}");
+                $"{sourceType.Name}.{sourceProperty.Name} -> {destinationType.Name}.{destinationProperty.Name}",
+                allowNullCollections);
 
             if (conversion is null)
             {
@@ -1544,6 +1584,35 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                 sb.AppendLine();
                 AppendCreateMethod(sb, indent, sourceGroup.Key, creatable, directNames);
                 wroteMember = true;
+
+                // The same maps applied to a SEQUENCE. One per destination, then the switchboard
+                // that picks a destination collection shape by type argument.
+                foreach (MapModel map in creatable)
+                {
+                    sb.AppendLine();
+                    AppendCollectionMethods(sb, indent, map, directNames[map.Key]);
+                }
+
+                sb.AppendLine();
+                AppendCollectionMethod(sb, indent, sourceGroup.Key, creatable, directNames);
+
+                // MapOrNull only means something when the source can BE null, and can only hand
+                // back a null when the destination is a reference type.
+                List<MapModel> nullable = creatable
+                    .Where(m => !m.IsSourceValueType && !m.IsDestinationValueType)
+                    .ToList();
+
+                if (nullable.Count > 0)
+                {
+                    foreach (MapModel map in nullable)
+                    {
+                        sb.AppendLine();
+                        AppendOrNullMethod(sb, indent, map, directNames[map.Key]);
+                    }
+
+                    sb.AppendLine();
+                    AppendOrNullMethodDispatcher(sb, indent, sourceGroup.Key, nullable, directNames);
+                }
             }
 
             // An in-place update only makes sense for a reference type — mutating a copy
@@ -1610,12 +1679,24 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                 .OrderBy(m => m.DestinationType, StringComparer.Ordinal)
                 .ToList();
 
-            if (destinations.Any(m => m.CanConstructDestination))
+            List<MapModel> creatableHere = destinations.Where(m => m.CanConstructDestination).ToList();
+
+            if (creatableHere.Count > 0)
             {
                 if (wroteExtension)
                     sb.AppendLine();
 
                 AppendCreateExtension(sb, model, sourceGroup.Key, destinations[0]);
+
+                sb.AppendLine();
+                AppendCollectionExtension(sb, model, sourceGroup.Key, destinations[0]);
+
+                if (creatableHere.Any(m => !m.IsSourceValueType && !m.IsDestinationValueType))
+                {
+                    sb.AppendLine();
+                    AppendOrNullExtension(sb, model, sourceGroup.Key, destinations[0]);
+                }
+
                 wroteExtension = true;
             }
 
@@ -1689,7 +1770,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             sb.AppendLine($"{indent}            {custom.Name} = {CustomValueExpression(map, custom)}(source),");
 
         foreach (NestedProperty nested in map.NestedProperties)
-            sb.AppendLine($"{indent}            {nested.Destination} = {NestedValueExpression(nested, "source", directNames)},");
+            sb.AppendLine($"{indent}            {nested.Destination} = {NestedValueExpression(nested, "source", directNames, map.AllowNullCollections)},");
 
         sb.AppendLine($"{indent}        }};");
         sb.AppendLine($"{indent}    }}");
@@ -1785,6 +1866,227 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     }
 
     /// <summary>
+    /// The collection create methods every mapped destination gets one of, and the
+    /// <c>ValueConverter</c> helper behind each. <c>{0}</c> stands in for the destination type.
+    ///
+    /// Three rather than four, because <c>IReadOnlyList</c> needs no builder of its own — a
+    /// <c>List</c> already is one. See <see cref="CollectionShapes"/>.
+    /// </summary>
+    private static readonly (string Suffix, string Builder, string ReturnType, string Noun)[] CollectionBuilders =
+    {
+        ("List", "ToList", "global::System.Collections.Generic.List<{0}>", "list"),
+        ("Array", "ToArray", "{0}[]", "array"),
+        ("HashSet", "ToHashSet", "global::System.Collections.Generic.HashSet<{0}>", "set"),
+    };
+
+    /// <summary>
+    /// The destination collection shapes <c>Map&lt;TDestination&gt;(IEnumerable&lt;Brand&gt;)</c>
+    /// answers for, and which of the builders above fills each.
+    ///
+    /// Deliberately the same asymmetry the per-property collection conversions have: the SOURCE
+    /// is any <c>IEnumerable&lt;T&gt;</c>, and the DESTINATION is one of the shapes we know how
+    /// to construct. <c>IReadOnlyList</c> is on the list because a <c>List</c> satisfies it, and
+    /// it is what a DTO usually declares.
+    /// </summary>
+    private static readonly (string Shape, string Suffix)[] CollectionShapes =
+    {
+        ("global::System.Collections.Generic.List<{0}>", "List"),
+        ("global::System.Collections.Generic.IReadOnlyList<{0}>", "List"),
+        ("{0}[]", "Array"),
+        ("global::System.Collections.Generic.HashSet<{0}>", "HashSet"),
+    };
+
+    /// <summary>
+    /// Writes the three collection create methods for ONE map:
+    ///
+    /// <code>
+    /// List&lt;BrandDto&gt;    MapToBrandDtoList(IEnumerable&lt;Brand&gt;? source)
+    /// BrandDto[]         MapToBrandDtoArray(IEnumerable&lt;Brand&gt;? source)
+    /// HashSet&lt;BrandDto&gt; MapToBrandDtoHashSet(IEnumerable&lt;Brand&gt;? source)
+    /// </code>
+    ///
+    /// Each one is the SAME map applied per element, so there is nothing here to keep in step
+    /// with the single-object method: they are handed it as a method group and call it.
+    ///
+    /// A NULL SEQUENCE IS NOT AN ERROR HERE, which is the one place these differ from
+    /// <c>Map(Brand)</c>. Asking to map nothing into an object is a mistake worth an exception;
+    /// asking to map an absent collection is the ordinary question
+    /// <c>MapOptions.AllowNullCollections</c> exists to answer, and it is answered the same way
+    /// for a top-level sequence as for a collection property — an empty collection by default,
+    /// a null when the map asked for that.
+    /// </summary>
+    private static void AppendCollectionMethods(
+        StringBuilder sb,
+        string indent,
+        MapModel map,
+        string name)
+    {
+        string accessibility = AccessibilityOf(map.IsSourcePublic, map.IsDestinationPublic);
+        string sequence = $"global::System.Collections.Generic.IEnumerable<{map.SourceType}>?";
+
+        // "?" only under the policy that can actually produce one, so the signature says which
+        // policy is in force without the caller opening the map.
+        string nullable = map.AllowNullCollections ? "?" : string.Empty;
+
+        string absent = map.AllowNullCollections
+            ? "A null <paramref name=\"source\"/> stays null."
+            : "A null <paramref name=\"source\"/> produces an empty collection.";
+
+        for (int i = 0; i < CollectionBuilders.Length; i++)
+        {
+            (string suffix, string builder, string returnType, string noun) = CollectionBuilders[i];
+
+            if (i > 0)
+                sb.AppendLine();
+
+            // Which FAMILY of builders, which is the whole of the null-collection policy on this
+            // side: ToList copies a null source to a null, ToListOrEmpty to an empty collection.
+            string helper = map.AllowNullCollections ? builder : builder + "OrEmpty";
+
+            string shape = returnType.Replace("{0}", map.DestinationType);
+            string set = suffix == "HashSet"
+                ? " Equal results collapse into one, as they do in any set."
+                : string.Empty;
+
+            sb.AppendLine($"{indent}    /// <summary>Creates a new {noun} of {map.DestinationName} from a sequence of {map.SourceName}.{OriginNote(map)}</summary>");
+            sb.AppendLine($"{indent}    /// <remarks>{absent} Each element goes through {name}.{set}</remarks>");
+            sb.AppendLine($"{indent}    {accessibility} {shape}{nullable} {name}{suffix}({sequence} source) =>");
+            sb.AppendLine($"{indent}        global::ShiftMapper.ValueConverter.{helper}<{map.SourceType}, {map.DestinationType}>(source, {name});");
+        }
+    }
+
+    /// <summary>
+    /// Writes <c>Map&lt;TDestination&gt;(IEnumerable&lt;Brand&gt; source)</c> — the collection
+    /// switchboard, so the destination SHAPE is spelled at the call site:
+    ///
+    /// <code>
+    /// var list  = mapper.Map&lt;List&lt;BrandDto&gt;&gt;(brands);
+    /// var array = mapper.Map&lt;BrandDto[]&gt;(brands);
+    /// </code>
+    ///
+    /// It is generic for the same reason the single-object dispatcher is: the destination appears
+    /// only in the return type, and C# does not overload on that. It sits beside
+    /// <c>Map&lt;TDestination&gt;(Brand)</c> rather than replacing it, and overload resolution
+    /// tells them apart by the argument — a Brand is not a sequence of Brands.
+    ///
+    /// Only the four shapes in <see cref="CollectionShapes"/> are answered for, and the message
+    /// on the way out says so. Anything else is one call to the matching direct method away.
+    /// </summary>
+    private static void AppendCollectionMethod(
+        StringBuilder sb,
+        string indent,
+        string sourceType,
+        List<MapModel> destinations,
+        Dictionary<string, string> directNames)
+    {
+        MapModel firstMap = destinations[0];
+
+        sb.AppendLine($"{indent}    /// <summary>Creates a new <typeparamref name=\"TDestination\"/> collection from a sequence of {firstMap.SourceName}.</summary>");
+        AppendWrapped(
+            sb,
+            $"{indent}    /// ",
+            "<remarks>Picks the map AND the collection shape by type argument: List, array, HashSet or " +
+            "IReadOnlyList of a mapped destination. Call the matching " +
+            $"{string.Join(" / ", destinations.Select(m => directNames[m.Key] + "List"))} method instead when " +
+            "the shape is known at the call site. A null sequence is answered by the map's " +
+            "AllowNullCollections rather than by an exception.</remarks>");
+
+        sb.AppendLine($"{indent}    {AccessibilityOf(firstMap.IsSourcePublic)} TDestination Map<TDestination>(global::System.Collections.Generic.IEnumerable<{sourceType}>? source)");
+        sb.AppendLine($"{indent}    {{");
+
+        foreach (MapModel map in destinations)
+        {
+            if (map.IsReverse)
+                sb.AppendLine($"{indent}        //{OriginNote(map)}");
+
+            foreach ((string shape, string suffix) in CollectionShapes)
+            {
+                string destination = shape.Replace("{0}", map.DestinationType);
+
+                sb.AppendLine($"{indent}        if (typeof(TDestination) == typeof({destination}))");
+                sb.AppendLine($"{indent}            return (TDestination)(object){directNames[map.Key]}{suffix}(source)!;");
+            }
+
+            sb.AppendLine();
+        }
+
+        sb.AppendLine($"{indent}        throw new global::System.InvalidOperationException(");
+        sb.AppendLine($"{indent}            $\"ShiftMapper: no map produces a '{{typeof(TDestination)}}' from a sequence of '{Readable(sourceType)}'. \" +");
+        sb.AppendLine($"{indent}            \"The collection overloads produce List<T>, T[], HashSet<T> or IReadOnlyList<T> of a \" +");
+        sb.AppendLine($"{indent}            \"destination this mapper has a CreateMap for.\");");
+        sb.AppendLine($"{indent}    }}");
+    }
+
+    /// <summary>
+    /// Writes <c>BrandDto? MapToBrandDtoOrNull(Brand? source)</c> — the map for the case where
+    /// having nothing to map is ordinary data rather than a mistake.
+    ///
+    /// <c>Map</c> throws on a null source deliberately: asking to build a DTO out of nothing is
+    /// almost always a bug, and one that is far cheaper to hear about at the mapping call than
+    /// three layers away. But not always — an optional relationship, a lookup that found no
+    /// row, a request field nobody filled in — and writing <c>x is null ? null : Map(x)</c> at
+    /// every one of those call sites is exactly the sort of thing a mapper should have said once.
+    ///
+    /// Only for reference types on BOTH sides. A struct source can never be null, and a struct
+    /// destination has no null to return.
+    /// </summary>
+    private static void AppendOrNullMethod(StringBuilder sb, string indent, MapModel map, string name)
+    {
+        sb.AppendLine($"{indent}    /// <summary>Creates a new {map.DestinationName} from a {map.SourceName}, or null when there is no {map.SourceName}.{OriginNote(map)}</summary>");
+        sb.AppendLine($"{indent}    /// <remarks>The same map as {name}, for the case where a missing source is ordinary data rather than a mistake.</remarks>");
+        sb.AppendLine($"{indent}    {AccessibilityOf(map.IsSourcePublic, map.IsDestinationPublic)} {map.DestinationType}? {name}OrNull({map.SourceType}? source) =>");
+        sb.AppendLine($"{indent}        source is null ? null : {name}(source);");
+    }
+
+    /// <summary>
+    /// Writes <c>MapOrNull&lt;TDestination&gt;(Brand source)</c> — the switchboard for the
+    /// methods above, on the same terms as <see cref="AppendCreateMethod"/>.
+    ///
+    /// Constrained to <c>class</c>, which is not decoration. The whole promise of this method is
+    /// that it can hand back a null, and a struct destination cannot represent one — an
+    /// unconstrained version would quietly return <c>default</c>, a zero-filled struct that looks
+    /// exactly like a mapped one. So a struct destination is not reachable here at all, and the
+    /// typed <c>Map</c> is still there for it.
+    /// </summary>
+    private static void AppendOrNullMethodDispatcher(
+        StringBuilder sb,
+        string indent,
+        string sourceType,
+        List<MapModel> destinations,
+        Dictionary<string, string> directNames)
+    {
+        MapModel firstMap = destinations[0];
+
+        sb.AppendLine($"{indent}    /// <summary>Creates a new <typeparamref name=\"TDestination\"/> from a {firstMap.SourceName}, or null when there is none.</summary>");
+        AppendWrapped(
+            sb,
+            $"{indent}    /// ",
+            "<remarks>Picks the map by type argument, exactly as Map does, and answers a null source with " +
+            "a null rather than an exception. Reference destinations only: a struct has no null to " +
+            "return.</remarks>");
+
+        sb.AppendLine($"{indent}    {AccessibilityOf(firstMap.IsSourcePublic)} TDestination? MapOrNull<TDestination>({sourceType}? source)");
+        sb.AppendLine($"{indent}        where TDestination : class");
+        sb.AppendLine($"{indent}    {{");
+        sb.AppendLine($"{indent}        if (source is null)");
+        sb.AppendLine($"{indent}            return null;");
+        sb.AppendLine();
+
+        foreach (MapModel map in destinations)
+        {
+            if (map.IsReverse)
+                sb.AppendLine($"{indent}        //{OriginNote(map)}");
+
+            sb.AppendLine($"{indent}        if (typeof(TDestination) == typeof({map.DestinationType}))");
+            sb.AppendLine($"{indent}            return (TDestination)(object){directNames[map.Key]}(source);");
+            sb.AppendLine();
+        }
+
+        AppendNoMapThrow(sb, indent, Readable(sourceType), "{typeof(TDestination)}");
+        sb.AppendLine($"{indent}    }}");
+    }
+
+    /// <summary>
     /// Writes <c>BrandDto Map(Brand source, BrandDto destination)</c> — copies onto the
     /// object you pass in and hands the same object back.
     ///
@@ -1827,7 +2129,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             if (!nested.CanSetAfterConstruction)
                 continue;
 
-            sb.AppendLine($"{indent}        destination.{nested.Destination} = {NestedValueExpression(nested, "source", directNames)};");
+            sb.AppendLine($"{indent}        destination.{nested.Destination} = {NestedValueExpression(nested, "source", directNames, map.AllowNullCollections)};");
         }
 
         sb.AppendLine();
@@ -1879,7 +2181,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     private static string NestedValueExpression(
         NestedProperty nested,
         string parameter,
-        Dictionary<string, string> directNames)
+        Dictionary<string, string> directNames,
+        bool allowNullCollections)
     {
         string access = $"{parameter}.{nested.Source}";
 
@@ -1893,7 +2196,14 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
         if (nested.CollectionBuilder is not null)
         {
-            return $"global::ShiftMapper.ValueConverter.{nested.CollectionBuilder}" +
+            // THE NULL-COLLECTION POLICY, which here is one suffix. An entity's navigation
+            // collection is null far more often than it is empty — that is what not Including
+            // it looks like — so this is the property the policy was written for.
+            string builder = allowNullCollections
+                ? nested.CollectionBuilder
+                : nested.CollectionBuilder + "OrEmpty";
+
+            return $"global::ShiftMapper.ValueConverter.{builder}" +
                    $"<{nested.SourceElementType}, {nested.DestinationElementType}>" +
                    $"({access}, item => {call}(item))";
         }
@@ -2360,6 +2670,33 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         sb.AppendLine("                throw new global::System.ArgumentNullException(nameof(mapper));");
         sb.AppendLine();
         sb.AppendLine("            return mapper.Map<TDestination>(source);");
+        sb.AppendLine("        }");
+    }
+
+    /// <summary>Writes <c>brands.Map&lt;List&lt;BrandDto&gt;&gt;(mapper)</c>, forwarding to the instance.</summary>
+    private static void AppendCollectionExtension(StringBuilder sb, MapperClassModel model, string sourceType, MapModel firstMap)
+    {
+        sb.AppendLine($"        /// <summary>Creates a new <typeparamref name=\"TDestination\"/> collection from this sequence of {firstMap.SourceName}.</summary>");
+        sb.AppendLine($"        {AccessibilityOf(model.IsPublic, firstMap.IsSourcePublic)} static TDestination Map<TDestination>(this global::System.Collections.Generic.IEnumerable<{sourceType}>? source, {model.FullyQualifiedName} mapper)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            if (mapper is null)");
+        sb.AppendLine("                throw new global::System.ArgumentNullException(nameof(mapper));");
+        sb.AppendLine();
+        sb.AppendLine("            return mapper.Map<TDestination>(source);");
+        sb.AppendLine("        }");
+    }
+
+    /// <summary>Writes <c>brand.MapOrNull&lt;BrandDto&gt;(mapper)</c>, forwarding to the instance.</summary>
+    private static void AppendOrNullExtension(StringBuilder sb, MapperClassModel model, string sourceType, MapModel firstMap)
+    {
+        sb.AppendLine($"        /// <summary>Creates a new <typeparamref name=\"TDestination\"/> from this {firstMap.SourceName}, or null when it is null.</summary>");
+        sb.AppendLine($"        {AccessibilityOf(model.IsPublic, firstMap.IsSourcePublic)} static TDestination? MapOrNull<TDestination>(this {sourceType}? source, {model.FullyQualifiedName} mapper)");
+        sb.AppendLine("            where TDestination : class");
+        sb.AppendLine("        {");
+        sb.AppendLine("            if (mapper is null)");
+        sb.AppendLine("                throw new global::System.ArgumentNullException(nameof(mapper));");
+        sb.AppendLine();
+        sb.AppendLine("            return mapper.MapOrNull<TDestination>(source);");
         sb.AppendLine("        }");
     }
 

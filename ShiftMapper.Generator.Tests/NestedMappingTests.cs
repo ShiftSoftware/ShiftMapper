@@ -82,6 +82,12 @@ public class NestedMappingTests
     /// <summary>
     /// A collection of objects goes through the same shape helpers a collection of ints does —
     /// only the per-element step differs.
+    ///
+    /// In memory that means the OrEmpty family, because the default null-collection policy is
+    /// "empty": an entity's navigation collection is null far more often than it is empty, since
+    /// that is what not Including it looks like. The projection needs no such guard — EF
+    /// materialises no rows as an empty collection rather than as a null — which is why the
+    /// NestedBinding still names the plain Enumerable method.
     /// </summary>
     [Theory]
     [InlineData("List<ChildDto>", "ToList")]
@@ -110,7 +116,7 @@ public class NestedMappingTests
         run.Compiles()
            // The direct method per element. Through the dispatcher this would walk a typeof
            // chain once for every item in the collection.
-           .Emits($"Items = global::ShiftMapper.ValueConverter.{builder}<global::Child, global::ChildDto>(source.Items, item => MapToChildDto(item)),")
+           .Emits($"Items = global::ShiftMapper.ValueConverter.{builder}OrEmpty<global::Child, global::ChildDto>(source.Items, item => MapToChildDto(item)),")
            .Emits($"new global::ShiftMapper.MapCustomizations.NestedBinding(\"Items\", \"Items\", ShiftMapperProjection_Child_To_ChildDto, \"{builder}\", false)");
     }
 
@@ -235,7 +241,8 @@ public class NestedMappingTests
 
         Assert.Equal(new[] { "SM0012" }, run.Ids());
         run.Compiles();
-    }
+    }
+
 
     /// <summary>
     /// The map that answers a nested property may live in ANOTHER PART of the same partial

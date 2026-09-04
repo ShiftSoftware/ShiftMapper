@@ -1,4 +1,4 @@
-namespace ShiftMapper.Tests.Model;
+﻿namespace ShiftMapper.Tests.Model;
 
 /// <summary>
 /// A service the mapper depends on, so the tests exercise the real DI path rather than a mapper
@@ -37,6 +37,13 @@ public partial class TestMapper : ShiftMapperBase
         // A struct destination, for the direct method that maps one without boxing it.
         CreateMap<Brand, BrandKeyDto>();
 
+        // The same entity again, under the OTHER null-collection policy: a null Aliases column
+        // stays null here and becomes an empty list on BrandDto above.
+        CreateMap<Brand, BrandLooseDto>(o => o.AllowNullCollections = true);
+
+        // Dictionaries — copied, values converted, keys converted, and a null source emptied.
+        CreateMap<Catalog, CatalogDto>();
+
         // Both directions, with the conversions running opposite ways: Id is int to string on the
         // way out and string to int on the way back.
         CreateMap<Stock, StockDto>()
@@ -61,6 +68,10 @@ public partial class TestMapper : ShiftMapperBase
             // Nothing on the entity holds this — and the customization has to keep working when
             // this map is used nested inside the one below, in memory AND in SQL.
             .ForMember(d => d.LineTotal, opt => opt.MapFrom(s => s.Quantity * s.UnitPrice));
+
+        // The same entity without the Total customization, so a null Lines reaches the
+        // null-collection policy instead of throwing inside a MapFrom that sums it.
+        CreateMap<Invoice, InvoiceLinesDto>();
 
         CreateMap<Invoice, InvoiceDto>()
             // A correlated subquery in a projection, not a client-side sum.

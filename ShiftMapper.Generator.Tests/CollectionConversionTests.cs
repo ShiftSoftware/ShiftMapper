@@ -1,11 +1,11 @@
-using ShiftMapper.Generator.Tests.Infrastructure;
+﻿using ShiftMapper.Generator.Tests.Infrastructure;
 using Xunit;
 
 namespace ShiftMapper.Generator.Tests;
 
 /// <summary>
-/// Collections of simple values — the shapes, the per-element conversions, and the second
-/// spelling every one of them needs for a projection.
+/// Collections of simple values — the shapes, the per-element conversions, the null-collection
+/// policy, and the second spelling every one of them needs for a projection.
 ///
 /// The second spelling is not a detail. <c>ValueConverter</c> is ShiftMapper's own static class
 /// and no database can run it, so the query form has to be the ordinary BCL shape a developer
@@ -14,7 +14,7 @@ namespace ShiftMapper.Generator.Tests;
 /// </summary>
 public class CollectionConversionTests
 {
-    private static GeneratorRun Pair(string sourceType, string destinationType) =>
+    private static GeneratorRun Pair(string sourceType, string destinationType, string? options = null) =>
         GeneratorHarness.Run(
             $$"""
             using ShiftMapper;
@@ -26,9 +26,12 @@ public class CollectionConversionTests
 
             public partial class TestMapper : ShiftMapperBase
             {
-                public TestMapper() => CreateMap<Source, Destination>();
+                public TestMapper() => CreateMap<Source, Destination>({{options}});
             }
             """);
+
+    /// <summary>The map that keeps a null source collection as a null, rather than emptying it.</summary>
+    private const string AllowNull = "o => o.AllowNullCollections = true";
 
     private const string Converter = "global::ShiftMapper.ValueConverter";
     private const string Linq = "global::System.Linq.Enumerable";
@@ -41,6 +44,10 @@ public class CollectionConversionTests
     // destination gets its OWN list rather than a second reference to the
     // source's, and an IEnumerable that was really an unevaluated query
     // arrives as data rather than as a promise that re-runs later.
+    //
+    // The builder is the OrEmpty one because that is the DEFAULT null-collection
+    // policy: a null source collection becomes an empty destination collection.
+    // See The_null_collection_policy_picks_the_builder below.
     // -----------------------------------------------------------------
 
     [Theory]
@@ -58,7 +65,7 @@ public class CollectionConversionTests
         GeneratorRun run = Pair(source, destination);
 
         Assert.Empty(run.Ids());
-        run.Compiles().Emits($"Value = {Converter}.{method}(source.Value),");
+        run.Compiles().Emits($"Value = {Converter}.{method}OrEmpty(source.Value),");
     }
 
     /// <summary>
@@ -78,7 +85,7 @@ public class CollectionConversionTests
         Assert.Contains(
             "duplicate values are discarded",
             run.Single("SM0008").GetMessage());
-        run.Compiles().Emits($"Value = {Converter}.ToHashSet(source.Value),");
+        run.Compiles().Emits($"Value = {Converter}.ToHashSetOrEmpty(source.Value),");
     }
 
     // -----------------------------------------------------------------
@@ -92,19 +99,19 @@ public class CollectionConversionTests
     [Theory]
     [InlineData(
         "List<long>", "List<int>",
-        "ToList<long, int>(source.Value, static item => unchecked((int)item))",
+        "ToListOrEmpty<long, int>(source.Value, static item => unchecked((int)item))",
         "SM0010")]
     [InlineData(
         "List<int>", "List<string>",
-        "ToList<int, string>(source.Value, static item => global::ShiftMapper.ValueConverter.ToInvariantString(item))",
+        "ToListOrEmpty<int, string>(source.Value, static item => global::ShiftMapper.ValueConverter.ToInvariantString(item))",
         null)]
     [InlineData(
         "List<string>", "List<int>",
-        "ToList<string, int>(source.Value, static item => global::ShiftMapper.ValueConverter.Parse<int>(item, \"Source.Value -> Destination.Value\"))",
+        "ToListOrEmpty<string, int>(source.Value, static item => global::ShiftMapper.ValueConverter.Parse<int>(item, \"Source.Value -> Destination.Value\"))",
         "SM0009")]
     [InlineData(
         "HashSet<int>", "string[]",
-        "ToArray<int, string>(source.Value, static item => global::ShiftMapper.ValueConverter.ToInvariantString(item))",
+        "ToArrayOrEmpty<int, string>(source.Value, static item => global::ShiftMapper.ValueConverter.ToInvariantString(item))",
         null)]
     public void The_elements_convert(string source, string destination, string expected, string? diagnostic)
     {
@@ -127,7 +134,7 @@ public class CollectionConversionTests
         GeneratorRun run = Pair("List<int>", "IReadOnlyList<long>");
 
         Assert.Empty(run.Ids());
-        run.Compiles().Emits($"Value = {Converter}.ToList<int, long>(source.Value, static item => item),");
+        run.Compiles().Emits($"Value = {Converter}.ToListOrEmpty<int, long>(source.Value, static item => item),");
     }
 
     /// <summary>A collection carries whatever its elements carry, plus what the shape itself loses.</summary>
@@ -152,7 +159,134 @@ public class CollectionConversionTests
 
         Assert.Equal(new[] { "SM0008" }, run.Ids());
         run.Compiles()
-           .Emits($"Value = {Converter}.ToList<int?, int>(source.Value, static item => item.GetValueOrDefault()),");
+           .Emits($"Value = {Converter}.ToListOrEmpty<int?, int>(source.Value, static item => item.GetValueOrDefault()),");
+    }
+
+    // -----------------------------------------------------------------
+    // THE NULL-COLLECTION POLICY. One question — does a null source
+    // collection produce null, or an empty destination collection — and
+    // ShiftMapper's answer is EMPTY, because that is the answer that
+    // removes a null check from every consumer of the DTO forever.
+    // -----------------------------------------------------------------
+
+    /// <summary>
+    /// The policy is one method name in memory: <c>ToList</c> keeps the null, <c>ToListOrEmpty</c>
+    /// replaces it. Nothing else about the map changes.
+    /// </summary>
+    [Theory]
+    [InlineData(null, "ToListOrEmpty")]
+    [InlineData(AllowNull, "ToList")]
+    public void The_null_collection_policy_picks_the_builder(string? options, string expected)
+    {
+        GeneratorRun run = Pair("List<int>", "int[]", options);
+
+        // Same pair either way; only the builder differs.
+        run.Compiles().Emits($"Value = {Converter}.{expected.Replace("List", "Array")}(source.Value),");
+    }
+
+    /// <summary>
+    /// The policy in a PROJECTION, which is the half that had to be argued for rather than
+    /// assumed. A collection of values lives in a column, and a NULLABLE column can be null, so
+    /// the projection guards it too — otherwise the same map would hand back an empty list in
+    /// memory and a null out of the database.
+    ///
+    /// <c>?? Enumerable.Empty&lt;T&gt;()</c> is what EF turns into nothing at all: the column is
+    /// read exactly as it was before and the coalesce becomes a COALESCE in the SQL.
+    /// </summary>
+    [Fact]
+    public void The_null_collection_policy_guards_a_nullable_source_in_the_projection()
+    {
+        GeneratorRun run = Pair("List<long>?", "List<int>");
+
+        run.Compiles().Emits(
+            $"Value = {Linq}.ToList<int>({Linq}.Select<long, int>((source.Value ?? {Linq}.Empty<long>()), " +
+            "item => unchecked((int)item))),");
+    }
+
+    /// <summary>
+    /// AND ONLY A NULLABLE ONE. This is the rule that cost a working query to learn.
+    ///
+    /// EF recognises a primitive collection by the shape of the expression around it, and
+    /// <c>x ?? empty</c> is a shape it does not see through: a <c>Select</c> over a JSON column
+    /// that translates perfectly on its own stops translating once the column is wrapped, and the
+    /// developer gets a runtime "could not be translated" for a guard they never asked for. The
+    /// sample's <c>GET /api/products</c> is the query that proved it — it goes through
+    /// <c>Brand.ExternalIds</c>, which is exactly this shape.
+    ///
+    /// So the guard is written only where a null can actually arrive, and the nullable ANNOTATION
+    /// is the test because it is the developer's own statement about the column. It is the same
+    /// test <c>NestedProperty.SourceIsNullable</c> already applies to nested objects, for the same
+    /// reason. The in-memory maps guard either way: there it costs one null check and hides
+    /// nothing from anybody.
+    /// </summary>
+    [Fact]
+    public void A_non_nullable_source_is_left_unguarded_so_EF_can_still_see_it()
+    {
+        GeneratorRun run = Pair("List<long>", "List<int>");
+
+        run.Compiles()
+           // in memory the policy still applies, because there it costs nothing
+           .Emits($"Value = {Converter}.ToListOrEmpty<long, int>(source.Value, static item => unchecked((int)item)),")
+           // in the projection the column is handed to EF exactly as it was
+           .Emits($"Value = {Linq}.ToList<int>({Linq}.Select<long, int>(source.Value, item => unchecked((int)item))),")
+           .DoesNotEmit("?? global::System.Linq.Enumerable.Empty");
+    }
+
+    /// <summary>
+    /// The assignable case cannot use that spelling — it assigns the source across untouched, so
+    /// there is no Enumerable call to put an <c>IEnumerable&lt;T&gt;</c> inside. It coalesces onto
+    /// an empty of the shape the destination asked for instead, cast to the destination type so
+    /// the two arms of the <c>??</c> have a type in common whatever the source is spelled as.
+    /// </summary>
+    [Fact]
+    public void An_assignable_shape_coalesces_onto_the_destinations_own_shape()
+    {
+        GeneratorRun run = Pair("int[]?", "IReadOnlyList<int>");
+
+        run.Compiles().Emits(
+            "Value = (source.Value ?? (global::System.Collections.Generic.IReadOnlyList<int>)" +
+            "new global::System.Collections.Generic.List<int>()),");
+    }
+
+    /// <summary>Asking for the other policy leaves the projection exactly as it was.</summary>
+    [Fact]
+    public void Allowing_nulls_leaves_the_projection_unguarded()
+    {
+        GeneratorRun run = Pair("List<int>?", "IReadOnlyList<int>", AllowNull);
+
+        run.Compiles()
+           .Emits($"Value = {Converter}.ToList(source.Value),")
+           .Emits("Value = source.Value,")
+           // The lazy projection FIELD is initialised with ??=, so the fragment has to name the
+           // assignment rather than the operator.
+           .DoesNotEmit("Value = (source.Value ??");
+    }
+
+    /// <summary>
+    /// The mapper-wide default reaches a map that says nothing, exactly as
+    /// <c>Matching</c> does — the two options go through the same reader.
+    /// </summary>
+    [Fact]
+    public void ConfigureDefaults_sets_the_policy_for_every_map()
+    {
+        GeneratorRun run = GeneratorHarness.Run(
+            """
+            using ShiftMapper;
+            using System.Collections.Generic;
+
+            public class Source { public List<int> Value { get; set; } = new(); }
+            public class Destination { public int[] Value { get; set; } = default!; }
+
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper() => CreateMap<Source, Destination>();
+
+                protected override void ConfigureDefaults(MapOptions options)
+                    => options.AllowNullCollections = true;
+            }
+            """);
+
+        run.Compiles().Emits("Value = global::ShiftMapper.ValueConverter.ToArray(source.Value),");
     }
 
     // -----------------------------------------------------------------
@@ -174,7 +308,7 @@ public class CollectionConversionTests
 
         run.Compiles()
            // in memory, a copy
-           .Emits($"Value = {Converter}.ToList(source.Value),")
+           .Emits($"Value = {Converter}.ToListOrEmpty(source.Value),")
            // in a projection, straight across
            .Emits("Value = source.Value,");
     }
@@ -185,7 +319,7 @@ public class CollectionConversionTests
         GeneratorRun run = Pair("List<int>", "int[]");
 
         run.Compiles()
-           .Emits($"Value = {Converter}.ToArray(source.Value),")
+           .Emits($"Value = {Converter}.ToArrayOrEmpty(source.Value),")
            .Emits($"Value = {Linq}.ToArray(source.Value),");
     }
 

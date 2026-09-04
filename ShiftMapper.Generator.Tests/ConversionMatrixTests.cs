@@ -1,4 +1,4 @@
-using ShiftMapper.Generator.Tests.Infrastructure;
+﻿using ShiftMapper.Generator.Tests.Infrastructure;
 using Xunit;
 
 namespace ShiftMapper.Generator.Tests;
@@ -45,6 +45,7 @@ public class ConversionMatrixTests
             }
 
             public class Child { public int Id { get; set; } }
+            public class ChildDto { public int Id { get; set; } }
 
             public class Source { public {{sourceType}} Value { get; set; } = default!; }
             public class Destination { public {{destinationType}} Value { get; set; } = default!; }
@@ -240,8 +241,10 @@ public class ConversionMatrixTests
     // direction.
     [InlineData("string", "char[]")]
     [InlineData("char[]", "string")]
-    // A Dictionary is a shape the collection builders cannot construct.
-    [InlineData("Dictionary<string, int>", "IDictionary<string, int>")]
+    // A dictionary of OBJECTS: the values would have to be mapped, and mapping does not run
+    // through the conversion table. (A dictionary of values is step 2b and maps — see
+    // DictionaryConversionTests.)
+    [InlineData("Dictionary<string, Child>", "Dictionary<string, ChildDto>")]
     // A collection shape we can read but not build.
     [InlineData("List<int>", "Stack<int>")]
     public void Refused_as_Sm0002(string source, string destination)

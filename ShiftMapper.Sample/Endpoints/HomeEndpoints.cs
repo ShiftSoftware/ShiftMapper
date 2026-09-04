@@ -17,8 +17,10 @@ public static class HomeEndpoints
                 "GET  /api/invoices          (PROJECTION, nested 4 levels; ?sql=true shows the SQL)",
                 "GET  /api/invoices/{id}     (IN MEMORY: mapper.Map<InvoiceDto>(invoice))",
                 "POST /api/invoices          (IN MEMORY, maps the entity it just saved)",
-                "GET  /api/brands      (EXTENSION form: brand.Map<BrandDto>(mapper))",
-                "GET  /api/brands/{id} (EXTENSION form, updates an existing DTO)",
+                "GET  /api/brands            (COLLECTION: mapper.Map<List<BrandDto>>(brands))",
+                "GET  /api/brands/projected  (the same list from SQL; ?sql=true shows the query)",
+                "GET  /api/brands/{id}       (MapOrNull, then the update overload)",
+                "POST /api/supplier-feeds/preview (DICTIONARIES: keys and values converted)",
                 "GET  /api/stocks      (INSTANCE form: mapper.Map<StockDto>(stock))",
                 "GET  /api/stocks/{id} (INSTANCE form, updates an existing DTO)",
             }

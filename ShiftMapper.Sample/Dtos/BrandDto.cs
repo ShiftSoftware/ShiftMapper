@@ -79,6 +79,30 @@ public class BrandDto
     public List<int> ExternalIds { get; set; } = new();
 
     /// <summary>
+    /// The brand's other trading names — declared NON-nullable while
+    /// <see cref="Entities.Brand.Aliases"/> is nullable and is null for most of the seeded rows.
+    ///
+    /// That is the NULL-COLLECTION POLICY, and the default is the reason this property can be
+    /// declared this way at all:
+    ///
+    /// <code>Aliases = ValueConverter.ToListOrEmpty(source.Aliases)</code>
+    ///
+    /// A null column arrives as an empty list, so no caller of this DTO ever writes
+    /// <c>dto.Aliases?.Count</c> — and the first place somebody would have forgotten to is a
+    /// NullReferenceException in production rather than a compile error.
+    ///
+    /// The projection answers it too, which is the half worth checking rather than assuming:
+    ///
+    /// <code>Aliases = (source.Aliases ?? (IReadOnlyList&lt;string&gt;)new List&lt;string&gt;())</code>
+    ///
+    /// EF turns that into nothing at all — the column is read exactly as it was before and the
+    /// coalesce runs while the row is being shaped — so <c>GET /api/brands</c> and
+    /// <c>GET /api/brands/projected</c> agree. See <c>MapOptions.AllowNullCollections</c> for the
+    /// other answer, and for why empty is the default.
+    /// </summary>
+    public IReadOnlyList<string> Aliases { get; set; } = [];
+
+    /// <summary>
     /// Deliberately spelled differently from the entity's <c>ISOCode</c>. With the default
     /// PropertyMatching.CaseInsensitive there is no exact match, so ShiftMapper falls back
     /// to ignoring case and generates <c>IsoCode = source.ISOCode</c>.

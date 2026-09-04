@@ -132,6 +132,20 @@ public partial class AppMapper : ShiftMapperBase
         // and the fallback switches off, so IsoCode stops mapping and the build reports
         //     SM0001: 'BrandDto.IsoCode' is not mapped because 'Brand' has no readable
         //             property named 'IsoCode'
+        // COLLECTIONS AND NULLS AT THE TOP LEVEL come with this one line too, and neither
+        // needs a word of configuration:
+        //
+        //   mapper.Map<List<BrandDto>>(brands)          // and BrandDto[], HashSet<>, IReadOnlyList<>
+        //   mapper.MapToBrandDtoList(brands)            // the typed route, no typeof chain
+        //   mapper.MapOrNull<BrandDto>(maybeNull)       // Map throws on null, deliberately
+        //
+        // See BrandEndpoints for both, and BrandDto.Aliases for the NULL-COLLECTION POLICY —
+        // the one decision here that had to be made rather than inherited. A null source
+        // collection becomes an EMPTY destination collection, in memory AND inside the
+        // projection, so a DTO ShiftMapper built has no collection property a caller has to
+        // test for null. Ask for the other answer per map, or for the whole mapper:
+        //
+        //   CreateMap<Brand, BrandDto>(o => o.AllowNullCollections = true);
         CreateMap<Brand, BrandDto>();
 
         // Same map, plus the way back — one line, both directions:
@@ -324,6 +338,26 @@ public partial class AppMapper : ShiftMapperBase
             // it generates the projection and lets EF answer, so you get what today's EF can do
             // rather than what ShiftMapper assumed when it was written.
             .ForMember(d => d.Number, opt => opt.MapFrom(s => _numbering.Prefix + s.Number));
+
+        // ------------------------------------------------------------------
+        // DICTIONARIES — the other shape a collection comes in.
+        // ------------------------------------------------------------------
+        //
+        // Nothing is configured here either. A dictionary is copied rather than shared, its keys
+        // and values convert by the ordinary rules, and a null one follows the same policy every
+        // other collection does. The only thing it needs of its own is a second element type:
+        //
+        //   Prices = ValueConverter.ToDictionaryOrEmpty<string, decimal, string, string>(
+        //                source.Prices, static key => key,
+        //                static value => ValueConverter.ToInvariantString(value))
+        //
+        // This map is also the sample's live demonstration of SM0008 on a dictionary. Notes has
+        // int keys on the way in and string keys on the way out, and CONVERTING KEYS is the one
+        // thing a dictionary can lose that a list cannot — two keys that were distinct in the
+        // source can arrive as one, and the later entry wins. See SupplierFeed.Notes.
+        //
+        // Read the pair through POST /api/supplier-feeds/preview.
+        CreateMap<SupplierFeed, SupplierFeedDto>();
     }
 
     /// <summary>Proof that constructor injection works on this class.</summary>

@@ -85,8 +85,10 @@ public static class ValueConverter
     ///   1 — numbers, bool, char, enums, Guid and the date/time types, to and from text;
     ///       DateOnly/TimeOnly to DateTime/TimeSpan.
     ///   2 — collections of those types: ToArray, ToList and ToHashSet.
+    ///   3 — dictionaries (ToDictionary), and the OrEmpty twin of every collection builder,
+    ///       which is what the null-collection policy is generated against.
     /// </summary>
-    public const int ConverterApiVersion = 2;
+    public const int ConverterApiVersion = 3;
 
     // -----------------------------------------------------------------
     // TO TEXT
@@ -555,6 +557,148 @@ public static class ValueConverter
         IEnumerable<TSource>? source,
         Func<TSource, TDestination> convert) =>
         source is null ? null : ToList(source, convert)!.ToHashSet();
+
+    // -----------------------------------------------------------------
+    // DICTIONARIES
+    // -----------------------------------------------------------------
+    //
+    // A dictionary is a collection like any other as far as this class is concerned — it is
+    // copied rather than shared, for the two reasons spelled out above the list builders — but
+    // it has TWO element types rather than one, so it needs its own pair of methods instead of
+    // fitting into ToList.
+    //
+    // THE SOURCE is any IEnumerable<KeyValuePair<K, V>>, which every dictionary in the BCL is:
+    // Dictionary, IDictionary, IReadOnlyDictionary, SortedDictionary, ConcurrentDictionary.
+    // THE DESTINATION is always a Dictionary<K, V>, which satisfies IDictionary<K, V> and
+    // IReadOnlyDictionary<K, V> as well.
+    //
+    // DUPLICATE KEYS ARE DISCARDED, last one wins, exactly as ToHashSet discards duplicate
+    // values — and for the same reason: converting the keys is what can create a collision that
+    // did not exist in the source (two long keys narrowing to one int, "A" and "a" arriving as
+    // the same text), and throwing halfway through building a DTO is a worse answer than the one
+    // the set builder already gives. The generator reports it as SM0008 whenever the key type is
+    // converted, and says nothing when it is not — a real dictionary source cannot collide with
+    // itself.
+
+    /// <summary>Copies key/value pairs into a new dictionary.</summary>
+    public static Dictionary<TKey, TValue>? ToDictionary<TKey, TValue>(
+        IEnumerable<KeyValuePair<TKey, TValue>>? source)
+        where TKey : notnull
+    {
+        if (source is null)
+            return null;
+
+        // Sized up front when the source can say how many there are, which is the common case -
+        // every dictionary in the BCL is an ICollection of its own pairs.
+        var result = source is ICollection<KeyValuePair<TKey, TValue>> known
+            ? new Dictionary<TKey, TValue>(known.Count)
+            : new Dictionary<TKey, TValue>();
+
+        foreach (KeyValuePair<TKey, TValue> pair in source)
+            result[pair.Key] = pair.Value;
+
+        return result;
+    }
+
+    /// <summary>
+    /// Copies key/value pairs into a new dictionary, converting the keys AND the values on the
+    /// way.
+    /// </summary>
+    /// <param name="source">The pairs to copy. A null source stays null.</param>
+    /// <param name="key">
+    /// Applied to every key. The generator passes a <c>static</c> lambda — often the identity
+    /// <c>k =&gt; k</c>, which is there so the destination's key type is settled by the compiler
+    /// rather than by type inference.
+    /// </param>
+    /// <param name="value">Applied to every value, on the same terms.</param>
+    public static Dictionary<TDestinationKey, TDestinationValue>? ToDictionary<TSourceKey, TSourceValue, TDestinationKey, TDestinationValue>(
+        IEnumerable<KeyValuePair<TSourceKey, TSourceValue>>? source,
+        Func<TSourceKey, TDestinationKey> key,
+        Func<TSourceValue, TDestinationValue> value)
+        where TDestinationKey : notnull
+    {
+        if (source is null)
+            return null;
+
+        var result = source is ICollection<KeyValuePair<TSourceKey, TSourceValue>> known
+            ? new Dictionary<TDestinationKey, TDestinationValue>(known.Count)
+            : new Dictionary<TDestinationKey, TDestinationValue>();
+
+        foreach (KeyValuePair<TSourceKey, TSourceValue> pair in source)
+            result[key(pair.Key)] = value(pair.Value);
+
+        return result;
+    }
+
+    // -----------------------------------------------------------------
+    // THE SAME BUILDERS, WITH A NULL SOURCE TREATED AS AN EMPTY ONE
+    // -----------------------------------------------------------------
+    //
+    // Every builder above copies a null source to a null destination. These are their twins for
+    // the OTHER answer to that question, and which family the generated code calls is decided
+    // per map by MapOptions.AllowNullCollections — which is false by default, so THESE are the
+    // ones a map normally uses.
+    //
+    // Two families rather than a bool parameter, because the generated line then SAYS which
+    // policy is in force. `ValueConverter.ToListOrEmpty(source.Tags)` needs no cross-reference
+    // to read; `ValueConverter.ToList(source.Tags, false)` needs the signature open beside it.
+    //
+    // The return types are non-nullable, which is half the point of them: a DTO built this way
+    // has no collection property that can be null, so nothing downstream has to test for one.
+
+    /// <summary>Copies a sequence into a new array; a null source becomes an empty array.</summary>
+    public static T[] ToArrayOrEmpty<T>(IEnumerable<T>? source) =>
+        source is null ? Array.Empty<T>() : source.ToArray();
+
+    /// <inheritdoc cref="ToArrayOrEmpty{T}(IEnumerable{T})"/>
+    /// <inheritdoc cref="ToArray{TSource, TDestination}"/>
+    public static TDestination[] ToArrayOrEmpty<TSource, TDestination>(
+        IEnumerable<TSource>? source,
+        Func<TSource, TDestination> convert) =>
+        source is null ? Array.Empty<TDestination>() : ToList(source, convert)!.ToArray();
+
+    /// <summary>Copies a sequence into a new list; a null source becomes an empty list.</summary>
+    public static List<T> ToListOrEmpty<T>(IEnumerable<T>? source) =>
+        source is null ? new List<T>() : source.ToList();
+
+    /// <inheritdoc cref="ToListOrEmpty{T}(IEnumerable{T})"/>
+    /// <inheritdoc cref="ToArray{TSource, TDestination}"/>
+    public static List<TDestination> ToListOrEmpty<TSource, TDestination>(
+        IEnumerable<TSource>? source,
+        Func<TSource, TDestination> convert) =>
+        source is null ? new List<TDestination>() : ToList(source, convert)!;
+
+    /// <summary>Copies a sequence into a new set; a null source becomes an empty set.</summary>
+    /// <inheritdoc cref="ToHashSet{T}(IEnumerable{T})"/>
+    public static HashSet<T> ToHashSetOrEmpty<T>(IEnumerable<T>? source) =>
+        source is null ? new HashSet<T>() : source.ToHashSet();
+
+    /// <inheritdoc cref="ToHashSetOrEmpty{T}(IEnumerable{T})"/>
+    /// <inheritdoc cref="ToArray{TSource, TDestination}"/>
+    public static HashSet<TDestination> ToHashSetOrEmpty<TSource, TDestination>(
+        IEnumerable<TSource>? source,
+        Func<TSource, TDestination> convert) =>
+        source is null ? new HashSet<TDestination>() : ToList(source, convert)!.ToHashSet();
+
+    /// <summary>
+    /// Copies key/value pairs into a new dictionary; a null source becomes an empty dictionary.
+    /// </summary>
+    /// <inheritdoc cref="ToDictionary{TKey, TValue}(IEnumerable{KeyValuePair{TKey, TValue}})"/>
+    public static Dictionary<TKey, TValue> ToDictionaryOrEmpty<TKey, TValue>(
+        IEnumerable<KeyValuePair<TKey, TValue>>? source)
+        where TKey : notnull =>
+        source is null ? new Dictionary<TKey, TValue>() : ToDictionary(source)!;
+
+    /// <inheritdoc cref="ToDictionaryOrEmpty{TKey, TValue}(IEnumerable{KeyValuePair{TKey, TValue}})"/>
+    /// <inheritdoc cref="ToDictionary{TSourceKey, TSourceValue, TDestinationKey, TDestinationValue}"/>
+    public static Dictionary<TDestinationKey, TDestinationValue> ToDictionaryOrEmpty<TSourceKey, TSourceValue, TDestinationKey, TDestinationValue>(
+        IEnumerable<KeyValuePair<TSourceKey, TSourceValue>>? source,
+        Func<TSourceKey, TDestinationKey> key,
+        Func<TSourceValue, TDestinationValue> value)
+        where TDestinationKey : notnull =>
+        source is null
+            ? new Dictionary<TDestinationKey, TDestinationValue>()
+            : ToDictionary(source, key, value)!;
 
     /// <summary>
     /// The one message every failed conversion produces.

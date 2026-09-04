@@ -1,4 +1,4 @@
-# ShiftMapper — what is left to build
+﻿# ShiftMapper — what is left to build
 
 This file is the roadmap. It is written to be read top to bottom and implemented in the
 order it is written: each step assumes the ones above it are done.
@@ -32,7 +32,7 @@ Every step heading below carries the same marker: ✅ done, ⬜ pending.
 
 **Phase 2 — Close the mapping gaps**
 
-- [ ] **Step 5** — Collections and null policy at the top level
+- [x] **Step 5** — Collections and null policy at the top level
 - [ ] **Step 6** — Destinations that are not `new T { }`
 - [ ] **Step 7** — Per-member power tools
 - [ ] **Step 8** — Map-level hooks
@@ -53,8 +53,8 @@ Every step heading below carries the same marker: ✅ done, ⬜ pending.
 - [ ] **Step 17** — Docs and sample
 - [ ] **Step 18** — Benchmarks
 
-Phase 1 is complete. Next on ShiftFramework's critical path is **Step 8**, then
-8 → 10 → 11 → 12 → 13 → 14 → 15 (the summary at the foot of this file).
+Phase 1 is complete, and Step 5 of Phase 2 with it. Next on ShiftFramework's critical path is
+**Step 8**, then 8 → 10 → 11 → 12 → 13 → 14 → 15 (the summary at the foot of this file).
 
 ---
 
@@ -70,7 +70,8 @@ Phase 1 is complete. Next on ShiftFramework's critical path is **Step 8**, then
   (`PropertyMatching`), settable per map or per mapper (`ConfigureDefaults`).
 - Type conversion between matched properties: implicit conversions, numeric pairs, text
   parsing/formatting, enums, `Guid`/`TimeSpan`/date-time types, user-defined implicit
-  operators, and collections of all of those (`ToArray` / `ToList` / `ToHashSet`).
+  operators, and collections of all of those (`ToArray` / `ToList` / `ToHashSet`), plus
+  dictionaries.
 - Nested objects and collections of objects, composed to any depth from the maps you
   declared, in memory AND inside one EF projection.
 - Cycle detection as a build error (SM0012).
@@ -93,11 +94,14 @@ Phase 1 is complete. Next on ShiftFramework's critical path is **Step 8**, then
 - **(Step 4)** `IShiftMapper`, implemented explicitly on every generated mapper and registered by
   `AddShiftMapper`, so a library can map, update, project and ask `CanMap` without naming the
   application's mapper class.
+- **(Step 5)** Collection overloads on every map (`List` / array / `HashSet` / `IReadOnlyList`),
+  `MapOrNull`, dictionaries in the conversion table, and one null-collection policy answered the
+  same way by both backends.
 
 ### What is missing, in one paragraph
 
 Destinations must have a parameterless constructor, so records and constructor-initialised
-DTOs are out. There is no way to map a collection at the top level.
+DTOs are out.
 There is no `Condition`, `NullSubstitute`, `BeforeMap`/`AfterMap`, `ConstructUsing`,
 `ConvertUsing`, flattening, inheritance or open generics. And — the item this plan is
 mostly about — there is no GLOBAL configuration layer at all: every rule has to be
@@ -302,7 +306,7 @@ arrive with Step 5, on the typed API first.
 This is the "as usable as AutoMapper" work. Each step is independent of the others; the
 order below is by how often the gap is actually hit.
 
-### ⬜ Step 5 — Collections and null policy at the top level
+### ✅ Step 5 — Collections and null policy at the top level
 
 ```csharp
 mapper.Map<List<BrandDto>>(brands);      // does not exist today
@@ -319,6 +323,67 @@ mapper.MapOrNull<BrandDto>(maybeNull);   // Map throws on null, deliberately
   already does in ShiftFramework.)
 - Add `Dictionary<K,V>` / `IDictionary` / `IReadOnlyDictionary` to the collection builders in
   `ConversionResolver` and `ValueConverter`. Today a dictionary is SM0002.
+
+**What landed.**
+
+- **Collection overloads per map.** Three direct methods — `MapToBrandDtoList`,
+  `MapToBrandDtoArray`, `MapToBrandDtoHashSet`, each taking any `IEnumerable<Brand>` — plus a
+  `Map<TDestination>(IEnumerable<Brand>)` switchboard answering for `List<T>`, `T[]`,
+  `HashSet<T>` and `IReadOnlyList<T>`, and extension spellings of both. `IReadOnlyList` gets no
+  builder of its own because a `List` already is one. A shape nothing builds throws a message
+  naming the four rather than guessing.
+- **`MapOrNull`**, per map and as a switchboard, for the case where a missing source is ordinary
+  data. Constrained to `class` and emitted only where BOTH sides are reference types: a struct
+  destination has no null to return, and an unconstrained version would hand back `default` — a
+  zero-filled struct indistinguishable from a mapped one.
+- **`Dictionary` in the conversion table** as its own step, since a dictionary is not an
+  `IEnumerable<T>` of anything the list builders can construct. Read from any
+  `IEnumerable<KeyValuePair<K, V>>` (so `SortedDictionary` and `ConcurrentDictionary` feed one),
+  built as a `Dictionary`, and keys and values convert independently. Converting the KEYS is the
+  one thing a dictionary can lose that a list cannot — two source keys can arrive as one — so
+  it takes SM0008 exactly as `ToHashSet` does, with the same last-one-wins behaviour rather than
+  a throw halfway through building a DTO.
+- **The null-collection policy**, `MapOptions.AllowNullCollections`, defaulting to FALSE, meaning
+  a null source collection becomes an EMPTY destination collection. Per map or per mapper, read
+  through the same `ReadOption` as `Matching`. It covers collections of values, collections of
+  mapped objects, dictionaries, and the top-level collection overloads — so
+  `Map<List<BrandDto>>(null)` answers the same question the same way instead of throwing. In
+  memory it is one method name: `ValueConverter` grew an `OrEmpty` twin of every builder, whose
+  return types are non-nullable, which is half the point of them.
+
+**The projection half, which is the part that had to be learned rather than designed.** The first
+version guarded every collection in the projection with `?? Enumerable.Empty<T>()`. It passed the
+whole suite — and broke `GET /api/products` in the sample, because EF recognises a primitive
+collection by the shape of the expression around it and a coalesce is a shape it cannot see
+through. A `Select` over a JSON column that translated perfectly stopped translating, at run time,
+to guard against a null the type said could not happen. The rule now:
+
+- a NAVIGATION collection is never null in a projection, so it is never guarded;
+- a collection of VALUES whose source property is declared NULLABLE is guarded, and EF turns that
+  into a `COALESCE` in the SELECT list — verified against SQL Server in the sample and against
+  SQLite in the suite;
+- a collection of VALUES declared NON-nullable is not guarded. The in-memory map still is, because
+  there it costs one null check and breaks nothing.
+
+The nullable ANNOTATION is the test because it is the developer's own statement about the column,
+and it is the same test `NestedProperty.SourceIsNullable` already applied to nested objects for
+the same reason. `CollectionConversionTests.A_non_nullable_source_is_left_unguarded_so_EF_can_still_see_it`
+pins it, and says why.
+
+**Two consequences worth recording.** A bare `null` literal is now ambiguous at
+`Map<BrandDto>(null)` and `MapOrNull<BrandDto>(null)`, because there is an overload per mapped
+source type — an ordinary consequence of adding an overload, and a compile error where the old
+behaviour was a runtime throw. And `IShiftMapper` still has no collection members: this step
+delivers them on the typed API, as Step 4 said it would, and putting them on the interface is a
+separate decision about a published contract.
+
+**In the sample.** `Brand.Aliases` is a genuinely nullable primitive collection, null for six of
+the eight seeded brands, and `GET /api/brands` (in memory) and `GET /api/brands/projected` (SQL)
+return the same `[]` for every one of them. `GET /api/brands/{id}` uses `MapOrNull` for the row
+that may not be there. `SupplierFeed` and `POST /api/supplier-feeds/preview` carry the dictionary
+demonstration — values converted, keys converted (the live SM0008), and an absent dictionary
+arriving as `{}` — on a pair with no table behind it, because that is where dictionaries
+actually turn up.
 
 ### ⬜ Step 6 — Destinations that are not `new T { }`
 
@@ -686,11 +751,12 @@ mapper that cannot show its numbers has given up its main argument.
 | Phase | Steps | State | Blocking? |
 |---|---|---|---|
 | 1 — Trust | 1 Tests, 2 Runtime cost, 3 Packaging, 4 `IShiftMapper` | ✅ done | Everything depended on 1 and 4 |
-| 2 — Gaps | 5 Collections, 6 Constructors/records, 7 Member options, 8 Map hooks, 9 Flattening, 10 Inheritance/generics | ⬜ pending | 8 and 10 block Phase 3 |
+| 2 — Gaps | ~~5 Collections~~, 6 Constructors/records, 7 Member options, 8 Map hooks, 9 Flattening, 10 Inheritance/generics | ⬜ 5 done | 8 and 10 block Phase 3 |
 | 3 — General layer | 11 Profiles, 12 Global conversions, 13 Compile-time contract, 14 Member conventions, 15 ShiftFramework port | ⬜ pending | The goal |
 | 4 — Finish | 16 Diagnostics, 17 Docs, 18 Benchmarks | ⬜ pending | Can run alongside 2 and 3 |
 
 The shortest path to ShiftFramework being able to adopt this is
 **1 → 4 → 8 → 10 → 11 → 12 → 13 → 14 → 15**; with 1 and 4 done, it starts at **8**. Steps 5, 6, 7
 and 9 are needed for ShiftMapper to be a good general-purpose mapper, but they are not on
-ShiftFramework's critical path.
+ShiftFramework's critical path — 5 is done because it is the one of those four that every list
+endpoint hits on its first day.

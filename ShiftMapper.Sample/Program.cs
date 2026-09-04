@@ -60,4 +60,7 @@ app.MapProductEndpoints();
 app.MapBrandEndpoints();
 app.MapStockEndpoints();
 
+// Dictionaries, on a pair with no table behind it.
+app.MapSupplierFeedEndpoints();
+
 app.Run();

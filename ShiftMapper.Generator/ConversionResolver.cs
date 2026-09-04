@@ -1,4 +1,5 @@
-﻿using System.Linq;
+﻿using System.Collections.Generic;
+using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 
@@ -90,6 +91,20 @@ internal static class ConversionResolver
     /// <inheritdoc cref="ScalarConversionApi"/>
     private const int CollectionConversionApi = 2;
 
+    /// <inheritdoc cref="ScalarConversionApi"/>
+    private const int DictionaryConversionApi = 3;
+
+    /// <summary>
+    /// The version that added the <c>OrEmpty</c> twin of every collection builder, which is what
+    /// <c>MapOptions.AllowNullCollections = false</c> — the DEFAULT — is generated against.
+    ///
+    /// A project whose runtime predates it keeps the null-stays-null behaviour that runtime
+    /// implements, rather than getting a call to a method it does not have. That is the same
+    /// bargain every number here makes: an older ShiftMapper loses what it cannot serve instead
+    /// of failing to compile.
+    /// </summary>
+    private const int NullCollectionPolicyApi = 3;
+
     /// <summary>
     /// Works out how to get a <paramref name="sourceType"/> value into a
     /// <paramref name="destinationType"/> property.
@@ -100,11 +115,18 @@ internal static class ConversionResolver
     /// the generated call as a string literal so a conversion that fails at runtime can name
     /// the two properties it was working on. Only the text conversions use it.
     /// </param>
+    /// <param name="allowNullCollections">
+    /// The map's <c>MapOptions.AllowNullCollections</c>: whether a null SOURCE collection is
+    /// carried across as a null, or becomes an empty destination collection. Only the collection
+    /// and dictionary steps read it — a scalar has no such question — which is why the
+    /// recursive calls below leave it at its default.
+    /// </param>
     public static ValueConversion? Resolve(
         Compilation compilation,
         ITypeSymbol sourceType,
         ITypeSymbol destinationType,
-        string mapping)
+        string mapping,
+        bool allowNullCollections = false)
     {
         // 1. THE TYPES WE WILL NOT REASON ABOUT AT ALL. `dynamic` has to go first: the
         //    compiler reports an implicit conversion to it from EVERYTHING, so leaving it in
@@ -127,8 +149,14 @@ internal static class ConversionResolver
         //    never be treated as one here) — returns null and carries on down the scalar path
         //    unchanged. `List<Product>` to `List<Product>` is still the plain assignment it
         //    always was, until nested mapping exists to do better.
-        if (ResolveCollection(compilation, sourceType, destinationType, mapping) is { } collection)
+        if (ResolveCollection(compilation, sourceType, destinationType, mapping, allowNullCollections) is { } collection)
             return collection;
+
+        //    2b. DICTIONARIES, on the same terms and for the same reason. A Dictionary is not an
+        //    IEnumerable<T> of anything step 2 can build, so it lands here rather than there, and
+        //    it too is COPIED even when both sides are already the same type.
+        if (ResolveDictionary(compilation, sourceType, destinationType, mapping, allowNullCollections) is { } dictionary)
+            return dictionary;
 
         // 3. THE SAME TYPE. Note this comparison ignores nullable reference ANNOTATIONS, so
         //    `string?` to `string` is still a plain copy — exactly as it was before
@@ -476,7 +504,8 @@ internal static class ConversionResolver
         Compilation compilation,
         ITypeSymbol sourceType,
         ITypeSymbol destinationType,
-        string mapping)
+        string mapping,
+        bool allowNullCollections)
     {
         if (sourceType.SpecialType == SpecialType.System_String
             || destinationType.SpecialType == SpecialType.System_String)
@@ -525,9 +554,15 @@ internal static class ConversionResolver
         // List<int> would infer List<int> again and quietly rebuild the bug this comment is
         // about. Stating both types makes the destination the compiler's problem rather than
         // the inference algorithm's — and makes the generated line say what it produces.
+        // THE NULL-COLLECTION POLICY, which is one method name. `ToList` copies a null source
+        // to a null destination; `ToListOrEmpty` copies it to an empty collection, and is what a
+        // map uses unless it asked for the other answer. See MapOptions.AllowNullCollections for
+        // why empty is the default.
+        string builder = NullPolicySuffix(compilation, method, allowNullCollections);
+
         string template = sameElement
-            ? $"{ConverterType}.{method}({{0}})"
-            : $"{ConverterType}.{method}<{FullName(sourceElement)}, {FullName(destinationElement)}>" +
+            ? $"{ConverterType}.{builder}({{0}})"
+            : $"{ConverterType}.{builder}<{FullName(sourceElement)}, {FullName(destinationElement)}>" +
               $"({{0}}, static item => {element.Apply("item")})";
 
         // The query spelling is the same shape written with LINQ, because ValueConverter's
@@ -554,14 +589,281 @@ internal static class ConversionResolver
         bool assignable = compilation.ClassifyConversion(sourceType, destinationType) is
             { Exists: true, IsImplicit: true, IsBoxing: false, IsUserDefined: false };
 
+        // THE POLICY AGAIN, and in a projection it is a real question rather than a method name.
+        // A collection of VALUES lives in a column, and a NULLABLE column can be null — so the
+        // projection has to answer it too, or the same map would hand back an empty list in
+        // memory and a null out of the database.
+        //
+        // Only where a null can actually arrive, though: see GuardsNullInQuery for why wrapping
+        // a column that was never nullable costs a translation rather than nothing.
+        //
+        // (The collections of OBJECTS handled by NestedBinding need no guard at all: they are
+        // navigation collections, and EF materialises no rows as an empty collection rather than
+        // as a null. See MapOptions.AllowNullCollections.)
+        bool guard = GuardsNullInQuery(sourceType, allowNullCollections);
+
+        string emptySource = guard
+            ? $"({{0}} ?? {LinqType}.Empty<{FullName(sourceElement)}>())"
+            : "{0}";
+
+        // The assignable case cannot use that spelling: it assigns the source across untouched,
+        // so there is no Enumerable call to put an IEnumerable<T> inside. It coalesces to an
+        // empty of the shape the destination actually asked for instead, cast to the destination
+        // type so the two arms of the ?? have a type in common whatever the source is spelled as.
+        string assignedEmpty = guard
+            ? $"({{0}} ?? ({FullName(destinationType)}){EmptyCollection(method, FullName(destinationElement))})"
+            : "{0}";
+
         string queryTemplate = sameElement
-            ? (assignable ? "{0}" : $"{LinqType}.{method}({{0}})")
+            ? (assignable ? assignedEmpty : $"{LinqType}.{method}({emptySource})")
             : $"{LinqType}.{method}<{FullName(destinationElement)}>(" +
               $"{LinqType}.Select<{FullName(sourceElement)}, {FullName(destinationElement)}>" +
-              $"({{0}}, item => {element.ApplyQuery("item")}))";
+              $"({emptySource}, item => {element.ApplyQuery("item")}))";
 
         return new ValueConversion(
             template, CollectionRisk(method, element), CollectionNote(method, element), queryTemplate);
+    }
+
+    /// <summary>
+    /// Whether the referenced ShiftMapper runtime carries the <c>OrEmpty</c> collection builders,
+    /// and so whether "a null source collection becomes an empty one" can be generated at all.
+    ///
+    /// Asked once per map, by the generator, so that a project sitting on an older runtime is
+    /// analysed as though it had asked for <c>AllowNullCollections</c> — which leaves it with
+    /// exactly the behaviour that runtime implements, rather than with a call to a method that is
+    /// not there.
+    /// </summary>
+    public static bool SupportsNullCollectionPolicy(Compilation compilation) =>
+        HasConverter(compilation, NullCollectionPolicyApi);
+
+    /// <summary>
+    /// The builder to call for a given null-collection policy — <c>ToList</c> or
+    /// <c>ToListOrEmpty</c>.
+    ///
+    /// Falls back to the plain builder when the referenced runtime predates the OrEmpty family,
+    /// which leaves such a project with exactly the behaviour the ShiftMapper it references
+    /// implements rather than a call to a method that is not there.
+    /// </summary>
+    private static string NullPolicySuffix(Compilation compilation, string method, bool allowNullCollections) =>
+        allowNullCollections || !HasConverter(compilation, NullCollectionPolicyApi)
+            ? method
+            : method + "OrEmpty";
+
+    /// <summary>
+    /// Whether the PROJECTION guards this collection against a null source.
+    ///
+    /// Two things have to be true. The map has to want the empty-collection policy at all — and
+    /// the source property has to be DECLARED NULLABLE, which is the part worth explaining.
+    ///
+    /// A coalesce is not free in a projection. EF recognises a primitive collection by the shape
+    /// of the expression around it, and <c>x ?? empty</c> is a shape it does not see through: the
+    /// same <c>Select</c> over a JSON column that translates perfectly on its own stops
+    /// translating once the column is wrapped, and the developer gets a runtime "could not be
+    /// translated" for a guard they never asked for. So the guard is written only where a null can
+    /// actually arrive.
+    ///
+    /// The nullable ANNOTATION is the right test because it is the developer's own statement about
+    /// the column, and it is the same test <c>NestedProperty.SourceIsNullable</c> already applies
+    /// to nested objects for exactly this reason. The in-memory maps guard either way — there
+    /// the OrEmpty builder costs one null check and hides nothing from anybody.
+    /// </summary>
+    private static bool GuardsNullInQuery(ITypeSymbol sourceType, bool allowNullCollections) =>
+        !allowNullCollections && sourceType.NullableAnnotation == NullableAnnotation.Annotated;
+
+    /// <summary>
+    /// An empty collection of the shape a given builder produces, written out so a projection can
+    /// coalesce onto it. It is the CONCRETE type in each case, because that is what the
+    /// destination interface was going to be filled with anyway.
+    /// </summary>
+    private static string EmptyCollection(string method, params string[] elements) => method switch
+    {
+        "ToArray" => $"global::System.Array.Empty<{elements[0]}>()",
+        "ToHashSet" => $"new global::System.Collections.Generic.HashSet<{elements[0]}>()",
+        "ToDictionary" => $"new global::System.Collections.Generic.Dictionary<{elements[0]}, {elements[1]}>()",
+        _ => $"new global::System.Collections.Generic.List<{elements[0]}>()",
+    };
+
+    /// <summary>
+    /// Step 2b — one dictionary into another.
+    ///
+    /// <code>
+    /// // Dictionary&lt;string, int&gt; -> IReadOnlyDictionary&lt;string, int&gt;
+    /// Ratings = ValueConverter.ToDictionaryOrEmpty(source.Ratings)
+    ///
+    /// // Dictionary&lt;string, int&gt; -> Dictionary&lt;string, string&gt;   — the values convert too
+    /// Ratings = ValueConverter.ToDictionaryOrEmpty&lt;string, int, string, string&gt;(
+    ///               source.Ratings, static key =&gt; key, static value =&gt; ValueConverter.ToInvariantString(value))
+    /// </code>
+    ///
+    /// <para><b>THE SOURCE</b> is anything that is an
+    /// <c>IEnumerable&lt;KeyValuePair&lt;K, V&gt;&gt;</c>, which every dictionary in the BCL is.
+    /// <b>THE DESTINATION</b> is a <c>Dictionary&lt;K, V&gt;</c> or one of the two interfaces a
+    /// Dictionary satisfies. A <c>SortedDictionary</c> or a <c>ConcurrentDictionary</c> can be
+    /// READ from and not written to, the same asymmetry the list builders have, and for the same
+    /// reason: we can enumerate anything and we can only construct what we know how to.</para>
+    ///
+    /// <para><b>KEYS AND VALUES CONVERT INDEPENDENTLY</b>, by the ordinary rules — so a
+    /// <c>Dictionary&lt;int, decimal&gt;</c> fills a <c>Dictionary&lt;string, string&gt;</c>, and
+    /// a pair with no conversion for either half is SM0002 exactly as it was before.</para>
+    ///
+    /// <para><b>SIMPLE KEYS AND VALUES ONLY</b>, the same restriction the list builders carry: a
+    /// <c>Dictionary&lt;string, Product&gt;</c> is left alone rather than half converted, because
+    /// mapping the values means mapping objects and that path does not run through here.</para>
+    /// </summary>
+    private static ValueConversion? ResolveDictionary(
+        Compilation compilation,
+        ITypeSymbol sourceType,
+        ITypeSymbol destinationType,
+        string mapping,
+        bool allowNullCollections)
+    {
+        if (!HasConverter(compilation, DictionaryConversionApi))
+            return null;
+
+        if (GetDictionaryShape(compilation, destinationType) is not var (destinationKey, destinationValue))
+            return null;
+
+        if (GetPairTypes(compilation, sourceType) is not var (sourceKey, sourceValue))
+            return null;
+
+        // Objects on either side belong to the nested-mapping path, which does not handle
+        // dictionaries yet. Half converting one — a fresh dictionary holding the entity's own
+        // Products — is the outcome IsSimpleElement exists to prevent.
+        if (!IsSimpleElement(sourceKey) || !IsSimpleElement(destinationKey)
+            || !IsSimpleElement(sourceValue) || !IsSimpleElement(destinationValue))
+        {
+            return null;
+        }
+
+        ValueConversion? key = Resolve(compilation, sourceKey, destinationKey, mapping);
+        if (key is null)
+            return null;
+
+        ValueConversion? value = Resolve(compilation, sourceValue, destinationValue, mapping);
+        if (value is null)
+            return null;
+
+        // Same test, same reason as the collection builders: generics are invariant, so a
+        // Dictionary<string, int> is not a Dictionary<string, long> however freely an int becomes
+        // a long. Anything but an exact match on BOTH halves goes through the converting overload.
+        bool same = SymbolEqualityComparer.Default.Equals(sourceKey, destinationKey)
+            && SymbolEqualityComparer.Default.Equals(sourceValue, destinationValue);
+
+        string builder = NullPolicySuffix(compilation, "ToDictionary", allowNullCollections);
+
+        string template = same
+            ? $"{ConverterType}.{builder}({{0}})"
+            : $"{ConverterType}.{builder}<{FullName(sourceKey)}, {FullName(sourceValue)}, " +
+              $"{FullName(destinationKey)}, {FullName(destinationValue)}>" +
+              $"({{0}}, static key => {key.Apply("key")}, static value => {value.Apply("value")})";
+
+        bool assignable = compilation.ClassifyConversion(sourceType, destinationType) is
+            { Exists: true, IsImplicit: true, IsBoxing: false, IsUserDefined: false };
+
+        string pair = $"global::System.Collections.Generic.KeyValuePair<{FullName(sourceKey)}, {FullName(sourceValue)}>";
+
+        bool guard = GuardsNullInQuery(sourceType, allowNullCollections);
+
+        string assignedEmpty = guard
+            ? $"({{0}} ?? ({FullName(destinationType)})" +
+              $"{EmptyCollection("ToDictionary", FullName(destinationKey), FullName(destinationValue))})"
+            : "{0}";
+
+        string emptySource = guard
+            ? $"({{0}} ?? {LinqType}.Empty<{pair}>())"
+            : "{0}";
+
+        string queryTemplate = same && assignable
+            ? assignedEmpty
+            : $"{LinqType}.ToDictionary<{pair}, {FullName(destinationKey)}, {FullName(destinationValue)}>(" +
+              $"{emptySource}, item => {key.ApplyQuery("item.Key")}, item => {value.ApplyQuery("item.Value")})";
+
+        return new ValueConversion(
+            template, DictionaryRisk(same, key, value), DictionaryNote(same, key, value), queryTemplate);
+    }
+
+    /// <summary>
+    /// What a dictionary conversion carries: whatever its keys and values carry, plus the one
+    /// thing the dictionary itself can lose.
+    /// </summary>
+    private static ConversionRisk DictionaryRisk(bool sameKeyAndValue, ValueConversion key, ValueConversion value)
+    {
+        ConversionRisk worst = key.Risk > value.Risk ? key.Risk : value.Risk;
+
+        // Converting the KEYS is what can collide two entries that were distinct in the source.
+        // Leaving them alone cannot: a dictionary has already made that guarantee about itself.
+        bool keysConverted = !sameKeyAndValue && key.Template is not null;
+
+        return keysConverted && worst == ConversionRisk.None ? ConversionRisk.Lossy : worst;
+    }
+
+    /// <inheritdoc cref="DictionaryRisk"/>
+    private static string? DictionaryNote(bool sameKeyAndValue, ValueConversion key, ValueConversion value)
+    {
+        const string KeyNote = "two source keys that convert to the same destination key collapse into one, " +
+                               "so the destination can hold fewer entries than the source";
+
+        var parts = new List<string>();
+
+        if (!sameKeyAndValue && key.Template is not null)
+            parts.Add(KeyNote);
+
+        if (key.Note is not null)
+            parts.Add($"for each key, {key.Note}");
+
+        if (value.Note is not null)
+            parts.Add($"for each value, {value.Note}");
+
+        return parts.Count == 0 ? null : string.Join(", and ", parts);
+    }
+
+    /// <summary>
+    /// The dictionary shapes we can BUILD, and their key and value types. All three are filled
+    /// with a <c>Dictionary&lt;K, V&gt;</c>, which is what the two interfaces are here for.
+    /// </summary>
+    private static readonly string[] DictionaryShapes =
+    {
+        "System.Collections.Generic.Dictionary`2",
+        "System.Collections.Generic.IDictionary`2",
+        "System.Collections.Generic.IReadOnlyDictionary`2",
+    };
+
+    /// <inheritdoc cref="DictionaryShapes"/>
+    private static (ITypeSymbol Key, ITypeSymbol Value)? GetDictionaryShape(Compilation compilation, ITypeSymbol type)
+    {
+        if (type is not INamedTypeSymbol { IsGenericType: true } named || named.TypeArguments.Length != 2)
+            return null;
+
+        foreach (string metadata in DictionaryShapes)
+        {
+            if (compilation.GetTypeByMetadataName(metadata) is INamedTypeSymbol shape
+                && SymbolEqualityComparer.Default.Equals(named.OriginalDefinition, shape))
+            {
+                return (named.TypeArguments[0], named.TypeArguments[1]);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The <c>K</c> and <c>V</c> of the <c>IEnumerable&lt;KeyValuePair&lt;K, V&gt;&gt;</c> this
+    /// type is, or null when it is not one. Reading the source through the pair rather than
+    /// through <c>IDictionary</c> is what lets a <c>SortedDictionary</c>, a
+    /// <c>ConcurrentDictionary</c> or a plain list of pairs feed a dictionary property.
+    /// </summary>
+    private static (ITypeSymbol Key, ITypeSymbol Value)? GetPairTypes(Compilation compilation, ITypeSymbol type)
+    {
+        if (GetElementType(compilation, type) is not INamedTypeSymbol { IsGenericType: true } element
+            || element.TypeArguments.Length != 2)
+        {
+            return null;
+        }
+
+        return compilation.GetTypeByMetadataName("System.Collections.Generic.KeyValuePair`2") is INamedTypeSymbol pair
+            && SymbolEqualityComparer.Default.Equals(element.OriginalDefinition, pair)
+                ? (element.TypeArguments[0], element.TypeArguments[1])
+                : null;
     }
 
     /// <summary>
@@ -630,9 +932,10 @@ internal static class ConversionResolver
     /// <c>IReadOnlyList&lt;T&gt;</c> and an <c>IEnumerable&lt;T&gt;</c> all at once, so a
     /// destination declared as any of them can be filled with one.
     ///
-    /// Anything not on this list is SM0002: a <c>Dictionary&lt;K,V&gt;</c> is a different
-    /// shape entirely, and a collection type of your own could need anything at all to
-    /// construct it.
+    /// Anything not on this list falls through to the next step: a <c>Dictionary&lt;K,V&gt;</c>
+    /// is a different shape entirely and is handled by <see cref="ResolveDictionary"/>, and a
+    /// collection type of your own — which could need anything at all to construct — is
+    /// SM0002.
     /// </summary>
     private static readonly (string Metadata, string Method)[] DestinationShapes =
     {

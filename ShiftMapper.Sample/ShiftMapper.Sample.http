@@ -4,32 +4,91 @@
 GET {{HostAddress}}/
 Accept: application/json
 
-### 1b. Brands — GENERATED extension, brand.Map<BrandDto>(mapper) creates a new DTO.
-#     Three things to look at in the response. "isoCode": the entity spells it ISOCode and the
-#     DTO spells it IsoCode, so this is case-insensitive matching working end to end, through
-#     the database. "foundedYear": quoted, because the entity holds it as an int and the DTO
-#     as a string — ShiftMapper converted it, invariantly, on its own. "tags": the entity
-#     holds a List<string>, the DTO an IReadOnlyList<string>, and the DTO gets its OWN copy
-#     rather than a read-only window onto the list EF is still tracking.
+### 1b. Brands — A WHOLE COLLECTION IN ONE CALL: mapper.Map<List<BrandDto>>(brands).
+#     This endpoint used to read brands.Select(b => b.Map<BrandDto>(mapper)).ToList(), which is
+#     the line every application ended up writing in every list endpoint. The destination SHAPE
+#     is the type argument now, so BrandDto[], HashSet<BrandDto> and IReadOnlyList<BrandDto>
+#     work the same way — and mapper.MapToBrandDtoList(brands) is the typed route that walks
+#     no typeof chain at all.
+#
+#     FIRST, LOOK AT "aliases". Six of the eight seeded brands have a NULL Aliases column, and
+#     every one of them comes back as [] rather than null. That is the NULL-COLLECTION POLICY,
+#     and it is why BrandDto.Aliases can be declared non-nullable: no caller of this DTO ever
+#     writes dto.Aliases?.Count, and the first place somebody would have forgotten to is a
+#     NullReferenceException in production rather than a compile error. Request 1b2 asks the
+#     database the same question and gets the same answer.
+#
+#     Then three things that were true before and still are. "isoCode": the entity spells it
+#     ISOCode and the DTO spells it IsoCode, so this is case-insensitive matching working end
+#     to end, through the database. "foundedYear": quoted, because the entity holds it as an
+#     int and the DTO as a string — ShiftMapper converted it, invariantly, on its own.
+#     "tags": the entity holds a List<string>, the DTO an IReadOnlyList<string>, and the DTO
+#     gets its OWN copy rather than a read-only window onto the list EF is still tracking.
 #
 #     And "externalIds", which is the point of SM0010: the entity holds them as long and the
 #     DTO declares them int, so any id past int.MaxValue maps to a different number — no
 #     exception, nothing in the code to say so. That is why SM0010 is a build WARNING.
-#     The seeded ids sit inside int range, because the nested projection (3c) reaches this
-#     same BrandDto four levels down and SQL REFUSES the overflow rather than wrapping it:
-#     "Arithmetic overflow error converting expression to data type int". Worth knowing —
-#     the conversion that quietly returns the wrong number in C# is a hard error in SQL.
+#     The seeded ids sit inside int range, because this same BrandDto is also PROJECTED —
+#     directly in 1b2, and four levels down in 2 — and SQL REFUSES the overflow rather than
+#     wrapping it: "Arithmetic overflow error converting expression to data type int". Worth
+#     knowing on its own: the conversion that quietly returns the wrong number in C# is a hard
+#     error in the database.
 GET {{HostAddress}}/api/brands
 Accept: application/json
 
-### 1b2. One brand — the other overload, brand.Map(existingDto, mapper) copies onto an
-#     object that already exists. "updatedInPlace" proves it is the same instance, and
-#     "mapperDependency" proves AppMapper really is a DI service with a dependency.
+### 1b2. The SAME list, built by the DATABASE — db.Brands.ProjectTo<BrandDto>(mapper).
+#     Run it straight after 1b and compare. Every brand comes back identical, "aliases"
+#     included, which is the part worth checking rather than assuming: the two backends answer
+#     that question in completely different code. In memory it is a ValueConverter builder that
+#     substitutes an empty list; in SQL it is a coalesce spliced into the projection. Request
+#     1b3 shows what that becomes.
+GET {{HostAddress}}/api/brands/projected
+Accept: application/json
+
+### 1b3. The SQL behind 1b2 — and the one line to find in it:
+#
+#         COALESCE([b].[Aliases], CAST(N'[]' AS nvarchar(max)))
+#
+#     The null-collection policy is enforced BY THE DATABASE. EF read the column exactly as it
+#     did before and applied the guard in the SELECT list, so the policy costs a COALESCE and
+#     not a round trip.
+#
+#     WHY IT IS NOT ON EVERY COLLECTION, which is the interesting half. Look at [ExternalIds]:
+#     it goes through OUTER APPLY OPENJSON with no coalesce anywhere near it. EF recognises a
+#     primitive collection by the SHAPE of the expression around it, and `x ?? empty` is a shape
+#     it cannot see through — guarding that one would have turned a working query into a
+#     runtime "could not be translated", to protect against a null the type says cannot happen.
+#     So the guard is written only where the source property is declared NULLABLE, which is the
+#     developer's own statement about the column. Declare a collection nullable when it really
+#     is, and both halves of ShiftMapper agree.
+GET {{HostAddress}}/api/brands/projected?sql=true
+Accept: text/plain
+
+### 1b4. One brand — TWO doors in one endpoint.
+#
+#     First mapper.MapOrNull<BrandDto>(brand), for a row that may not be there. Plain Map would
+#     THROW on a null source, and deliberately so: asking to build a DTO out of nothing is
+#     almost always a bug, and one far cheaper to hear about at the mapping call than three
+#     layers away. "The row was not found" is the exception — it is ordinary data — so
+#     MapOrNull is the door for it, and it saves every such endpoint writing
+#     `brand is null ? null : Map(brand)` by hand. See 1b5 for the null path.
+#
+#     Then the other overload, brand.Map(existingDto, mapper), which copies onto an object that
+#     already exists. "updatedInPlace" proves it is the same instance, and
+#     "injectedDependency" proves AppMapper really is a DI service with a dependency.
 GET {{HostAddress}}/api/brands/1
 Accept: application/json
 
-### 1c. Stocks — same generated maps, but called DIRECTLY on the mapper instance
-#     (mapper.Map<StockDto>(stock)) instead of through the extension method.
+### 1b5. A brand that is not there — MapOrNull hands back null and the endpoint returns 404,
+#     with no exception thrown or caught anywhere along the way. That is the whole reason it
+#     exists: the absence is a value the endpoint can test, rather than control flow.
+GET {{HostAddress}}/api/brands/9999
+Accept: application/json
+
+### 1c. Stocks — the same generated maps, one object at a time, called DIRECTLY on the
+#     mapper instance (mapper.Map<StockDto>(stock)) rather than through a collection overload
+#     or an extension method. All three spellings run the same generated code; pick whichever
+#     reads better where you are.
 #     Look at "bayNumbers": the entity holds List<int>, the DTO IReadOnlyList<string>, so both
 #     the collection shape and the element type were converted — and the POST below reads them
 #     back the other way.
@@ -82,6 +141,74 @@ Content-Type: application/json
 #     over ints. Add ?sql=true to see the query.
 GET {{HostAddress}}/api/products
 Accept: application/json
+
+### 1e. DICTIONARIES — the collection shape that used to be a flat SM0002.
+#
+#     There is no database in this request, on purpose. A dictionary is how a KEYED PAYLOAD
+#     arrives — a price per SKU, a note per line number — and that is where it is worth
+#     showing, rather than inside a table it would need a value converter to live in.
+#
+#     One CreateMap<SupplierFeed, SupplierFeedDto>() covers all three properties below, and
+#     each demonstrates a different half of the feature:
+#
+#       "prices"  the VALUES converted:  999.5 -> "999.5", invariant, so it is the same text in
+#                 Baghdad and in Berlin. The dictionary is REBUILT to do it — generics are
+#                 invariant, so a Dictionary<string, decimal> never becomes a
+#                 Dictionary<string, string> however freely a decimal converts to text.
+#       "notes"   the KEYS converted:    1 -> "1". This is the pair the build reports as
+#                 SM0008, because converting keys is the one thing a dictionary can lose that a
+#                 list cannot: two source keys can arrive as one, and the later wins. It cannot
+#                 actually happen for int-to-string, and the note does not pretend otherwise
+#                 — the rule is about converting keys, not about these two types. Narrow long
+#                 keys onto int and the same note arrives as a real SM0010 warning.
+#       "extras"  ABSENT from the request body, and {} in the response. The null-collection
+#                 policy again, on a dictionary rather than on a list.
+#
+#     "ownsItsOwnData" is the other rule every collection follows: the DTO holds a NEW
+#     dictionary, not a second reference to the request object's.
+POST {{HostAddress}}/api/supplier-feeds/preview
+Content-Type: application/json
+
+{
+  "supplier": "Acme Distribution",
+  "prices": {
+    "APL-IP15P": 999.5,
+    "SNY-PS5S": 499
+  },
+  "notes": {
+    "1": "backordered",
+    "2": "ships Monday"
+  }
+}
+
+### 1e2. The same feed with EVERY dictionary left out. All three come back as {} rather than
+#     null, so a caller of SupplierFeedDto never tests one for null. Send
+#     "extras": null explicitly and the answer is the same — the policy is about the value,
+#     not about whether the property was present in the JSON.
+POST {{HostAddress}}/api/supplier-feeds/preview
+Content-Type: application/json
+
+{
+  "supplier": "Empty Feed"
+}
+
+### 1e3. A LIST of feeds — mapper.Map<List<SupplierFeedDto>>(feeds).
+#     The collection overloads are generated for every declared map, not only for the ones with
+#     a table behind them. Note the second feed sends no prices and the first sends no notes,
+#     and both come back with {} for the one they left out.
+POST {{HostAddress}}/api/supplier-feeds/preview-many
+Content-Type: application/json
+
+[
+  {
+    "supplier": "Acme Distribution",
+    "prices": { "APL-IP15P": 999.5 }
+  },
+  {
+    "supplier": "Globex Supply",
+    "notes": { "7": "arriving late" }
+  }
+]
 
 ### 2. Invoices — THE MAP AS A DATABASE QUERY.
 #     db.Invoices.ProjectTo<InvoiceDto>(mapper), and again not one Include, yet the response

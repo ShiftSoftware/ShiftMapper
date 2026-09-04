@@ -29,8 +29,10 @@ internal sealed class MapModel
         ImmutableArray<NestedProperty> nestedProperties,
         string destinationName,
         LocationInfo? location,
-        bool isReverse)
+        bool isReverse,
+        bool allowNullCollections)
     {
+        AllowNullCollections = allowNullCollections;
         IsReverse = isReverse;
         UnmappedProperties = unmappedProperties;
         ConvertedProperties = convertedProperties;
@@ -129,6 +131,18 @@ internal sealed class MapModel
     /// </summary>
     public bool IsReverse { get; }
 
+    /// <summary>
+    /// This map's <c>MapOptions.AllowNullCollections</c>: whether a null source collection is
+    /// carried across as a null, or becomes an empty destination collection — the latter being
+    /// the default.
+    ///
+    /// The conversions for collections of VALUES have it baked into them already, since the
+    /// resolver picked the builder. It is kept here for the collections of OBJECTS, whose builder
+    /// is chosen by the emitter, and for the top-level collection overloads, which answer the
+    /// same question about the sequence they are handed.
+    /// </summary>
+    public bool AllowNullCollections { get; }
+
     /// <summary>Identifies this map so duplicate registrations can be collapsed.</summary>
     public string Key => SourceType + "->" + DestinationType;
 
@@ -143,5 +157,5 @@ internal sealed class MapModel
         new(SourceType, DestinationType, SourceName, IsSourcePublic, IsDestinationPublic,
             IsSourceValueType, IsDestinationValueType, CanConstructDestination, PropertyNames,
             WritablePropertyNames, UnmappedProperties, ConvertedProperties, CustomProperties,
-            nestedProperties, DestinationName, Location, IsReverse);
+            nestedProperties, DestinationName, Location, IsReverse, AllowNullCollections);
 }

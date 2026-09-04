@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using ShiftMapper.Sample.Entities;
 
 namespace ShiftMapper.Sample.Data;
@@ -18,9 +18,13 @@ public static class SeedData
 
     public static void Apply(ModelBuilder modelBuilder)
     {
+        // NOTE THE ALIASES, or rather the absence of them. Only the first two brands have any;
+        // the other six leave the column NULL, which is what makes GET /api/brands worth looking
+        // at — every one of those six comes back with [] rather than null, from both backends.
+        // See BrandDto.Aliases.
         modelBuilder.Entity<Brand>().HasData(
-            new Brand { Id = 1, Name = "Apple", Country = "United States", FoundedYear = 1976, ISOCode = "US", Tags = ["premium", "mobile", "audio"], ExternalIds = [10_010L, 10_011L] },
-            new Brand { Id = 2, Name = "Samsung", Country = "South Korea", FoundedYear = 1938, ISOCode = "KR", Tags = ["mobile", "displays"], ExternalIds = [10_020L] },
+            new Brand { Id = 1, Name = "Apple", Country = "United States", FoundedYear = 1976, ISOCode = "US", Tags = ["premium", "mobile", "audio"], ExternalIds = [10_010L, 10_011L], Aliases = ["Apple Inc.", "Apple Computer"] },
+            new Brand { Id = 2, Name = "Samsung", Country = "South Korea", FoundedYear = 1938, ISOCode = "KR", Tags = ["mobile", "displays"], ExternalIds = [10_020L], Aliases = ["Samsung Electronics"] },
             new Brand { Id = 3, Name = "Sony", Country = "Japan", FoundedYear = 1946, ISOCode = "JP", Tags = ["audio", "imaging"], ExternalIds = [10_030L] },
             new Brand { Id = 4, Name = "Dell", Country = "United States", FoundedYear = 1984, ISOCode = "US", Tags = ["computing", "enterprise"], ExternalIds = [10_040L] },
             new Brand { Id = 5, Name = "LG", Country = "South Korea", FoundedYear = 1958, ISOCode = "KR", Tags = ["displays", "appliances"], ExternalIds = [10_050L] },

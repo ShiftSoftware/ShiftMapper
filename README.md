@@ -1,4 +1,4 @@
-# ShiftMapper
+﻿# ShiftMapper
 
 A compile-time object mapper for .NET.
 
@@ -78,23 +78,72 @@ builder.Services.AddShiftMapper<AppMapper>();       // Scoped by default
 
 ### 3. Map
 
-Every map produces four entry points. The instance methods live on your class; the extension
-methods forward to them, so use whichever reads better where you are.
+Each map produces a small family of entry points. The instance methods live on your class; the
+extension methods forward to them, so use whichever reads better where you are.
 
 ```csharp
-BrandDto dto = mapper.Map<BrandDto>(brand);         // create
-mapper.Map(brand, existingDto);                     // update in place
+BrandDto dto = mapper.Map<BrandDto>(brand);           // create
+mapper.Map(brand, existingDto);                       // update in place
+BrandDto? dto = mapper.MapOrNull<BrandDto>(maybe);    // null in, null out
 
-BrandDto dto = brand.Map<BrandDto>(mapper);         // the same two, as extensions
+BrandDto dto = brand.Map<BrandDto>(mapper);           // the same three, as extensions
 brand.Map(existingDto, mapper);
+BrandDto? dto = maybe.MapOrNull<BrandDto>(mapper);
 
 IQueryable<BrandDto> q = mapper.ProjectTo<BrandDto>(db.Brands);
 IQueryable<BrandDto> q = db.Brands.ProjectTo<BrandDto>(mapper);
 ```
 
+`Map` **throws on a null source**, deliberately: asking to build a DTO out of nothing is almost
+always a bug, and one far cheaper to hear about at the mapping call than three layers away.
+`MapOrNull` is the door for the cases where a missing source is ordinary data — a row that was not
+found, an optional relationship.
+
 `ProjectTo` is the one that matters for a database. It hands EF Core a single expression tree
 covering the whole graph, so only the columns the DTO needs are selected, and filtering and
 paging happen in SQL against the projected shape.
+
+### Collections
+
+Every map also maps a sequence, in whichever shape you ask for:
+
+```csharp
+List<BrandDto>         list  = mapper.Map<List<BrandDto>>(brands);
+BrandDto[]             array = mapper.Map<BrandDto[]>(brands);
+HashSet<BrandDto>      set   = mapper.Map<HashSet<BrandDto>>(brands);
+IReadOnlyList<BrandDto> read = mapper.Map<IReadOnlyList<BrandDto>>(brands);
+
+List<BrandDto> list = mapper.MapToBrandDtoList(brands);   // typed, no runtime type test
+List<BrandDto> list = brands.Map<List<BrandDto>>(mapper); // extension
+```
+
+The source is any `IEnumerable<T>`; the destination is one of those four. A shape nothing builds
+throws a message naming the four, rather than guessing.
+
+### Null collections
+
+One decision that had to be made rather than inherited: **a null source collection becomes an
+EMPTY destination collection.** It is what AutoMapper does (`AllowNullCollections`, off by
+default), and it is the answer that removes a null check from every consumer of the DTO forever —
+including the first place somebody would have forgotten one.
+
+```csharp
+CreateMap<Brand, BrandDto>();                                   // null Tags -> []
+CreateMap<Brand, BrandDto>(o => o.AllowNullCollections = true);  // null Tags -> null
+```
+
+Set it per map, or for a whole mapper from `ConfigureDefaults`. It covers collections of values,
+collections of mapped objects, dictionaries, and the collection overloads above — so
+`Map<List<BrandDto>>(null)` answers the same question the same way instead of throwing.
+
+**In a projection** the answer depends on what EF can produce. A navigation collection is never
+null there, so the default is already what you get. A collection of values in a column you
+declared **nullable** is guarded, and EF turns the guard into a `COALESCE` in the SELECT list. A
+collection you declared **non-nullable** is not guarded, on purpose: EF recognises a primitive
+collection by the shape around it, and a coalesce is a shape it cannot see through — a projection
+that translated perfectly would stop translating, at run time, to guard against a null the type
+says cannot happen. So declare a collection nullable when it really is, and both halves of
+ShiftMapper answer alike.
 
 ---
 
@@ -105,6 +154,11 @@ paging happen in SQL against the projected shape.
 - **Type conversions** between matched properties: implicit conversions, numeric pairs, text
   parsing and formatting, enums, `Guid`, `TimeSpan` and the date and time types, user-defined
   implicit operators, and collections of all of those (`ToArray` / `ToList` / `ToHashSet`).
+- **Dictionaries**, read from any `IEnumerable<KeyValuePair<K, V>>` and built as a
+  `Dictionary<K, V>`, `IDictionary<K, V>` or `IReadOnlyDictionary<K, V>`. Keys and values convert
+  independently, by the same rules. Converting the *keys* is the one thing a dictionary can lose
+  that a list cannot — two source keys can arrive as one, the later winning — so that is reported
+  as SM0008.
 - **Nested objects and collections of objects**, composed to any depth from the maps you
   declared — in memory and inside one EF projection.
 - **Per-member overrides**: `opt.Ignore()` and `opt.MapFrom(s => ...)`.
@@ -230,10 +284,10 @@ dotnet_diagnostic.SM0001.severity = none
 
 ## Status
 
-What works today is listed above. What does not exist yet — collection-level `Map`, records and
-constructor-initialised destinations, `Condition` / `NullSubstitute` / `BeforeMap` / `AfterMap`,
-flattening, inheritance, open generics, and the global configuration layer a library needs — is
-laid out in order in [PLAN.md](PLAN.md), which is the roadmap this repository is built from.
+What works today is listed above. What does not exist yet — records and constructor-initialised
+destinations, `Condition` / `NullSubstitute` / `BeforeMap` / `AfterMap`, flattening, inheritance,
+open generics, and the global configuration layer a library needs — is laid out in order in
+[PLAN.md](PLAN.md), which is the roadmap this repository is built from.
 
 ## License
 

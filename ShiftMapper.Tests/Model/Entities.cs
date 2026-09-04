@@ -1,4 +1,4 @@
-namespace ShiftMapper.Tests.Model;
+﻿namespace ShiftMapper.Tests.Model;
 
 /// <summary>
 /// The four-level graph the projection and parity tests run over — Invoice, its Lines, each
@@ -28,7 +28,36 @@ public class Brand
     /// <summary>A primitive collection: the shape differs on the DTO, the elements do not.</summary>
     public List<string> Tags { get; set; } = new();
 
+    /// <summary>
+    /// A NULLABLE primitive collection — the column really can be null, and one of the two
+    /// seeded brands leaves it that way. This is the property the null-collection policy is
+    /// tested against, in memory AND in a projection: null is what the database holds, and empty
+    /// is what both backends have to hand back.
+    /// </summary>
+    public List<string>? Aliases { get; set; }
+
     public List<Product> Products { get; set; } = new();
+}
+
+/// <summary>
+/// Not an entity, and deliberately so. Dictionaries are step 2b of the conversion table, and no
+/// database column holds one without a value converter of the application's own — so this pair
+/// exercises them in memory, where they belong, rather than dragging a JSON column into the
+/// four-level projection the rest of this model exists for.
+/// </summary>
+public class Catalog
+{
+    /// <summary>Same key type, same value type: copied into a new dictionary and nothing else.</summary>
+    public Dictionary<string, string> Labels { get; set; } = new();
+
+    /// <summary>The values convert on the way — int to text, one entry at a time.</summary>
+    public Dictionary<string, int> Ratings { get; set; } = new();
+
+    /// <summary>The KEYS convert, which is the case that can collapse two entries into one.</summary>
+    public Dictionary<long, string> Codes { get; set; } = new();
+
+    /// <summary>A nullable dictionary, for the null-collection policy.</summary>
+    public Dictionary<string, string>? Extras { get; set; }
 }
 
 public class Stock

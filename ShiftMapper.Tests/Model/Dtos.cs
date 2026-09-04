@@ -1,4 +1,4 @@
-namespace ShiftMapper.Tests.Model;
+﻿namespace ShiftMapper.Tests.Model;
 
 public class BrandDto
 {
@@ -14,8 +14,43 @@ public class BrandDto
     /// <summary>Same elements, different shape.</summary>
     public IReadOnlyList<string> Tags { get; set; } = [];
 
+    /// <summary>
+    /// Fed by a column that is null for one of the two seeded brands, and NOT nullable here —
+    /// which is the whole promise of the default null-collection policy: a DTO built by
+    /// ShiftMapper has no collection property a consumer has to test for null.
+    /// </summary>
+    public IReadOnlyList<string> Aliases { get; set; } = [];
+
     /// <summary>Filled from <c>Brand.ISOCode</c> by the case-insensitive fallback.</summary>
     public string IsoCode { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// The same entity under the OTHER null-collection policy, which is the only difference between
+/// this and <see cref="BrandDto"/>. Its map says <c>AllowNullCollections = true</c>, so a null
+/// column arrives as a null rather than as an empty list — and the property is declared
+/// nullable to say so.
+/// </summary>
+public class BrandLooseDto
+{
+    public int Id { get; set; }
+
+    public IReadOnlyList<string>? Aliases { get; set; }
+}
+
+/// <summary>
+/// The dictionary destinations, one per case: copied unchanged, values converted, keys
+/// converted, and a nullable source under the default policy.
+/// </summary>
+public class CatalogDto
+{
+    public IReadOnlyDictionary<string, string> Labels { get; set; } = new Dictionary<string, string>();
+
+    public Dictionary<string, string> Ratings { get; set; } = new();
+
+    public IDictionary<int, string> Codes { get; set; } = new Dictionary<int, string>();
+
+    public Dictionary<string, string> Extras { get; set; } = new();
 }
 
 /// <summary>
@@ -96,6 +131,21 @@ public class InvoiceLineDto
     public decimal LineTotal { get; set; }
 
     public ProductDto Product { get; set; } = null!;
+}
+
+/// <summary>
+/// An invoice and its lines, and nothing else.
+///
+/// It exists so the null-collection policy can be measured on a collection of OBJECTS.
+/// <see cref="InvoiceDto"/> cannot: its Total is a MapFrom that SUMS the same collection, so a
+/// null Lines throws out of the customization before the policy is ever reached — which is a
+/// true and separate fact about MapFrom, and not the one under test here.
+/// </summary>
+public class InvoiceLinesDto
+{
+    public int Id { get; set; }
+
+    public IReadOnlyList<InvoiceLineDto> Lines { get; set; } = [];
 }
 
 public class InvoiceDto

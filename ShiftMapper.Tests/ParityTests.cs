@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using ShiftMapper.Tests.Model;
 using Xunit;
 
@@ -214,6 +214,11 @@ public class ParityTests
         Assert.Equal(expected.FoundedYear, actual.FoundedYear);
         Assert.Equal(expected.IsoCode, actual.IsoCode);
         Assert.Equal(expected.Tags, actual.Tags);
+
+        // The null-collection policy, which is the one property here whose two backends answer
+        // the question in genuinely different code: an OrEmpty builder in memory, a coalesce
+        // inside the projection.
+        Assert.Equal(expected.Aliases, actual.Aliases);
     }
 
     private static void AssertSame(StockDto expected, StockDto actual)
