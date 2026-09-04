@@ -1,4 +1,4 @@
-using Microsoft.CodeAnalysis;
+﻿using Microsoft.CodeAnalysis;
 using ShiftMapper.Generator.Tests.Infrastructure;
 using Xunit;
 
@@ -145,7 +145,12 @@ public class DiagnosticTests
     }
 
     // -----------------------------------------------------------------
-    // SM0004 — `new TDestination { ... }` is not legal for this type.
+    // SM0004 — there is no constructor ShiftMapper can call AT ALL.
+    //
+    // It used to mean "no parameterless constructor", which stopped being
+    // the interesting case once records and primary constructors became
+    // mappable. A constructor that merely cannot be FILLED is SM0013,
+    // which can name the parameter; this is what is left.
     // -----------------------------------------------------------------
 
     [Fact]
@@ -157,9 +162,8 @@ public class DiagnosticTests
 
             public class Source { public int Id { get; set; } }
 
-            public class Destination
+            public abstract class Destination
             {
-                public Destination(int id) => Id = id;
                 public int Id { get; set; }
             }
 
@@ -173,7 +177,7 @@ public class DiagnosticTests
 
         Assert.Equal(DiagnosticSeverity.Warning, diagnostic.Severity);
         Assert.Equal("CreateMap<Source, Destination>", run.CodeUnder(diagnostic));
-        Assert.Contains("no public parameterless constructor", diagnostic.GetMessage());
+        Assert.Contains("no constructor ShiftMapper can call", diagnostic.GetMessage());
 
         // The create half is gone. The overload that copies onto an object it was HANDED is
         // still perfectly possible, and is still emitted.

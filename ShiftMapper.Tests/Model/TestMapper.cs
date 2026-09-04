@@ -44,6 +44,25 @@ public partial class TestMapper : ShiftMapperBase
         // Dictionaries — copied, values converted, keys converted, and a null source emptied.
         CreateMap<Catalog, CatalogDto>();
 
+        // A POSITIONAL RECORD. Three arguments matched by name (one of them converted, one of
+        // them through the case-insensitive fallback) and one supplied here — which on a record
+        // is the only way to customize anything, since the property is init-only and the
+        // constructor has already set it.
+        CreateMap<Brand, BrandRecordDto>()
+            .ForMember(d => d.Display, opt => opt.MapFrom(s => s.Name + " (" + s.ISOCode + ")"));
+
+        // A record nesting a record, both through constructor arguments.
+        CreateMap<Product, ProductRecordDto>();
+
+        // `required` members, including one that is required AND customized.
+        CreateMap<Stock, StockRequiredDto>()
+            .ForMember(d => d.Summary, opt => opt.MapFrom(s => s.Name + ", " + s.City));
+
+        // ConstructUsing, reading the injected service. In memory only — SM0015 — and the
+        // members it cannot set afterwards are the factory expression's to fill.
+        CreateMap<Catalog, CatalogSummaryDto>()
+            .ConstructUsing(s => new CatalogSummaryDto(_numbering.Prefix + s.Labels.Count));
+
         // Both directions, with the conversions running opposite ways: Id is int to string on the
         // way out and string to int on the way back.
         CreateMap<Stock, StockDto>()

@@ -30,8 +30,14 @@ internal sealed class MapModel
         string destinationName,
         LocationInfo? location,
         bool isReverse,
-        bool allowNullCollections)
+        bool allowNullCollections,
+        ConstructorPlan constructor,
+        ImmutableArray<ConstructionProblem> constructionProblems,
+        bool constructsWithFactory)
     {
+        Constructor = constructor;
+        ConstructionProblems = constructionProblems;
+        ConstructsWithFactory = constructsWithFactory;
         AllowNullCollections = allowNullCollections;
         IsReverse = isReverse;
         UnmappedProperties = unmappedProperties;
@@ -74,10 +80,80 @@ internal sealed class MapModel
     public bool IsDestinationValueType { get; }
 
     /// <summary>
-    /// Whether <c>new TDestination { ... }</c> is legal. False for positional records,
-    /// abstract types, and anything whose only constructor takes arguments.
+    /// Whether ShiftMapper can build the destination at all.
+    ///
+    /// It used to mean "has a public parameterless constructor". It now means "has a constructor
+    /// ShiftMapper can CALL", which includes a positional record's and a primary constructor's as
+    /// long as every parameter can be filled — and excludes a type whose required members
+    /// cannot all be mapped, because C# refuses an initializer that leaves one out.
+    /// <see cref="ConstructionProblems"/> says which, when the answer is no.
     /// </summary>
     public bool CanConstructDestination { get; }
+
+    /// <summary>
+    /// The constructor to call and what to pass it. Empty for the ordinary
+    /// <c>new TDestination { ... }</c> case.
+    /// </summary>
+    public ConstructorPlan Constructor { get; }
+
+    /// <summary>
+    /// Why the destination cannot be built, when it cannot. Empty otherwise — and also empty
+    /// for the plain SM0004 cases (an interface, an abstract type, no accessible constructor at
+    /// all), which have no particular parameter or member to name.
+    /// </summary>
+    public ImmutableArray<ConstructionProblem> ConstructionProblems { get; }
+
+    /// <summary>
+    /// Whether the map declared <c>ConstructUsing</c>, so the destination is built by an
+    /// expression of the developer's rather than by a constructor the generator chose.
+    ///
+    /// It is the one thing that makes a map UNPROJECTABLE, and the generator emits a projection
+    /// that throws saying so rather than leaving a nested parent referring to a member that does
+    /// not exist. Reported as SM0015.
+    /// </summary>
+    public bool ConstructsWithFactory { get; }
+
+    /// <summary>
+    /// Whether anything at all can be assigned to the destination after it exists — which is
+    /// what decides whether an update overload is worth emitting.
+    ///
+    /// False for a positional record, whose every property is init-only: an update method for one
+    /// would compile, return the object it was handed, and have done nothing. A missing method is
+    /// a compile error at the call site, which is the better of the two answers.
+    /// </summary>
+    public bool HasAssignableMembers =>
+        WritablePropertyNames.Length > 0
+        || AnySettable(CustomProperties)
+        || AnySettable(NestedProperties);
+
+    /// <summary>
+    /// Whether an update overload is worth emitting: the destination has to be a reference type
+    /// (mutating a copy of a struct would silently do nothing) AND have something that can be
+    /// assigned once it exists.
+    /// </summary>
+    public bool CanUpdate => !IsDestinationValueType && HasAssignableMembers;
+
+    private static bool AnySettable(ImmutableArray<CustomProperty> properties)
+    {
+        foreach (CustomProperty property in properties)
+        {
+            if (property.CanSetAfterConstruction)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool AnySettable(ImmutableArray<NestedProperty> properties)
+    {
+        foreach (NestedProperty property in properties)
+        {
+            if (property.CanSetAfterConstruction)
+                return true;
+        }
+
+        return false;
+    }
 
     /// <summary>
     /// Properties we can set while CONSTRUCTING the object. Includes <c>init</c>-only
@@ -157,5 +233,21 @@ internal sealed class MapModel
         new(SourceType, DestinationType, SourceName, IsSourcePublic, IsDestinationPublic,
             IsSourceValueType, IsDestinationValueType, CanConstructDestination, PropertyNames,
             WritablePropertyNames, UnmappedProperties, ConvertedProperties, CustomProperties,
-            nestedProperties, DestinationName, Location, IsReverse, AllowNullCollections);
+            nestedProperties, DestinationName, Location, IsReverse, AllowNullCollections,
+            Constructor, ConstructionProblems, ConstructsWithFactory);
+
+    /// <summary>
+    /// The same map with a constructor argument's nested value settled, produced by the resolve
+    /// pass alongside <see cref="WithNested"/>.
+    ///
+    /// A nested object can arrive through a constructor as readily as through a property — a
+    /// record taking its <c>StockDto</c> as an argument — and the resolve pass has to reach it
+    /// there too, or the argument would still be pointing at a map that turned out not to exist.
+    /// </summary>
+    public MapModel WithConstructor(ConstructorPlan constructor) =>
+        new(SourceType, DestinationType, SourceName, IsSourcePublic, IsDestinationPublic,
+            IsSourceValueType, IsDestinationValueType, CanConstructDestination, PropertyNames,
+            WritablePropertyNames, UnmappedProperties, ConvertedProperties, CustomProperties,
+            NestedProperties, DestinationName, Location, IsReverse, AllowNullCollections,
+            constructor, ConstructionProblems, ConstructsWithFactory);
 }

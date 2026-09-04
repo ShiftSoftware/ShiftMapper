@@ -1,4 +1,4 @@
-using System.Linq.Expressions;
+﻿using System.Linq.Expressions;
 using ShiftMapper.Tests.Model;
 using Xunit;
 
@@ -147,12 +147,37 @@ public class MapCustomizationsTests
     [Fact]
     public void Compose_rejects_a_projection_that_is_not_an_object_initializer()
     {
-        Expression<Func<Brand, BrandDto>> notAnInitializer = source => new BrandDto();
+        // A METHOD CALL. A bare `new BrandDto()` is accepted — see the test below — because a
+        // destination built entirely through its constructor has nothing left to initialise, and
+        // that is exactly what a record projection looks like.
+        Expression<Func<Brand, BrandDto>> notAnInitializer = source => Make(source);
 
         InvalidOperationException error = Assert.Throws<InvalidOperationException>(
-            () => Store.Compose(notAnInitializer));
+            () => Store.Compose(notAnInitializer, new MapCustomizations.NestedBinding(
+                "Name", "Name", (Expression<Func<Brand, string>>)(brand => brand.Name), null)));
 
         Assert.Contains("is not an object initializer", error.Message);
+    }
+
+    private static BrandDto Make(Brand brand) => new() { Name = brand.Name };
+
+    /// <summary>
+    /// A bare <c>new</c> IS an object initializer as far as this is concerned — one with no
+    /// members in it. That is the shape a record's projection takes, and refusing it would have
+    /// meant no record could be projected while carrying a MapFrom.
+    /// </summary>
+    [Fact]
+    public void Compose_accepts_a_projection_that_is_a_bare_construction()
+    {
+        Expression<Func<Brand, BrandDto>> construction = source => new BrandDto();
+
+        // The probe's own MapFrom for Country is the customization being merged in, and where it
+        // has to land is a member initializer this method builds from nothing.
+        Expression<Func<Brand, BrandDto>> composed = Store.Compose(construction);
+
+        BrandDto dto = composed.Compile()(new Brand { Country = "Iraq", ISOCode = "IQ" });
+
+        Assert.Equal("Iraq (IQ)", dto.Country);
     }
 
     // -----------------------------------------------------------------

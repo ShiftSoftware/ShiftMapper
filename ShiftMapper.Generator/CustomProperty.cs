@@ -1,4 +1,4 @@
-namespace ShiftMapper.Generator;
+﻿namespace ShiftMapper.Generator;
 
 /// <summary>
 /// One destination property filled by an <c>opt.MapFrom</c> call rather than by matching names.
@@ -15,12 +15,24 @@ namespace ShiftMapper.Generator;
 /// </summary>
 internal sealed class CustomProperty
 {
-    public CustomProperty(string name, string propertyType, bool canSetAfterConstruction)
+    public CustomProperty(string name, string propertyType, bool canSetAfterConstruction, bool isRequired)
     {
         Name = name;
         PropertyType = propertyType;
         CanSetAfterConstruction = canSetAfterConstruction;
+        IsRequired = isRequired;
     }
+
+    /// <summary>
+    /// Whether the property is declared <c>required</c>, which the PROJECTION has to know.
+    ///
+    /// A customized property is normally LEFT OUT of the generated projection template — Compose
+    /// splices the developer's own tree in at runtime, and emitting a convention for it too would
+    /// fill it twice. A required one cannot be left out: C# refuses an object initializer that
+    /// omits it, so the template would not compile. It gets a placeholder binding instead, which
+    /// Compose then replaces exactly as it replaces any other.
+    /// </summary>
+    public bool IsRequired { get; }
 
     /// <summary>The destination property's name — the key the runtime store is looked up by.</summary>
     public string Name { get; }

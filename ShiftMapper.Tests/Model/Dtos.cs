@@ -39,6 +39,65 @@ public class BrandLooseDto
 }
 
 /// <summary>
+/// A POSITIONAL RECORD, which until Step 6 was SM0004 and nothing else.
+///
+/// Every property here is a constructor parameter, so the whole map is the call: there is no
+/// object initializer, no update overload (nothing is assignable once it exists), and the
+/// projection is a plain <c>new</c> that EF translates the same way it translates a hand-written
+/// one.
+///
+/// The four arguments are deliberately the four ways an argument gets filled: matched by name,
+/// matched and CONVERTED (<c>FoundedYear</c> is an int on the entity), supplied by a
+/// <c>ForMember</c> (<c>Display</c>), and matched through the case-insensitive fallback
+/// (<c>IsoCode</c> from <c>ISOCode</c>).
+/// </summary>
+public record BrandRecordDto(int Id, string Name, string FoundedYear, string IsoCode, string Display);
+
+/// <summary>
+/// A record nesting another record, both through constructor arguments. It is the shape the
+/// projection has to compose: the nested map's own projection is grafted into an ARGUMENT rather
+/// than into a member binding, which is a different code path in Compose.
+/// </summary>
+public record ProductRecordDto(int Id, string Name, BrandRecordDto Brand);
+
+/// <summary>
+/// <c>required</c> members, the other half of Step 6. C# refuses an object initializer that
+/// leaves one out, so an unmapped required member is not a property left empty — it stops the
+/// whole destination, and SM0014 says which one.
+///
+/// All three of these ARE mapped, so this one is ordinary. <c>Summary</c> is required AND filled
+/// by a ForMember, which is the case that has to survive into the projection: a customized member
+/// is normally left out of the generated template, and a required one cannot be.
+/// </summary>
+public class StockRequiredDto
+{
+    public required string Id { get; init; }
+
+    public required string Name { get; init; }
+
+    public required string Summary { get; init; }
+
+    public string City { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// Built by a <c>ConstructUsing</c> expression that reads an injected service, which is what
+/// makes it worth having: no constructor ShiftMapper could pick would know about the prefix.
+///
+/// It is also the sample of what that costs — the map is IN-MEMORY ONLY (SM0015), and asking
+/// for a projection throws a message that says so.
+/// </summary>
+public class CatalogSummaryDto
+{
+    public CatalogSummaryDto(string label) => Label = label;
+
+    public string Label { get; }
+
+    /// <summary>Assigned AFTER construction, which is all a ConstructUsing map can do.</summary>
+    public int LabelCount { get; set; }
+}
+
+/// <summary>
 /// The dictionary destinations, one per case: copied unchanged, values converted, keys
 /// converted, and a nullable source under the default policy.
 /// </summary>

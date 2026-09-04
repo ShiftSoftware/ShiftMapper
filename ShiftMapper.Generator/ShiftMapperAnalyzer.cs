@@ -188,14 +188,63 @@ public sealed class ShiftMapperAnalyzer : DiagnosticAnalyzer
         {
             LocationInfo? location = map.Location;
 
-            // SM0004 — we cannot write `new TDestination { ... }`, so there is no create method.
+            // The destination cannot be built, and there are three different things to say
+            // about that. SM0013 and SM0014 can name the exact parameter or member and are worth
+            // far more than SM0004's "this type cannot be constructed", which is what is left when
+            // there is nothing specific to name — an interface, an abstract type, no public
+            // constructor at all.
             if (!map.CanConstructDestination)
             {
+                if (map.ConstructionProblems.IsEmpty)
+                {
+                    report.Report(
+                        DiagnosticDescriptors.CannotConstructDestination,
+                        location,
+                        map.DestinationName);
+                }
+
+                foreach (ConstructionProblem problem in map.ConstructionProblems)
+                {
+                    if (problem.Kind == ConstructionProblemKind.ParameterNotFilled)
+                    {
+                        report.Report(
+                            DiagnosticDescriptors.ConstructorParameterNotFilled,
+                            location,
+                            map.DestinationName,
+                            problem.Name,
+                            problem.Type,
+                            map.SourceName);
+                    }
+                    else
+                    {
+                        report.Report(
+                            DiagnosticDescriptors.RequiredMemberNotFilled,
+                            location,
+                            map.DestinationName,
+                            problem.Name,
+                            problem.Type);
+                    }
+                }
+            }
+
+            // SM0015 — the map works and cannot be projected. Said once, here, so nobody has to
+            // discover it from an exception.
+            if (map.ConstructsWithFactory)
+            {
                 report.Report(
-                    DiagnosticDescriptors.CannotConstructDestination,
+                    DiagnosticDescriptors.ConstructUsingIsNotProjectable,
                     location,
+                    map.SourceName,
                     map.DestinationName);
             }
+
+            // NOTHING BELOW IS SAID ABOUT A MAP THAT PRODUCED NO CODE. When the destination
+            // cannot be built AND has nothing an update overload could assign, no method exists
+            // for a property to be unmapped IN — and the reason is already on the line above, as
+            // SM0004, SM0013 or SM0014. Repeating it per property would be describing a method
+            // that was never written.
+            if (!map.CanConstructDestination && !map.CanUpdate)
+                continue;
 
             foreach (UnmappedProperty unmapped in map.UnmappedProperties)
             {
@@ -249,12 +298,7 @@ public sealed class ShiftMapperAnalyzer : DiagnosticAnalyzer
                 }
             }
 
-            // Only when a method that PERFORMS these conversions is actually emitted. A map
-            // whose destination cannot be constructed (SM0004) and is a value type — so gets
-            // no update overload either — produces no code at all, and telling the developer
-            // that a conversion in it is lossy would be describing code that does not exist.
-            if (map.CanConstructDestination || !map.IsDestinationValueType)
-                ReportConversions(report, map, location);
+            ReportConversions(report, map, location);
         }
     }
 

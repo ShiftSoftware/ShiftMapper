@@ -422,6 +422,15 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                             cancellationToken);
 
                         break;
+
+                    // The expression itself is never read here — it stays a live tree in the
+                    // developer's file, exactly as a MapFrom does, and the generated code fetches
+                    // it back at runtime. All the generator needs to know is THAT there is one,
+                    // because that changes how the destination is built and takes the map's
+                    // projection away.
+                    case "ConstructUsing":
+                        current.ConstructsWithFactory = true;
+                        break;
                 }
             }
 
@@ -571,7 +580,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             return new CustomProperty(
                 property.Name,
                 property.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
-                canSetAfterConstruction: !setter.IsInitOnly);
+                canSetAfterConstruction: !setter.IsInitOnly,
+                isRequired: property.IsRequired);
         }
 
         return null;
@@ -600,11 +610,18 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// <summary>The refinements belonging to ONE direction of a map.</summary>
     private readonly struct Refinements
     {
-        public Refinements(ImmutableArray<string> ignored, ImmutableArray<CustomProperty> customized)
+        public Refinements(
+            ImmutableArray<string> ignored,
+            ImmutableArray<CustomProperty> customized,
+            bool constructsWithFactory)
         {
             Ignored = ignored;
             Customized = customized;
+            ConstructsWithFactory = constructsWithFactory;
         }
+
+        /// <summary>Whether <c>.ConstructUsing(...)</c> was chained onto this direction.</summary>
+        public bool ConstructsWithFactory { get; }
 
         /// <summary>Destination properties an opt.Ignore() left alone, and stopped reporting on.</summary>
         public ImmutableArray<string> Ignored { get; }
@@ -613,7 +630,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         public ImmutableArray<CustomProperty> Customized { get; }
 
         public static Refinements Empty { get; } =
-            new(ImmutableArray<string>.Empty, ImmutableArray<CustomProperty>.Empty);
+            new(ImmutableArray<string>.Empty, ImmutableArray<CustomProperty>.Empty, constructsWithFactory: false);
     }
 
     /// <summary>Collects one direction's refinements while the chain is being walked.</summary>
@@ -623,10 +640,12 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
         public List<CustomProperty> Customized { get; } = new();
 
+        public bool ConstructsWithFactory { get; set; }
+
         public Refinements Build() =>
-            Ignored.Count == 0 && Customized.Count == 0
+            Ignored.Count == 0 && Customized.Count == 0 && !ConstructsWithFactory
                 ? Refinements.Empty
-                : new Refinements(Ignored.ToImmutableArray(), Customized.ToImmutableArray());
+                : new Refinements(Ignored.ToImmutableArray(), Customized.ToImmutableArray(), ConstructsWithFactory);
     }
 
     /// <summary>
@@ -908,17 +927,20 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             isDestinationPublic: IsEffectivelyPublic(destinationType),
             isSourceValueType: sourceType.IsValueType,
             isDestinationValueType: destinationType.IsValueType,
-            canConstructDestination: CanConstruct(destinationType),
+            canConstructDestination: analysis.CanConstruct,
             propertyNames: analysis.All,
             writablePropertyNames: analysis.Writable,
             unmappedProperties: analysis.Unmapped,
             convertedProperties: analysis.Converted,
-            customProperties: refinements.Customized,
+            customProperties: analysis.Customized,
             nestedProperties: analysis.Nested,
             destinationName: destinationType.Name,
             location: location,
             isReverse: isReverse,
-            allowNullCollections: allowNullCollections);
+            allowNullCollections: allowNullCollections,
+            constructor: analysis.Constructor,
+            constructionProblems: analysis.ConstructionProblems,
+            constructsWithFactory: refinements.ConstructsWithFactory);
     }
 
     /// <summary>The result of comparing one source type against one destination type.</summary>
@@ -929,14 +951,41 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             ImmutableArray<PropertyPair> writable,
             ImmutableArray<UnmappedProperty> unmapped,
             ImmutableArray<ConvertedProperty> converted,
-            ImmutableArray<NestedProperty> nested)
+            ImmutableArray<NestedProperty> nested,
+            bool canConstruct,
+            ConstructorPlan constructor,
+            ImmutableArray<ConstructionProblem> constructionProblems,
+            ImmutableArray<CustomProperty> customized)
         {
             All = all;
             Writable = writable;
             Unmapped = unmapped;
             Converted = converted;
             Nested = nested;
+            CanConstruct = canConstruct;
+            Constructor = constructor;
+            ConstructionProblems = constructionProblems;
+            Customized = customized;
         }
+
+        /// <summary>
+        /// The <c>MapFrom</c> customizations that are still MEMBER assignments — everything the
+        /// developer declared, less the ones the constructor consumed.
+        ///
+        /// A customization that filled a constructor argument has already been used. Assigning it
+        /// again in the initializer would set an init-only property the constructor had just set,
+        /// and would evaluate the developer's expression twice per mapped object.
+        /// </summary>
+        public ImmutableArray<CustomProperty> Customized { get; }
+
+        /// <summary>Whether the destination can be built at all.</summary>
+        public bool CanConstruct { get; }
+
+        /// <summary>The constructor to call, and what to pass it.</summary>
+        public ConstructorPlan Constructor { get; }
+
+        /// <summary>Why it cannot be built, when it cannot.</summary>
+        public ImmutableArray<ConstructionProblem> ConstructionProblems { get; }
 
         /// <summary>Settable while constructing, init-only included.</summary>
         public ImmutableArray<PropertyPair> All { get; }
@@ -975,6 +1024,12 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// everything settable at construction time (init-only included), and the subset that
     /// can still be assigned afterwards. Plus the two lists of things to tell the developer
     /// about — what could not be mapped, and what was mapped only by converting it.
+    ///
+    /// THE CONSTRUCTOR IS DECIDED FIRST, before any member is looked at, because it changes what
+    /// the members ARE. A positional record's properties are its constructor's parameters; filling
+    /// them twice would assign an init-only property the constructor had just set. So
+    /// <see cref="PlanConstruction"/> runs first, and every member it claims is skipped below —
+    /// not merely left unassigned, but left unreported too, since it is mapped.
     /// </summary>
     private static PropertyAnalysis FindMatchingProperties(
         Compilation compilation,
@@ -993,6 +1048,12 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
         foreach (CustomProperty custom in refinements.Customized)
             spokenFor.Add(custom.Name);
+
+        var ignored = new HashSet<string>(refinements.Ignored, StringComparer.Ordinal);
+
+        var customized = new Dictionary<string, CustomProperty>(StringComparer.Ordinal);
+        foreach (CustomProperty custom in refinements.Customized)
+            customized[custom.Name] = custom;
 
         // Index the source's readable properties by name so lookups are easy.
         // GetProperties yields the most-derived declaration first, so the first entry we
@@ -1020,12 +1081,31 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             }
         }
 
+        // THE CONSTRUCTOR, before anything else. See the remarks above for why the order
+        // matters rather than merely reading tidily.
+        ConstructionOutcome construction = refinements.ConstructsWithFactory
+            ? ConstructionOutcome.Factory
+            : PlanConstruction(
+                compilation, sourceType, destinationType, sourceProperties, byIgnoreCase,
+                ignored, customized, allowNullCollections);
+
+        // Members the constructor already fills. Skipped below entirely: not assigned a second
+        // time, and not reported as unmapped either, because they ARE mapped.
+        var throughConstructor = new HashSet<string>(StringComparer.Ordinal);
+        foreach (ConstructorArgument argument in construction.Plan.Arguments)
+            throughConstructor.Add(argument.MemberName);
+
         var all = ImmutableArray.CreateBuilder<PropertyPair>();
         var writable = ImmutableArray.CreateBuilder<PropertyPair>();
         var unmapped = ImmutableArray.CreateBuilder<UnmappedProperty>();
         var converted = ImmutableArray.CreateBuilder<ConvertedProperty>();
         var nested = ImmutableArray.CreateBuilder<NestedProperty>();
         var seen = new HashSet<string>();
+
+        // Every `required` member that nothing ends up filling. C# refuses an object initializer
+        // that leaves one out, so this is not a property left empty — it is a destination that
+        // cannot be built at all, and it is collected as we go rather than worked out afterwards.
+        var unfilledRequired = ImmutableArray.CreateBuilder<ConstructionProblem>();
 
         foreach (IPropertySymbol destinationProperty in GetProperties(destinationType))
         {
@@ -1034,16 +1114,50 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             if (!seen.Add(destinationProperty.Name))
                 continue;
 
+            // A `required` member has to end up filled by SOMETHING or the object cannot be
+            // built. Recorded here and settled at the bottom, once it is known whether the
+            // conventions reached it.
+            bool isRequired = destinationProperty.IsRequired && !construction.SetsRequiredMembers;
+
+            // Already filled by the constructor call. Assigning it again would be writing over
+            // what the constructor just set — and for a positional record's init-only property
+            // it would not compile at all.
+            //
+            // A `required` member is the exception, and the C# compiler is why: it does not accept
+            // a constructor as having filled one unless that constructor says [SetsRequiredMembers],
+            // so the initializer has to name it as well. The value is worked out twice for a shape
+            // that is rare and would otherwise not compile.
+            if (throughConstructor.Contains(destinationProperty.Name) && !isRequired)
+                continue;
+
             // Ignored, or filled by a MapFrom. Skipped BEFORE any of the checks below, so the
             // property is not merely left unmapped but goes entirely unreported: a property you
             // deliberately ignored still producing SM0001 would defeat the point of ignoring it.
+            //
+            // A MapFrom fills it, so nothing more is owed. An Ignore does not, and for a
+            // `required` member that is the one case where ignoring it is not enough: the object
+            // still cannot be built without it, and saying so is more use than a compile error
+            // inside a generated file.
             if (spokenFor.Contains(destinationProperty.Name))
+            {
+                if (destinationProperty.IsRequired
+                    && !construction.SetsRequiredMembers
+                    && ignored.Contains(destinationProperty.Name))
+                {
+                    unfilledRequired.Add(new ConstructionProblem(
+                        ConstructionProblemKind.RequiredMemberNotFilled,
+                        destinationProperty.Name,
+                        ShortTypeName(destinationProperty.Type)));
+                }
+
                 continue;
+            }
 
             IMethodSymbol? setter = destinationProperty.SetMethod;
 
             // No setter at all means a computed or get-only property. That is a deliberate
-            // choice by whoever wrote the DTO, so we stay quiet about it.
+            // choice by whoever wrote the DTO, so we stay quiet about it. (A `required` property
+            // always has one, so there is nothing to record here.)
             if (setter is null)
                 continue;
 
@@ -1056,6 +1170,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                     UnmappedReason.SetterNotAccessible,
                     ShortTypeName(destinationProperty.Type),
                     sourcePropertyType: null));
+
+                NoteRequired(unfilledRequired, isRequired, destinationProperty);
                 continue;
             }
 
@@ -1079,6 +1195,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                         ShortTypeName(destinationProperty.Type),
                         sourcePropertyType: null,
                         candidates: string.Join(", ", candidates.Select(c => c.Name).OrderBy(n => n, StringComparer.Ordinal))));
+
+                    NoteRequired(unfilledRequired, isRequired, destinationProperty);
                     continue;
                 }
 
@@ -1093,6 +1211,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                         UnmappedReason.NoSourceProperty,
                         ShortTypeName(destinationProperty.Type),
                         sourcePropertyType: null));
+
+                    NoteRequired(unfilledRequired, isRequired, destinationProperty);
                     continue;
                 }
             }
@@ -1129,7 +1249,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                         collectionBuilder: complex.Builder,
                         destinationCollectionType: destinationProperty.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
                         sourceIsNullable: sourceProperty.NullableAnnotation == NullableAnnotation.Annotated,
-                        canSetAfterConstruction: !setter.IsInitOnly));
+                        canSetAfterConstruction: !setter.IsInitOnly,
+                        isRequired: isRequired));
                     continue;
                 }
 
@@ -1138,6 +1259,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                     UnmappedReason.NotConvertible,
                     ShortTypeName(destinationProperty.Type),
                     ShortTypeName(sourceProperty.Type)));
+
+                NoteRequired(unfilledRequired, isRequired, destinationProperty);
                 continue;
             }
 
@@ -1167,33 +1290,367 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                 writable.Add(pair);
         }
 
+        // A `required` FIELD is not something ShiftMapper maps — it maps properties — but an
+        // unset one is still a destination that will not compile, so it is worth the same
+        // sentence rather than a CS9035 inside a file the developer cannot edit.
+        if (!construction.SetsRequiredMembers)
+        {
+            foreach (ISymbol member in destinationType.GetMembers())
+            {
+                if (member is IFieldSymbol { IsRequired: true, DeclaredAccessibility: Accessibility.Public } field)
+                {
+                    unfilledRequired.Add(new ConstructionProblem(
+                        ConstructionProblemKind.RequiredMemberNotFilled,
+                        field.Name,
+                        ShortTypeName(field.Type)));
+                }
+            }
+        }
+
+        ImmutableArray<ConstructionProblem> problems = unfilledRequired.Count == 0
+            ? construction.Problems
+            : construction.Problems.AddRange(unfilledRequired);
+
+        ImmutableArray<CustomProperty> stillMembers = throughConstructor.Count == 0
+            ? refinements.Customized
+            : refinements.Customized
+                .Where(custom => !throughConstructor.Contains(custom.Name))
+                .ToImmutableArray();
+
         return new PropertyAnalysis(
             all.ToImmutable(), writable.ToImmutable(), unmapped.ToImmutable(), converted.ToImmutable(),
-            nested.ToImmutable());
+            nested.ToImmutable(),
+            canConstruct: construction.CanConstruct && unfilledRequired.Count == 0,
+            constructor: construction.Plan,
+            constructionProblems: problems,
+            customized: stillMembers);
+    }
+
+    /// <summary>
+    /// Records a <c>required</c> member that nothing filled. Called from each place the member
+    /// loop gives up on a property, so the two facts — "this is unmapped" and "this one had to
+    /// be mapped" — are recorded together rather than reconciled afterwards.
+    /// </summary>
+    private static void NoteRequired(
+        ImmutableArray<ConstructionProblem>.Builder problems,
+        bool isRequired,
+        IPropertySymbol property)
+    {
+        if (isRequired)
+        {
+            problems.Add(new ConstructionProblem(
+                ConstructionProblemKind.RequiredMemberNotFilled,
+                property.Name,
+                ShortTypeName(property.Type)));
+        }
     }
 
     /// <summary>Readable type name for warning messages, e.g. <c>List&lt;InvoiceLine&gt;</c>.</summary>
     private static string ShortTypeName(ITypeSymbol type) =>
         type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
 
-    /// <summary>
-    /// Can we create this type with <c>new T { ... }</c>? We need a non-abstract class or
-    /// struct with a public parameterless constructor. Positional records (whose only
-    /// constructor takes the values) and abstract types fail — without this check we would
-    /// emit code that does not compile.
-    /// </summary>
-    private static bool CanConstruct(INamedTypeSymbol destinationType)
+    /// <summary>What <see cref="PlanConstruction"/> worked out about one destination.</summary>
+    private readonly struct ConstructionOutcome
     {
+        private ConstructionOutcome(
+            bool canConstruct,
+            ConstructorPlan plan,
+            ImmutableArray<ConstructionProblem> problems,
+            bool setsRequiredMembers)
+        {
+            CanConstruct = canConstruct;
+            Plan = plan;
+            Problems = problems;
+            SetsRequiredMembers = setsRequiredMembers;
+        }
+
+        /// <summary>Whether the destination can be built at all.</summary>
+        public bool CanConstruct { get; }
+
+        /// <summary>The constructor to call, and what to pass it.</summary>
+        public ConstructorPlan Plan { get; }
+
+        /// <summary>Which parameters could not be filled, when none of the constructors worked.</summary>
+        public ImmutableArray<ConstructionProblem> Problems { get; }
+
+        /// <summary>
+        /// Whether the chosen constructor carries <c>[SetsRequiredMembers]</c>, which is the
+        /// author's promise that it fills them itself {D} so an unmapped <c>required</c> member is
+        /// no longer a reason the object cannot be built.
+        /// </summary>
+        public bool SetsRequiredMembers { get; }
+
+        /// <summary><c>new T { ... }</c>, which is every map that predates constructor support.</summary>
+        public static ConstructionOutcome Parameterless { get; } = new(
+            canConstruct: true, ConstructorPlan.Parameterless,
+            ImmutableArray<ConstructionProblem>.Empty, setsRequiredMembers: false);
+
+        /// <summary>
+        /// The destination is built by the developer's own <c>ConstructUsing</c> expression, so
+        /// there is no constructor for the generator to choose and no required member for it to
+        /// worry about {D} the C# compiler checks that expression at the place it is written.
+        /// </summary>
+        public static ConstructionOutcome Factory { get; } = new(
+            canConstruct: true, ConstructorPlan.Parameterless,
+            ImmutableArray<ConstructionProblem>.Empty, setsRequiredMembers: true);
+
+        /// <summary>No constructor at all: an interface, an abstract type, nothing public.</summary>
+        public static ConstructionOutcome Impossible { get; } = new(
+            canConstruct: false, ConstructorPlan.Parameterless,
+            ImmutableArray<ConstructionProblem>.Empty, setsRequiredMembers: false);
+
+        public static ConstructionOutcome Chosen(ConstructorPlan plan, bool setsRequiredMembers) =>
+            new(canConstruct: true, plan, ImmutableArray<ConstructionProblem>.Empty, setsRequiredMembers);
+
+        public static ConstructionOutcome Refused(ImmutableArray<ConstructionProblem> problems) =>
+            new(canConstruct: false, ConstructorPlan.Parameterless, problems, setsRequiredMembers: false);
+    }
+
+    /// <summary>
+    /// Decides HOW to build one destination.
+    ///
+    /// <code>
+    /// new BrandDto { Id = source.Id }                  // a parameterless constructor
+    /// new BrandDto(source.Id, source.Name)             // a record, or a primary constructor
+    /// </code>
+    ///
+    /// <para><b>THE ORDER OF PREFERENCE.</b> A public PARAMETERLESS constructor always wins, so
+    /// nothing that used to be built with an object initializer changes shape. Otherwise the
+    /// public constructors are tried GREEDIEST FIRST {D} most parameters down to fewest {D} and the
+    /// first whose every parameter can be filled is taken. Greediest first because a constructor
+    /// exists to be given values: a type offering both <c>(int id, string name)</c> and
+    /// <c>(int id)</c> means the second for callers who have less, not for a mapper that has
+    /// both.</para>
+    ///
+    /// <para><b>A PARAMETER IS A DESTINATION MEMBER</b> that happens to be written inside the
+    /// parentheses, and is filled exactly as one: an <c>opt.Ignore()</c> leaves it
+    /// <c>default</c>, an <c>opt.MapFrom</c> fills it, and otherwise it matches a source property
+    /// by name and converts. That is what makes <c>ForMember</c> work on a positional record,
+    /// whose properties ARE its parameters.</para>
+    ///
+    /// <para><b>PARAMETER TO PROPERTY IS ALWAYS CASE-INSENSITIVE</b>, unlike source-to-destination
+    /// matching, which follows the map's own <c>PropertyMatching</c>. A primary constructor's
+    /// <c>id</c> backing a property <c>Id</c> is a C# convention rather than a mapping decision,
+    /// and a developer who asked for case-sensitive SOURCE matching did not thereby ask for their
+    /// own constructor to stop being recognised.</para>
+    ///
+    /// <para><b>WHEN NOTHING WORKS</b> the problems come from the constructor that came CLOSEST {D}
+    /// fewest unfillable parameters {D} because "BrandDto's parameter 'createdAt' cannot be filled
+    /// from Brand" is a sentence to act on and "BrandDto cannot be constructed" is not.</para>
+    /// </summary>
+    private static ConstructionOutcome PlanConstruction(
+        Compilation compilation,
+        INamedTypeSymbol sourceType,
+        INamedTypeSymbol destinationType,
+        Dictionary<string, IPropertySymbol> sourceProperties,
+        Dictionary<string, List<IPropertySymbol>>? byIgnoreCase,
+        HashSet<string> ignored,
+        Dictionary<string, CustomProperty> customized,
+        bool allowNullCollections)
+    {
+        // Every struct has a parameterless constructor, including a positional record struct, so
+        // the object-initializer path always applies and its members are settable.
         if (destinationType.TypeKind == TypeKind.Struct)
-            return true;
+            return ConstructionOutcome.Parameterless;
 
         if (destinationType.TypeKind != TypeKind.Class || destinationType.IsAbstract)
-            return false;
+            return ConstructionOutcome.Impossible;
+
+        var candidates = new List<IMethodSymbol>();
 
         foreach (IMethodSymbol constructor in destinationType.InstanceConstructors)
         {
-            if (constructor.Parameters.Length == 0 && constructor.DeclaredAccessibility == Accessibility.Public)
+            if (constructor.DeclaredAccessibility != Accessibility.Public)
+                continue;
+
+            // A record's copy constructor is protected and never gets here; one written by hand
+            // is public and would match nothing useful, so it is skipped by shape rather than
+            // being offered a source property called "other".
+            if (constructor.Parameters.Length == 1
+                && SymbolEqualityComparer.Default.Equals(constructor.Parameters[0].Type, destinationType))
+            {
+                continue;
+            }
+
+            if (constructor.Parameters.Length == 0)
+                return ConstructionOutcome.Chosen(ConstructorPlan.Parameterless, SetsRequired(constructor));
+
+            candidates.Add(constructor);
+        }
+
+        if (candidates.Count == 0)
+            return ConstructionOutcome.Impossible;
+
+        // Greediest first, then by signature so the choice is the same on every build rather than
+        // whatever order the symbol API happened to hand back.
+        candidates.Sort((left, right) =>
+        {
+            int byLength = right.Parameters.Length.CompareTo(left.Parameters.Length);
+
+            return byLength != 0
+                ? byLength
+                : string.CompareOrdinal(left.ToDisplayString(), right.ToDisplayString());
+        });
+
+        ImmutableArray<ConstructionProblem> closest = ImmutableArray<ConstructionProblem>.Empty;
+        bool haveClosest = false;
+
+        foreach (IMethodSymbol constructor in candidates)
+        {
+            var arguments = ImmutableArray.CreateBuilder<ConstructorArgument>(constructor.Parameters.Length);
+            var problems = ImmutableArray.CreateBuilder<ConstructionProblem>();
+
+            foreach (IParameterSymbol parameter in constructor.Parameters)
+            {
+                ConstructorArgument? argument = FillParameter(
+                    compilation, sourceType, destinationType, sourceProperties, byIgnoreCase,
+                    ignored, customized, allowNullCollections, parameter);
+
+                if (argument is null)
+                {
+                    problems.Add(new ConstructionProblem(
+                        ConstructionProblemKind.ParameterNotFilled,
+                        parameter.Name,
+                        ShortTypeName(parameter.Type)));
+
+                    continue;
+                }
+
+                arguments.Add(argument);
+            }
+
+            if (problems.Count == 0)
+                return ConstructionOutcome.Chosen(new ConstructorPlan(arguments.ToImmutable()), SetsRequired(constructor));
+
+            if (!haveClosest || problems.Count < closest.Length)
+            {
+                closest = problems.ToImmutable();
+                haveClosest = true;
+            }
+        }
+
+        return ConstructionOutcome.Refused(closest);
+    }
+
+    /// <summary>
+    /// Works out what fills ONE constructor parameter, or returns null when nothing does.
+    ///
+    /// The order is the same one a destination property goes through, and for the same reasons:
+    /// what the developer SAID wins over what the names suggest, and a pair of objects is a map
+    /// rather than a conversion.
+    /// </summary>
+    private static ConstructorArgument? FillParameter(
+        Compilation compilation,
+        INamedTypeSymbol sourceType,
+        INamedTypeSymbol destinationType,
+        Dictionary<string, IPropertySymbol> sourceProperties,
+        Dictionary<string, List<IPropertySymbol>>? byIgnoreCase,
+        HashSet<string> ignored,
+        Dictionary<string, CustomProperty> customized,
+        bool allowNullCollections,
+        IParameterSymbol parameter)
+    {
+        string parameterType = parameter.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+
+        // The property this parameter stands for, when the type has one. That is the name a
+        // ForMember was written against, and the better name to look the SOURCE up by as well {D}
+        // a primary constructor's `id` is spelled `Id` on both the property and the entity.
+        string member = MemberForParameter(destinationType, parameter.Name) ?? parameter.Name;
+
+        if (ignored.Contains(member))
+            return new ConstructorArgument(parameter.Name, parameterType, member, null, null, null);
+
+        if (customized.TryGetValue(member, out CustomProperty? custom))
+            return new ConstructorArgument(parameter.Name, parameterType, member, null, custom, null);
+
+        if (!sourceProperties.TryGetValue(member, out IPropertySymbol? sourceProperty))
+        {
+            List<IPropertySymbol>? candidates = null;
+            byIgnoreCase?.TryGetValue(member, out candidates);
+
+            // Several source names differing only by case is no more answerable here than it is
+            // for a property; the difference is that here it costs the whole constructor.
+            if (candidates is not { Count: 1 })
+                return null;
+
+            sourceProperty = candidates[0];
+        }
+
+        string mapping = $"{sourceType.Name}.{sourceProperty.Name} -> {destinationType.Name}.{parameter.Name}";
+
+        if (ConversionResolver.Resolve(
+                compilation, sourceProperty.Type, parameter.Type, mapping, allowNullCollections) is { } conversion)
+        {
+            return new ConstructorArgument(
+                parameter.Name,
+                parameterType,
+                member,
+                new PropertyPair(parameter.Name, sourceProperty.Name, conversion.Template, conversion.QueryTemplate),
+                null,
+                null);
+        }
+
+        // Objects to MAP rather than values to convert. Unresolved as built, exactly as a nested
+        // PROPERTY is: whether a CreateMap exists for the pair is not known until every part of
+        // the mapper has been read, so the resolve pass settles it.
+        if (ConversionResolver.DescribeComplex(compilation, sourceProperty.Type, parameter.Type) is { } complex)
+        {
+            return new ConstructorArgument(
+                parameter.Name,
+                parameterType,
+                member,
+                null,
+                null,
+                new NestedProperty(
+                    destination: member,
+                    source: sourceProperty.Name,
+                    sourceElementType: complex.Source.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+                    destinationElementType: complex.Destination.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+                    destinationElementName: complex.Destination.Name,
+                    collectionBuilder: complex.Builder,
+                    destinationCollectionType: parameterType,
+                    sourceIsNullable: sourceProperty.NullableAnnotation == NullableAnnotation.Annotated,
+                    canSetAfterConstruction: false));
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The public property a constructor parameter stands for, matched by name ignoring case {D}
+    /// see <see cref="PlanConstruction"/> for why that one is not configurable. Null when the type
+    /// has no such property, which is ordinary for a constructor argument the type only keeps in a
+    /// field.
+    /// </summary>
+    private static string? MemberForParameter(INamedTypeSymbol destinationType, string parameterName)
+    {
+        string? insensitive = null;
+
+        foreach (IPropertySymbol property in GetProperties(destinationType))
+        {
+            if (string.Equals(property.Name, parameterName, StringComparison.Ordinal))
+                return property.Name;
+
+            if (insensitive is null && string.Equals(property.Name, parameterName, StringComparison.OrdinalIgnoreCase))
+                insensitive = property.Name;
+        }
+
+        return insensitive;
+    }
+
+    /// <summary>
+    /// Whether a constructor promises to fill the type's <c>required</c> members itself, which is
+    /// what <c>[SetsRequiredMembers]</c> means to the C# compiler and has to mean here too.
+    /// </summary>
+    private static bool SetsRequired(IMethodSymbol constructor)
+    {
+        foreach (AttributeData attribute in constructor.GetAttributes())
+        {
+            if (attribute.AttributeClass?.ToDisplayString() ==
+                "System.Diagnostics.CodeAnalysis.SetsRequiredMembersAttribute")
+            {
                 return true;
+            }
         }
 
         return false;
@@ -1343,7 +1800,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         DiagnosticReporter? report,
         ImmutableArray<MapModel> maps)
     {
-        if (maps.All(map => map.NestedProperties.IsEmpty))
+        if (maps.All(map => map.NestedProperties.IsEmpty && !map.Constructor.NeedsRuntimeArguments))
             return maps;
 
         var byKey = new Dictionary<string, MapModel>(StringComparer.Ordinal);
@@ -1357,12 +1814,6 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
         foreach (MapModel map in maps)
         {
-            if (map.NestedProperties.IsEmpty)
-            {
-                validated[map.Key] = map;
-                continue;
-            }
-
             var kept = ImmutableArray.CreateBuilder<NestedProperty>();
 
             foreach (NestedProperty nested in map.NestedProperties)
@@ -1382,7 +1833,29 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                     nested.DestinationElementName);
             }
 
-            validated[map.Key] = map.WithNested(kept.ToImmutable());
+            // A nested object can arrive through a CONSTRUCTOR ARGUMENT as readily as through a
+            // property — a record taking its ProductDto as an argument — and it needs the same
+            // verdict. Dropping the argument's nested value leaves it `default`, which is what
+            // keeps the generated file compiling while SM0011 stops the build.
+            MapModel current = map.WithNested(kept.ToImmutable());
+
+            validated[map.Key] = KeepConstructorNested(
+                current,
+                nested =>
+                {
+                    if (byKey.ContainsKey(nested.Key))
+                        return true;
+
+                    report?.Report(
+                        DiagnosticDescriptors.NoMapForNestedProperty,
+                        current.Location,
+                        current.DestinationName,
+                        nested.Destination,
+                        ShortName(nested.SourceElementType),
+                        nested.DestinationElementName);
+
+                    return false;
+                });
         }
 
         // PASS 2 — find loops, and cut the edge that closes each one so the generated file still
@@ -1403,12 +1876,66 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         {
             MapModel current = validated[map.Key];
 
-            resolved.Add(current.WithNested(current.NestedProperties
+            current = current.WithNested(current.NestedProperties
                 .Where(nested => !cut.Contains(current.Key + "|" + nested.Destination))
-                .ToImmutableArray()));
+                .ToImmutableArray());
+
+            resolved.Add(KeepConstructorNested(
+                current, nested => !cut.Contains(current.Key + "|" + nested.Destination)));
         }
 
         return resolved.ToImmutable();
+    }
+
+    /// <summary>
+    /// Rebuilds a map's constructor plan, turning every nested argument the predicate refuses into
+    /// a <c>default</c> one.
+    ///
+    /// It is the constructor's half of what <c>WithNested</c> does for properties, and it exists
+    /// for the same two callers: the pair that has no map (SM0011), and the edge that closes a
+    /// loop (SM0012). Both stop the build; dropping the value is what keeps the generated file
+    /// compiling in the meantime, so the real message is not buried under a CS error.
+    /// </summary>
+    private static MapModel KeepConstructorNested(MapModel map, Func<NestedProperty, bool> keep)
+    {
+        if (!map.Constructor.NeedsRuntimeArguments)
+            return map;
+
+        var arguments = ImmutableArray.CreateBuilder<ConstructorArgument>(map.Constructor.Arguments.Length);
+        bool changed = false;
+
+        foreach (ConstructorArgument argument in map.Constructor.Arguments)
+        {
+            if (argument.Nested is { } nested && !keep(nested))
+            {
+                arguments.Add(new ConstructorArgument(
+                    argument.ParameterName, argument.ParameterType, argument.MemberName, null, null, null));
+
+                changed = true;
+                continue;
+            }
+
+            arguments.Add(argument);
+        }
+
+        return changed ? map.WithConstructor(new ConstructorPlan(arguments.ToImmutable())) : map;
+    }
+
+    /// <summary>
+    /// Every nested edge out of one map — through a property, and through a constructor
+    /// argument. The loop finder walks both, because a record that takes its own DTO as an
+    /// argument loops exactly as readily as one that declares it a property.
+    /// </summary>
+    private static IEnumerable<NestedProperty> NestedEdges(MapModel map)
+    {
+        foreach (NestedProperty nested in map.NestedProperties)
+            yield return nested;
+
+        foreach (ConstructorArgument argument in map.Constructor.Arguments)
+        {
+            if (argument.Nested is { } nested)
+                yield return nested;
+        }
     }
 
     /// <summary>
@@ -1428,7 +1955,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         HashSet<string> cut,
         HashSet<string> reported)
     {
-        foreach (NestedProperty nested in map.NestedProperties)
+        foreach (NestedProperty nested in NestedEdges(map))
         {
             if (cut.Contains(map.Key + "|" + nested.Destination))
                 continue;
@@ -1615,9 +2142,12 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                 }
             }
 
-            // An in-place update only makes sense for a reference type — mutating a copy
-            // of a struct would silently do nothing.
-            foreach (MapModel map in destinations.Where(m => !m.IsDestinationValueType))
+            // An in-place update only makes sense for a reference type — mutating a copy of a
+            // struct would silently do nothing — and only when there is something to write. A
+            // positional record has neither: every property is init-only, so the method would
+            // compile, hand back the object it was given, and have done nothing at all. A missing
+            // method is a compile error at the call site, which is the better of the two answers.
+            foreach (MapModel map in destinations.Where(m => m.CanUpdate))
             {
                 if (wroteMember)
                     sb.AppendLine();
@@ -1700,7 +2230,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                 wroteExtension = true;
             }
 
-            foreach (MapModel map in destinations.Where(m => !m.IsDestinationValueType))
+            foreach (MapModel map in destinations.Where(m => m.CanUpdate))
             {
                 if (wroteExtension)
                     sb.AppendLine();
@@ -1752,7 +2282,11 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
         // Unlike the update overload, this one DOES set init-only properties — it is building the
         // object — so the remarks name every conversion rather than only the assignable ones.
-        AppendRemarks(sb, $"{indent}    ", map, setsInitOnly: true);
+        //
+        // Except when a ConstructUsing built it, in which case this method is in the update
+        // overload's position: the object exists before it runs, and the init-only members are the
+        // factory expression's to fill. Saying so is the whole value of the remark.
+        AppendRemarks(sb, $"{indent}    ", map, setsInitOnly: !map.ConstructsWithFactory);
 
         // A public method may not expose a less accessible type (CS0051), and here the
         // destination is the return type rather than only a type argument.
@@ -1760,7 +2294,36 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         sb.AppendLine($"{indent}    {{");
         AppendNullGuard(sb, $"{indent}        ", "source", map.IsSourceValueType);
 
-        sb.AppendLine($"{indent}        return new {map.DestinationType}");
+        // A ConstructUsing map builds the object the developer's way and then assigns onto it,
+        // which is a statement body rather than one expression — and can only reach the members
+        // that are still settable, since the object already exists. The remarks above name the
+        // init-only ones it therefore leaves to the factory expression.
+        if (map.ConstructsWithFactory)
+        {
+            sb.AppendLine($"{indent}        {map.DestinationType} destination = Customizations.Construct<{map.SourceType}, {map.DestinationType}>()(source);");
+            AppendAssignments(sb, $"{indent}        ", map, directNames);
+            sb.AppendLine();
+            sb.AppendLine($"{indent}        return destination;");
+            sb.AppendLine($"{indent}    }}");
+            return;
+        }
+
+        sb.Append($"{indent}        return new {map.DestinationType}{ConstructorArguments(map, directNames, $"{indent}        ")}");
+
+        // A record whose every value arrives through the constructor has nothing left to
+        // initialise, and `new BrandDto(a, b) { }` reads like a mistake rather than like nothing.
+        //
+        // Only when there ARE arguments, though: `new BrandDto` on its own is not an expression,
+        // so a parameterless destination always keeps its braces however empty they are.
+        if (!map.Constructor.IsParameterless
+            && map.PropertyNames.IsEmpty && map.CustomProperties.IsEmpty && map.NestedProperties.IsEmpty)
+        {
+            sb.AppendLine(";");
+            sb.AppendLine($"{indent}    }}");
+            return;
+        }
+
+        sb.AppendLine();
         sb.AppendLine($"{indent}        {{");
 
         foreach (PropertyPair property in map.PropertyNames)
@@ -1774,6 +2337,89 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
         sb.AppendLine($"{indent}        }};");
         sb.AppendLine($"{indent}    }}");
+    }
+
+    /// <summary>
+    /// The argument list for a generated <c>new</c>, or the empty string when the destination has
+    /// a parameterless constructor and is filled by an object initializer alone.
+    ///
+    /// <code>
+    /// new BrandDto                                    // parameterless: nothing here
+    /// new BrandDto(
+    ///     source.Id,
+    ///     Customizations.Value&lt;Brand, BrandDto, string&gt;("Name")(source))
+    /// </code>
+    ///
+    /// Every argument is written out in full, which is the difference between this and the
+    /// projection: here the values are ordinary C# the generator can spell, so a customization is
+    /// a call and a nested object is a call to the nested map's own method.
+    /// </summary>
+    private static string ConstructorArguments(
+        MapModel map,
+        Dictionary<string, string> directNames,
+        string indent)
+    {
+        if (map.Constructor.IsParameterless)
+            return string.Empty;
+
+        var arguments = new List<string>();
+
+        foreach (ConstructorArgument argument in map.Constructor.Arguments)
+        {
+            if (argument.Property is { } property)
+                arguments.Add(property.ValueExpression("source"));
+            else if (argument.Custom is { } custom)
+                arguments.Add($"{CustomValueExpression(map, custom)}(source)");
+            else if (argument.Nested is { } nested)
+                arguments.Add(NestedValueExpression(nested, "source", directNames, map.AllowNullCollections));
+            else
+                arguments.Add($"default({argument.ParameterType})!");
+        }
+
+        var sb = new StringBuilder("(");
+
+        for (int i = 0; i < arguments.Count; i++)
+        {
+            sb.AppendLine(i == 0 ? string.Empty : ",");
+            sb.Append($"{indent}    {arguments[i]}");
+        }
+
+        sb.Append(')');
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// The assignments a method makes onto a destination that already exists — shared by the
+    /// update overload and by the create method of a <c>ConstructUsing</c> map, which are the
+    /// same list for the same reason: the object is built, so only what can still be set is set.
+    /// </summary>
+    private static void AppendAssignments(
+        StringBuilder sb,
+        string indent,
+        MapModel map,
+        Dictionary<string, string> directNames)
+    {
+        foreach (PropertyPair property in map.WritablePropertyNames)
+            sb.AppendLine($"{indent}destination.{property.Destination} = {property.ValueExpression("source")};");
+
+        // An init-only property is settable while the object is being built and never again, so
+        // it is filled at construction and skipped here.
+        foreach (CustomProperty custom in map.CustomProperties)
+        {
+            if (!custom.CanSetAfterConstruction)
+                continue;
+
+            sb.AppendLine($"{indent}destination.{custom.Name} = {CustomValueExpression(map, custom)}(source);");
+        }
+
+        foreach (NestedProperty nested in map.NestedProperties)
+        {
+            if (!nested.CanSetAfterConstruction)
+                continue;
+
+            sb.AppendLine($"{indent}destination.{nested.Destination} = {NestedValueExpression(nested, "source", directNames, map.AllowNullCollections)};");
+        }
     }
 
     /// <summary>
@@ -2109,28 +2755,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         AppendNullGuard(sb, $"{indent}        ", "source", map.IsSourceValueType);
         AppendNullGuard(sb, $"{indent}        ", "destination", map.IsDestinationValueType);
 
-        foreach (PropertyPair property in map.WritablePropertyNames)
-        {
-            sb.AppendLine($"{indent}        destination.{property.Destination} = {property.ValueExpression("source")};");
-        }
-
-        // An init-only property is settable while the object is being built and never again, so
-        // it is filled by the create method above and skipped here.
-        foreach (CustomProperty custom in map.CustomProperties)
-        {
-            if (!custom.CanSetAfterConstruction)
-                continue;
-
-            sb.AppendLine($"{indent}        destination.{custom.Name} = {CustomValueExpression(map, custom)}(source);");
-        }
-
-        foreach (NestedProperty nested in map.NestedProperties)
-        {
-            if (!nested.CanSetAfterConstruction)
-                continue;
-
-            sb.AppendLine($"{indent}        destination.{nested.Destination} = {NestedValueExpression(nested, "source", directNames, map.AllowNullCollections)};");
-        }
+        AppendAssignments(sb, $"{indent}        ", map, directNames);
 
         sb.AppendLine();
         sb.AppendLine($"{indent}        return destination;");
@@ -2361,6 +2986,25 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         string field = "_" + name;
         string type = $"global::System.Linq.Expressions.Expression<global::System.Func<{map.SourceType}, {map.DestinationType}>>";
 
+        // A ConstructUsing map has no projection, and this is where that is said.
+        //
+        // The member is emitted anyway, throwing, rather than left out: a map that NESTS this one
+        // refers to it by name, and a missing member would be a CS0103 inside a generated file
+        // instead of a sentence explaining which map cannot be projected and why. The build has
+        // already said the same thing as SM0015.
+        if (map.ConstructsWithFactory)
+        {
+            sb.AppendLine($"{indent}    /// <summary>Not projectable: this map builds its destination with ConstructUsing.</summary>");
+            sb.AppendLine($"{indent}    private {type} {name} =>");
+            sb.AppendLine($"{indent}        throw new global::System.InvalidOperationException(");
+            sb.AppendLine($"{indent}            \"ShiftMapper: the map from '{Readable(map.SourceType)}' to '{Readable(map.DestinationType)}' \" +");
+            sb.AppendLine($"{indent}            \"builds its destination with ConstructUsing, which runs in C# and has no SQL. Use Map \" +");
+            sb.AppendLine($"{indent}            \"instead, or give '{map.DestinationName}' a constructor ShiftMapper can match by name \" +");
+            sb.AppendLine($"{indent}            \"— records and primary constructors project fine — with ForMember for the arguments \" +");
+            sb.AppendLine($"{indent}            \"convention cannot work out.\");");
+            return;
+        }
+
         sb.AppendLine($"{indent}    /// <summary>Holds the composed projection once it has been built.</summary>");
         sb.AppendLine($"{indent}    private {type}? {field};");
         sb.AppendLine();
@@ -2372,13 +3016,60 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         // a race here can do is build it twice and keep one.
         sb.AppendLine($"{indent}    private {type} {name} =>");
         sb.AppendLine($"{indent}        {field} ??= Customizations.Compose<{map.SourceType}, {map.DestinationType}>(");
-        sb.AppendLine($"{indent}            source => new {map.DestinationType}");
-        sb.AppendLine($"{indent}            {{");
+        sb.Append($"{indent}            source => new {map.DestinationType}{ProjectedConstructorArguments(map, $"{indent}            ")}");
 
-        foreach (PropertyPair property in map.PropertyNames)
-            sb.AppendLine($"{indent}                {property.Destination} = {property.QueryValueExpression("source")},");
+        // A destination whose every value arrives through the constructor needs no initializer,
+        // and an empty one is a shape some providers read less willingly than the plain `new` it
+        // is equivalent to. A parameterless destination keeps its braces regardless: `new BrandDto`
+        // with neither arguments nor an initializer is not an expression at all.
+        bool hasBindings = !map.PropertyNames.IsEmpty
+            || map.Constructor.IsParameterless
+            || RequiredPlaceholders(map).Count > 0;
 
-        sb.Append($"{indent}            }}");
+        if (hasBindings)
+        {
+            sb.AppendLine();
+            sb.AppendLine($"{indent}            {{");
+
+            foreach (PropertyPair property in map.PropertyNames)
+                sb.AppendLine($"{indent}                {property.Destination} = {property.QueryValueExpression("source")},");
+
+            // A customized or nested member is normally ABSENT from this template — Compose
+            // splices the real value in at runtime, and a convention for it here would fill it
+            // twice. A `required` one cannot be absent: C# refuses an initializer that omits it,
+            // and this template is compiled like any other code. So it gets a placeholder, which
+            // Compose drops on its way to binding the real thing.
+            foreach (string member in RequiredPlaceholders(map))
+                sb.AppendLine($"{indent}                {member} = default!,");
+
+            sb.Append($"{indent}            }}");
+        }
+
+        // The arguments the generator could NOT write out: a MapFrom, which lives as a tree in the
+        // developer's file, and a nested object, whose value is another map's own projection.
+        // Compose puts them into the `new` at the positions named here.
+        if (map.Constructor.NeedsRuntimeArguments)
+        {
+            sb.AppendLine(",");
+            sb.AppendLine($"{indent}            new global::ShiftMapper.MapCustomizations.ConstructorArgument[]");
+            sb.AppendLine($"{indent}            {{");
+
+            for (int i = 0; i < map.Constructor.Arguments.Length; i++)
+            {
+                ConstructorArgument argument = map.Constructor.Arguments[i];
+
+                if (argument.Custom is not null)
+                {
+                    sb.AppendLine($"{indent}                new({i}, \"{argument.MemberName}\"),");
+                }
+                else if (argument.Nested is { } nested)
+                {
+                    sb.AppendLine($"{indent}                new({i}, \"{argument.MemberName}\", {NestedBindingExpression(nested)}),");
+                }
+            }
+
+            sb.Append($"{indent}            }}");
+        }
 
         foreach (NestedProperty nested in map.NestedProperties)
         {
@@ -2387,6 +3078,72 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         }
 
         sb.AppendLine(");");
+    }
+
+    /// <summary>
+    /// The <c>required</c> members a projection template has to name even though it has no value
+    /// for them — the ones filled by a <c>MapFrom</c> or by a nested map, both of which are
+    /// spliced in by <c>Compose</c> after this text is compiled.
+    ///
+    /// Ordinary members need no such placeholder: leaving one out of an object initializer is
+    /// perfectly legal. A required member is the one case where the C# compiler insists, and it
+    /// insists about the TEMPLATE, which knows nothing of what Compose is about to do to it.
+    /// </summary>
+    private static List<string> RequiredPlaceholders(MapModel map)
+    {
+        var members = new List<string>();
+
+        foreach (CustomProperty custom in map.CustomProperties)
+        {
+            if (custom.IsRequired)
+                members.Add(custom.Name);
+        }
+
+        foreach (NestedProperty nested in map.NestedProperties)
+        {
+            if (nested.IsRequired)
+                members.Add(nested.Destination);
+        }
+
+        return members;
+    }
+
+    /// <summary>
+    /// The argument list for the <c>new</c> inside a PROJECTION, which differs from the in-memory
+    /// one in exactly one way: the arguments the generator cannot spell get a placeholder.
+    ///
+    /// <code>
+    /// source =&gt; new BrandDto(
+    ///     source.Id,               // a convention, written out
+    ///     default(string)!)        // a MapFrom — Compose puts the real tree here
+    /// </code>
+    ///
+    /// The placeholder is <c>default(T)</c> with its type stated rather than a bare
+    /// <c>default</c>, because a bare one cannot choose between two overloads of the same
+    /// constructor and would be CS0121 in a file nobody can edit.
+    /// </summary>
+    private static string ProjectedConstructorArguments(MapModel map, string indent)
+    {
+        if (map.Constructor.IsParameterless)
+            return string.Empty;
+
+        var sb = new StringBuilder("(");
+
+        for (int i = 0; i < map.Constructor.Arguments.Length; i++)
+        {
+            ConstructorArgument argument = map.Constructor.Arguments[i];
+
+            string value = argument.Property is { } property
+                ? property.QueryValueExpression("source")
+                : $"default({argument.ParameterType})!";
+
+            sb.AppendLine(i == 0 ? string.Empty : ",");
+            sb.Append($"{indent}    {value}");
+        }
+
+        sb.Append(')');
+
+        return sb.ToString();
     }
 
     /// <summary>
@@ -2427,7 +3184,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         // the pair cannot be offered here either.
         List<MapModel> updatable = bySource
             .SelectMany(group => group
-                .Where(map => !map.IsDestinationValueType)
+                .Where(map => map.CanUpdate)
                 .OrderBy(map => map.DestinationType, StringComparer.Ordinal))
             .ToList();
 

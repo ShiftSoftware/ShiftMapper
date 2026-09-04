@@ -1,4 +1,4 @@
-using ShiftMapper.Generator.Tests.Infrastructure;
+﻿using ShiftMapper.Generator.Tests.Infrastructure;
 using Xunit;
 
 namespace ShiftMapper.Generator.Tests;
@@ -235,12 +235,11 @@ public class EmittedCostTests
     /// A destination with no create method (SM0004) has no direct method either, so a nested
     /// reference to it keeps the generic spelling rather than naming a method nobody wrote.
     ///
-    /// Note what this test does NOT assert. This snippet's generated file does not compile, and
-    /// did not before the direct methods existed: a nested property whose destination cannot be
-    /// constructed leaves a call and a projection reference with nothing behind them. That is a
-    /// separate gap — Step 6 of the plan is where a constructor-initialised destination gets a
-    /// create method at all — and this test is only here to pin that the fallback does not make
-    /// it worse by inventing a method name on top.
+    /// Note what this test does NOT assert. This snippet's generated file does not compile: a
+    /// nested property whose destination cannot be constructed leaves a call and a projection
+    /// reference with nothing behind them. The build has already stopped with SM0004, and this
+    /// test is only here to pin that the fallback does not make it worse by inventing a method
+    /// name on top.
     /// </summary>
     [Fact]
     public void A_nested_map_with_no_create_method_falls_back_to_the_dispatcher()
@@ -251,14 +250,13 @@ public class EmittedCostTests
 
             public class Child { public int Id { get; set; } }
 
-            public class ChildDto
+            public abstract class ChildDto
             {
-                public ChildDto(int id) => Id = id;
                 public int Id { get; set; }
             }
 
             public class Source { public Child Item { get; set; } = new(); }
-            public class Destination { public ChildDto Item { get; set; } = new(0); }
+            public class Destination { public ChildDto Item { get; set; } = null!; }
 
             public partial class TestMapper : ShiftMapperBase
             {

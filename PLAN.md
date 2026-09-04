@@ -33,7 +33,7 @@ Every step heading below carries the same marker: ✅ done, ⬜ pending.
 **Phase 2 — Close the mapping gaps**
 
 - [x] **Step 5** — Collections and null policy at the top level
-- [ ] **Step 6** — Destinations that are not `new T { }`
+- [x] **Step 6** — Destinations that are not `new T { }`
 - [ ] **Step 7** — Per-member power tools
 - [ ] **Step 8** — Map-level hooks
 - [ ] **Step 9** — Flattening and naming conventions
@@ -53,8 +53,8 @@ Every step heading below carries the same marker: ✅ done, ⬜ pending.
 - [ ] **Step 17** — Docs and sample
 - [ ] **Step 18** — Benchmarks
 
-Phase 1 is complete, and Step 5 of Phase 2 with it. Next on ShiftFramework's critical path is
-**Step 8**, then 8 → 10 → 11 → 12 → 13 → 14 → 15 (the summary at the foot of this file).
+Phase 1 is complete, and Steps 5 and 6 of Phase 2 with it. Next on ShiftFramework's critical
+path is **Step 8**, then 8 → 10 → 11 → 12 → 13 → 14 → 15 (the summary at the foot of this file).
 
 ---
 
@@ -75,7 +75,7 @@ Phase 1 is complete, and Step 5 of Phase 2 with it. Next on ShiftFramework's cri
 - Nested objects and collections of objects, composed to any depth from the maps you
   declared, in memory AND inside one EF projection.
 - Cycle detection as a build error (SM0012).
-- Twelve build-time diagnostics, SM0001–SM0012.
+- Fifteen build-time diagnostics, SM0001–SM0015.
 - Generated surface per map: `TDestination Map<TDestination>(TSource)`,
   `TDestination Map(TSource, TDestination)`,
   `IQueryable<TDestination> ProjectTo<TDestination>(IQueryable<TSource>)`, plus
@@ -97,12 +97,13 @@ Phase 1 is complete, and Step 5 of Phase 2 with it. Next on ShiftFramework's cri
 - **(Step 5)** Collection overloads on every map (`List` / array / `HashSet` / `IReadOnlyList`),
   `MapOrNull`, dictionaries in the conversion table, and one null-collection policy answered the
   same way by both backends.
+- **(Step 6)** Destinations built through a CONSTRUCTOR — positional records, primary
+  constructors, `required` members — in memory and in a projection; plus `ConstructUsing` for
+  what convention cannot reach.
 
 ### What is missing, in one paragraph
 
-Destinations must have a parameterless constructor, so records and constructor-initialised
-DTOs are out.
-There is no `Condition`, `NullSubstitute`, `BeforeMap`/`AfterMap`, `ConstructUsing`,
+There is no `Condition`, `NullSubstitute`, `BeforeMap`/`AfterMap`,
 `ConvertUsing`, flattening, inheritance or open generics. And — the item this plan is
 mostly about — there is no GLOBAL configuration layer at all: every rule has to be
 restated on every map, in every application, so a framework cannot contribute a rule that
@@ -385,7 +386,7 @@ demonstration — values converted, keys converted (the live SM0008), and an abs
 arriving as `{}` — on a pair with no table behind it, because that is where dictionaries
 actually turn up.
 
-### ⬜ Step 6 — Destinations that are not `new T { }`
+### ✅ Step 6 — Destinations that are not `new T { }`
 
 `MapModel.CanConstructDestination` requires a public parameterless constructor, so today a
 positional `record`, a DTO with a primary constructor, or one with `required` members cannot
@@ -399,6 +400,76 @@ be a destination at all — it is SM0004. Modern DTOs are exactly those shapes.
 - Diagnostic when a constructor parameter cannot be filled, naming the parameter.
 
 This also unblocks projections into records, which EF handles fine.
+
+**What landed.**
+
+- **A constructor plan per map.** A public PARAMETERLESS constructor still always wins, so nothing
+  that already mapped changed shape. Otherwise the public constructors are tried GREEDIEST FIRST
+  and the first whose every parameter can be filled is taken — a constructor exists to be given
+  values, so a type offering both `(int, string)` and `(int)` means the shorter one for callers
+  who have less, not for a mapper that has both. A record's copy constructor is skipped by shape.
+- **A CONSTRUCTOR PARAMETER IS A DESTINATION MEMBER** that happens to be written inside the
+  parentheses. It matches a source property by name, converts by the same table, maps a nested
+  object when a `CreateMap` exists, and an `opt.Ignore()` leaves it `default`. A `ForMember`
+  naming the member it stands for FILLS it — which on a positional record is the only way to
+  customize anything, since the property is init-only and the constructor has already set it.
+- **Parameter-to-property matching always ignores case**, unlike source matching, which still
+  follows the map's own `PropertyMatching`. A primary constructor's `id` backing a property `Id`
+  is a C# convention, not a mapping decision, and a developer who asked for case-sensitive SOURCE
+  matching did not thereby ask for their own constructor to stop being recognised.
+- **Records project**, which is the whole reason this was worth doing. The generator writes the
+  `new` itself, so EF is handed one construction with real arguments and produces the same query
+  it produces for an ordinary class — verified against SQL Server in the sample, where
+  `/api/products/summary` and `/api/products` emit the same joins and the same columns.
+- **`required` members.** Not a property left empty: C# REFUSES an object initializer that omits
+  one, so an unmapped required member stops the destination being built at all. SM0014 says which,
+  rather than leaving a CS9035 inside a generated file. `[SetsRequiredMembers]` is taken at its
+  word, and a required member the constructor also fills is bound in the initializer anyway,
+  because the C# compiler does not accept a constructor as having filled one without that
+  attribute.
+- **`ConstructUsing`**, kept as an expression tree in the developer's file exactly as `MapFrom` is,
+  and cached on the same terms — per instance when it captured a service, per process when it did
+  not. It replaces CONSTRUCTION and nothing else, so the members that can still be assigned still
+  are, and the generated `<remarks>` names the init-only ones it leaves to the expression.
+- **No update overload where there is nothing to update.** A positional record's every property is
+  init-only, so the method would return the object it was handed having done nothing. A compile
+  error at the call site is the better of the two answers.
+- **Three new diagnostics** — SM0013 (parameter cannot be filled, naming it), SM0014 (required
+  member not mapped), SM0015 (ConstructUsing is not projectable) — and SM0004 reworded, since
+  "no public parameterless constructor" stopped being the interesting case. It now means what is
+  left: an abstract type, an interface, nothing public to call.
+
+**Two things the projection needed that the design did not predict.**
+
+*A constructor argument cannot be left out and added later.* A member binding can be appended to an
+initializer after the fact, which is how `MapFrom` and nested maps have always reached a
+projection; an argument cannot, because the call would not be a call. So the generator writes
+`default(T)!` in every position it cannot spell and names it, and `Compose` gained an overload that
+rebuilds the `NewExpression` with the real trees in those positions. It also had to learn that a
+bare `NewExpression` is a valid projection body — a record with nothing left to initialise is
+exactly that.
+
+*A `required` member filled by a `MapFrom` broke the template.* A customized member is normally
+ABSENT from the generated projection, since Compose splices the real tree in at runtime. A required
+one cannot be absent from a template that is itself compiled: C# refuses the initializer, in a file
+the developer cannot edit. It now gets a `Member = default!` placeholder that Compose drops on its
+way to binding the real thing. The sample's `/api/invoices/{id}/receipt` returns both backends side
+by side so a regression there would be visible rather than silent.
+
+**Deliberately not done.** `ConstructUsing` does not project, and the build says so as SM0015
+rather than leaving it to be discovered. A projection has to reach EF as one expression it can read
+all the way down, and there is no general way to graft mapped properties onto an object a delegate
+returned. The generator emits a projection that THROWS with that explanation rather than none at
+all, because a missing projection member becomes a CS0103 the moment another map nests this one.
+Making it projectable needs `Compose` to assemble a member-init from parts, which is also what
+Step 8's `ConvertUsing` needs — so it belongs there.
+
+**In the sample.** `ProductSummaryDto` and `BrandSummaryDto` are positional records nested one
+inside the other, projected by `GET /api/products/summary` (`?sql=true` to compare the query with
+the ordinary-class one). `InvoiceReceiptDto` carries three `required` members, one of them also
+customized, and `GET /api/invoices/{id}/receipt` returns the in-memory and projected results side
+by side with a `totalsAgree` flag. `InvoiceLabelDto` is built by a `ConstructUsing` reading the
+injected numbering service, and `?project=true` shows what the refusal reads like.
 
 ### ⬜ Step 7 — Per-member power tools
 
@@ -751,12 +822,12 @@ mapper that cannot show its numbers has given up its main argument.
 | Phase | Steps | State | Blocking? |
 |---|---|---|---|
 | 1 — Trust | 1 Tests, 2 Runtime cost, 3 Packaging, 4 `IShiftMapper` | ✅ done | Everything depended on 1 and 4 |
-| 2 — Gaps | ~~5 Collections~~, 6 Constructors/records, 7 Member options, 8 Map hooks, 9 Flattening, 10 Inheritance/generics | ⬜ 5 done | 8 and 10 block Phase 3 |
+| 2 — Gaps | ~~5 Collections~~, ~~6 Constructors/records~~, 7 Member options, 8 Map hooks, 9 Flattening, 10 Inheritance/generics | ⬜ 5, 6 done | 8 and 10 block Phase 3 |
 | 3 — General layer | 11 Profiles, 12 Global conversions, 13 Compile-time contract, 14 Member conventions, 15 ShiftFramework port | ⬜ pending | The goal |
 | 4 — Finish | 16 Diagnostics, 17 Docs, 18 Benchmarks | ⬜ pending | Can run alongside 2 and 3 |
 
 The shortest path to ShiftFramework being able to adopt this is
 **1 → 4 → 8 → 10 → 11 → 12 → 13 → 14 → 15**; with 1 and 4 done, it starts at **8**. Steps 5, 6, 7
 and 9 are needed for ShiftMapper to be a good general-purpose mapper, but they are not on
-ShiftFramework's critical path — 5 is done because it is the one of those four that every list
-endpoint hits on its first day.
+ShiftFramework's critical path — 5 and 6 are done because they are the two of those four that
+every application hits on its first day: a list endpoint, and a DTO that is a record.

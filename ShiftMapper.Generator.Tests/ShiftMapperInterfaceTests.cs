@@ -1,4 +1,4 @@
-using ShiftMapper.Generator.Tests.Infrastructure;
+﻿using ShiftMapper.Generator.Tests.Infrastructure;
 using Xunit;
 
 namespace ShiftMapper.Generator.Tests;
@@ -161,9 +161,8 @@ public class ShiftMapperInterfaceTests
 
             public class Source { public int Id { get; set; } }
             public class Made { public int Id { get; set; } }
-            public class NotMade
+            public abstract class NotMade
             {
-                public NotMade(int id) { Id = id; }
                 public int Id { get; set; }
             }
 

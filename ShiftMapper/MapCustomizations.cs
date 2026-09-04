@@ -34,7 +34,7 @@ namespace ShiftMapper;
 ///
 ///   * <see cref="Value{TSource, TDestination, TProperty}"/> compiles it into a delegate, once,
 ///     for the in-memory <c>Map</c> methods.
-///   * <see cref="Compose{TSource, TDestination}"/> splices it into the generated projection, so
+///   * <see cref="Compose{TSource, TDestination}(Expression{Func{TSource, TDestination}}, NestedBinding[])"/> splices it into the generated projection, so
 ///     <c>ProjectTo</c> hands EF ONE expression and gets one SQL query.
 /// </summary>
 public sealed class MapCustomizations
@@ -111,7 +111,7 @@ public sealed class MapCustomizations
     /// generator settles a contradictory pair — a <c>MapFrom</c> and an <c>Ignore</c> on one
     /// property — by taking the one written last, and simply omits the property when that is the
     /// <c>Ignore</c>. Without this, the abandoned expression would still be sitting here, and
-    /// <see cref="Compose{TSource, TDestination}"/> binds everything it finds: the in-memory maps
+    /// <see cref="Compose{TSource, TDestination}(Expression{Func{TSource, TDestination}}, NestedBinding[])"/> binds everything it finds: the in-memory maps
     /// would leave the property alone while a projection quietly filled it.
     ///
     /// The compiled copy goes too. Nothing would read it once the tree is gone, but a delegate
@@ -130,6 +130,41 @@ public sealed class MapCustomizations
         // instance of this mapper type would have withdrawn the same member for the same reason.
         SharedCompiled.TryRemove(new SharedKey(_owner, key), out _);
     }
+
+    /// <summary>
+    /// The key a <c>ConstructUsing</c> factory is stored under.
+    ///
+    /// It shares the dictionary with the <c>MapFrom</c> expressions because it is the same kind
+    /// of thing — a tree the compiler built in the developer's file, which has to survive until
+    /// runtime — and so wants the same compile-once-per-mapper-type caching. A name no property
+    /// can have keeps the two apart: <c>.ctor</c> is not a legal C# identifier, so nothing
+    /// <see cref="MemberName"/> ever produces can collide with it.
+    /// </summary>
+    internal const string ConstructorMember = ".ctor";
+
+    /// <summary>
+    /// Records the expression a <c>ConstructUsing</c> call supplied. Internal for the same reason
+    /// as <see cref="Register"/>: the only supported way here is through
+    /// <see cref="MapExpression{TSource, TDestination}.ConstructUsing"/>.
+    /// </summary>
+    internal void RegisterConstructor(Type source, Type destination, LambdaExpression factory) =>
+        Register(source, destination, ConstructorMember, factory);
+
+    /// <summary>
+    /// The <c>ConstructUsing</c> factory for one map, compiled and ready to call:
+    ///
+    /// <code>var destination = Customizations.Construct&lt;Brand, BrandDto&gt;()(source);</code>
+    ///
+    /// Cached exactly as <see cref="Value{TSource, TDestination, TProperty}"/> caches a MapFrom,
+    /// and for the same reason — a factory that closes over an injected service is compiled once
+    /// per mapper INSTANCE, and one that closes over nothing once per process.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// No factory was registered for this map, which means the generated code and this store
+    /// disagree. Rebuild.
+    /// </exception>
+    public Func<TSource, TDestination> Construct<TSource, TDestination>() =>
+        Value<TSource, TDestination, TDestination>(ConstructorMember);
 
     /// <summary>
     /// Whether a property was customized. The generator already knows the answer at compile time
@@ -281,38 +316,106 @@ public sealed class MapCustomizations
     /// </summary>
     public Expression<Func<TSource, TDestination>> Compose<TSource, TDestination>(
         Expression<Func<TSource, TDestination>> conventions,
+        params NestedBinding[] nested) =>
+        Compose(conventions, Array.Empty<ConstructorArgument>(), nested);
+
+    /// <summary>
+    /// <see cref="Compose{TSource, TDestination}(Expression{Func{TSource, TDestination}}, NestedBinding[])"/>
+    /// for a destination built through a CONSTRUCTOR rather than an object initializer — a
+    /// positional record, a primary constructor, a DTO whose values arrive as arguments.
+    ///
+    /// A member binding can be added to an initializer after the fact; a constructor ARGUMENT
+    /// cannot be left out and added later, because the call would not be a call. So the generator
+    /// writes a placeholder in the argument position it cannot fill:
+    ///
+    /// <code>
+    /// source =&gt; new BrandDto(source.Id, default(string)!, default(StockDto)!)
+    /// </code>
+    ///
+    /// and names those positions in <paramref name="constructorArguments"/>. This method rebuilds
+    /// the <see cref="NewExpression"/> with each placeholder replaced by the expression that
+    /// belongs there: a <c>MapFrom</c> tree from the developer's own file, or a nested map's own
+    /// composed projection. EF then sees one <c>new</c> with real arguments, which is what it
+    /// translates a record projection from.
+    /// </summary>
+    /// <param name="conventions">
+    /// The generated projection, with a placeholder in every argument position the generator
+    /// could not write.
+    /// </param>
+    /// <param name="constructorArguments">
+    /// Which argument positions to fill, and from what. Empty for the ordinary case, which is why
+    /// the two-argument overload above exists.
+    /// </param>
+    /// <param name="nested">
+    /// Nested object properties to graft in as MEMBER bindings, exactly as the other overload
+    /// takes them. A nested value that belongs in a constructor argument travels in
+    /// <paramref name="constructorArguments"/> instead.
+    /// </param>
+    public Expression<Func<TSource, TDestination>> Compose<TSource, TDestination>(
+        Expression<Func<TSource, TDestination>> conventions,
+        ConstructorArgument[] constructorArguments,
         params NestedBinding[] nested)
     {
         if (conventions is null)
             throw new ArgumentNullException(nameof(conventions));
 
+        if (constructorArguments is null)
+            throw new ArgumentNullException(nameof(constructorArguments));
+
+        // The ConstructUsing factory lives in the same dictionary under a name no property can
+        // have. It is not a member to bind, so it is filtered out here rather than tripping over
+        // MemberNamed below.
         List<KeyValuePair<CustomizationKey, LambdaExpression>> applicable = _values
-            .Where(entry => entry.Key.Source == typeof(TSource) && entry.Key.Destination == typeof(TDestination))
+            .Where(entry => entry.Key.Source == typeof(TSource)
+                         && entry.Key.Destination == typeof(TDestination)
+                         && entry.Key.Member != ConstructorMember)
             .ToList();
 
-        if (applicable.Count == 0 && nested.Length == 0)
+        if (applicable.Count == 0 && nested.Length == 0 && constructorArguments.Length == 0)
             return conventions;
 
-        if (conventions.Body is not MemberInitExpression init)
+        // Two shapes reach here. `new BrandDto { ... }` is a MemberInit; `new BrandDto(a, b)` with
+        // nothing left to initialise is a bare New, and a record with no extra members is exactly
+        // that. Both are rebuilt the same way.
+        (NewExpression construction, IEnumerable<MemberBinding> existing) = conventions.Body switch
         {
-            throw new InvalidOperationException(
+            MemberInitExpression init => (init.NewExpression, (IEnumerable<MemberBinding>)init.Bindings),
+            NewExpression created => (created, Array.Empty<MemberBinding>()),
+            _ => throw new InvalidOperationException(
                 $"ShiftMapper: the generated projection for '{typeof(TSource).Name} -> {typeof(TDestination).Name}' " +
-                "is not an object initializer, so custom mappings cannot be merged into it.");
-        }
+                "is not an object initializer, so custom mappings cannot be merged into it."),
+        };
 
         ParameterExpression parameter = conventions.Parameters[0];
+
+        if (constructorArguments.Length > 0)
+            construction = FillArguments(construction, constructorArguments, applicable, parameter);
+
+        // A customization that filled a constructor argument has already been used, and binding it
+        // again would assign an init-only property the constructor just set.
+        HashSet<string> throughConstructor = new(
+            constructorArguments.Select(argument => argument.Member), StringComparer.Ordinal);
 
         // Customized properties should not be filled twice. The generator normally omits them
         // already; dropping them here as well keeps this correct on its own terms rather than
         // relying on the other half to have done its job.
         HashSet<string> customized = new(applicable.Select(entry => entry.Key.Member), StringComparer.Ordinal);
 
-        List<MemberBinding> bindings = init.Bindings
-            .Where(binding => !customized.Contains(binding.Member.Name))
+        // A nested member's placeholder has to go too, for the same reason a customized one
+        // does: the generator writes one only where C# insists a `required` member be named, and
+        // the real value is bound below.
+        HashSet<string> grafted = new(nested.Select(child => child.Member), StringComparer.Ordinal);
+
+        List<MemberBinding> bindings = existing
+            .Where(binding => !customized.Contains(binding.Member.Name)
+                           && !grafted.Contains(binding.Member.Name))
             .ToList();
 
         foreach (KeyValuePair<CustomizationKey, LambdaExpression> entry in applicable)
         {
+            if (throughConstructor.Contains(entry.Key.Member))
+                continue;
+
             MemberInfo member = MemberNamed(typeof(TDestination), entry.Key.Member);
 
             Expression body = new ParameterReplacer(entry.Value.Parameters[0], parameter)
@@ -322,10 +425,84 @@ public sealed class MapCustomizations
         }
 
         foreach (NestedBinding child in nested)
-            bindings.Add(Expression.Bind(MemberNamed(typeof(TDestination), child.Member), NestedValue(child, parameter)));
+        {
+            if (throughConstructor.Contains(child.Member))
+                continue;
 
-        return Expression.Lambda<Func<TSource, TDestination>>(
-            Expression.MemberInit(init.NewExpression, bindings), parameter);
+            bindings.Add(Expression.Bind(MemberNamed(typeof(TDestination), child.Member), NestedValue(child, parameter)));
+        }
+
+        // A record with nothing but constructor arguments needs no initializer at all, and
+        // MemberInit with an empty binding list is a shape some providers read less well than the
+        // plain New it is equivalent to.
+        Expression body2 = bindings.Count == 0
+            ? construction
+            : Expression.MemberInit(construction, bindings);
+
+        return Expression.Lambda<Func<TSource, TDestination>>(body2, parameter);
+    }
+
+    /// <summary>
+    /// Replaces the placeholder arguments of a generated <c>new</c> with the expressions that
+    /// belong in them.
+    ///
+    /// The generator emits <c>default(T)!</c> in every position it cannot write, so the shape of
+    /// the call — which overload, how many arguments — is settled by the C# compiler rather
+    /// than reconstructed here. All this does is swap operands.
+    /// </summary>
+    private static NewExpression FillArguments(
+        NewExpression construction,
+        ConstructorArgument[] arguments,
+        List<KeyValuePair<CustomizationKey, LambdaExpression>> applicable,
+        ParameterExpression parameter)
+    {
+        var filled = construction.Arguments.ToArray();
+
+        foreach (ConstructorArgument argument in arguments)
+        {
+            if (argument.Index < 0 || argument.Index >= filled.Length)
+            {
+                throw new InvalidOperationException(
+                    $"ShiftMapper: the generated projection names constructor argument {argument.Index} " +
+                    $"of '{construction.Type.Name}', which takes {filled.Length}. Rebuild — this means the " +
+                    "generated mapper is out of date with the types it was written against.");
+            }
+
+            Expression value;
+
+            if (argument.Nested is { } child)
+            {
+                value = NestedValue(child, parameter);
+            }
+            else
+            {
+                LambdaExpression? tree = applicable
+                    .Where(entry => entry.Key.Member == argument.Member)
+                    .Select(entry => entry.Value)
+                    .FirstOrDefault();
+
+                if (tree is null)
+                {
+                    throw new InvalidOperationException(
+                        $"ShiftMapper: no custom mapping was registered for '{construction.Type.Name}.{argument.Member}', " +
+                        "but the generated projection expects one. Rebuild — this normally means the generated " +
+                        "mapper is out of date with the CreateMap calls in your constructor.");
+                }
+
+                value = new ParameterReplacer(tree.Parameters[0], parameter).Visit(tree.Body)!;
+            }
+
+            // The tree's own type may be narrower than the parameter's — a MapFrom returning an
+            // int for a long argument, say — and an argument that does not match its parameter
+            // exactly is an ArgumentException out of Expression.New.
+            filled[argument.Index] = value.Type == filled[argument.Index].Type
+                ? value
+                : Expression.Convert(value, filled[argument.Index].Type);
+        }
+
+        return construction.Constructor is null
+            ? Expression.New(construction.Type)
+            : Expression.New(construction.Constructor, filled);
     }
 
     /// <summary>
@@ -382,7 +559,7 @@ public sealed class MapCustomizations
     }
 
     /// <summary>
-    /// One nested object property, handed to <see cref="Compose{TSource, TDestination}"/> by the
+    /// One nested object property, handed to <see cref="Compose{TSource, TDestination}(Expression{Func{TSource, TDestination}}, NestedBinding[])"/> by the
     /// generated code.
     ///
     /// <paramref name="Projection"/> is the nested map's OWN composed projection, which is what
@@ -406,6 +583,27 @@ public sealed class MapCustomizations
         LambdaExpression Projection,
         string? Builder,
         bool Nullable = false);
+
+    /// <summary>
+    /// One CONSTRUCTOR ARGUMENT of a projected destination that the generator could not write out
+    /// as text, and has asked
+    /// <see cref="Compose{TSource, TDestination}(Expression{Func{TSource, TDestination}}, ConstructorArgument[], NestedBinding[])"/>
+    /// to fill.
+    ///
+    /// Only two kinds of value need this. A <c>MapFrom</c> is an expression tree living in the
+    /// developer's own file, and a NESTED object is another map's composed projection — neither
+    /// is text the generator has. Everything else is written straight into the <c>new</c>.
+    /// </summary>
+    /// <param name="Index">Which argument, counting from zero, in declaration order.</param>
+    /// <param name="Member">
+    /// The destination MEMBER the argument corresponds to, which is the key the customization is
+    /// registered under. For a positional record the parameter and the property are the same
+    /// name, which is what makes a <c>ForMember</c> on the property fill the argument.
+    /// </param>
+    /// <param name="Nested">
+    /// The nested map to graft in, or null when the value is a <c>MapFrom</c> to be looked up.
+    /// </param>
+    public sealed record ConstructorArgument(int Index, string Member, NestedBinding? Nested = null);
 
     /// <summary>
     /// Reads the property name out of a selector such as <c>d =&gt; d.Country</c>.

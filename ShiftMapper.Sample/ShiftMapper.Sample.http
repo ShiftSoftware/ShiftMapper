@@ -210,6 +210,88 @@ Content-Type: application/json
   }
 ]
 
+### 1f. RECORDS — a destination that is not `new T { }`, which until now was SM0004.
+#
+#     ProductSummaryDto is a POSITIONAL RECORD, and BrandSummaryDto inside it is another. Neither
+#     has a settable property: every value arrives as a constructor argument. ShiftMapper picks
+#     the constructor and matches its parameters exactly as it matches members — by name, with
+#     the same conversions, and with a nested map where a CreateMap exists:
+#
+#         return new ProductSummaryDto(
+#             source.Id, source.Name, source.Sku,
+#             ValueConverter.ToInvariantString(source.Price),   // decimal -> string
+#             MapToBrandSummaryDto(source.Brand));              // a record inside a record
+#
+#     Note "price" comes back quoted and "isoCode" is filled from the entity's ISOCode — both
+#     the conversion table and the case-insensitive fallback reach a constructor argument.
+GET {{HostAddress}}/api/products/summary
+Accept: application/json
+
+### 1f2. AND IT PROJECTS, which is the reason records were worth doing rather than a convenience.
+#
+#         SELECT [p].[Id], [p].[Name], [p].[Sku], CONVERT(varchar(100), [p].[Price]),
+#                [b].[Id], [b].[Name], [b].[ISOCode]
+#         FROM [Products] AS [p]
+#         INNER JOIN [Brands] AS [b] ON [p].[BrandId] = [b].[Id]
+#
+#     Compare it with request 1d, the same query into an ordinary class. Same joins, same
+#     columns. The shape of the DTO changed and the query did not, which is the whole claim —
+#     EF is handed one `new` with real arguments rather than an object initializer.
+GET {{HostAddress}}/api/products/summary?sql=true
+Accept: text/plain
+
+### 1g. REQUIRED MEMBERS — and both backends side by side so they can be compared.
+#
+#     `required` is a compile-time rule rather than a strong word: C# REFUSES an object
+#     initializer that leaves one out. So an unmapped required member does not leave a property
+#     empty, it stops the destination being built at all — and the build says which one:
+#
+#         warning SM0014: no Map method was generated to create 'InvoiceReceiptDto' because its
+#                         required member 'Total' (string) is not mapped
+#
+#     Try it: delete the ForMember for Total in AppMapper and watch the create half of that map
+#     disappear with that message, instead of the build failing with a CS9035 inside a generated
+#     file you cannot open.
+#
+#     "totalsAgree" is the interesting field. Total is required AND customized, and a customized
+#     member is normally ABSENT from the generated projection — the expression lives in
+#     AppMapper.cs and Compose splices it in at run time. A required one cannot be absent from a
+#     template that is itself compiled, so the generator writes `Total = default!` and Compose
+#     replaces it. If that ever stopped working these two objects would differ and nothing else
+#     would look wrong.
+GET {{HostAddress}}/api/invoices/1/receipt
+Accept: application/json
+
+### 1h. CONSTRUCTUSING — for the case convention cannot reach.
+#
+#     InvoiceLabelDto has no parameterless constructor and no settable Label, and no constructor
+#     ShiftMapper could pick would know about the invoice-numbering service. So AppMapper supplies
+#     the construction itself:
+#
+#         .ConstructUsing(s => new InvoiceLabelDto(_numbering.Prefix + s.Number))
+#
+#     It replaces CONSTRUCTION and nothing else — "customerName" below is still mapped by name,
+#     by assignment, onto the object that expression returned. What cannot be assigned afterwards
+#     is the expression's to fill, and the generated method's <remarks> lists exactly which.
+GET {{HostAddress}}/api/invoices/1/label
+Accept: application/json
+
+### 1h2. AND IT CANNOT BE PROJECTED, which the build already said as an INFO:
+#
+#         info SM0015: the map from 'Invoice' to 'InvoiceLabelDto' builds its destination with
+#                      ConstructUsing, so ProjectTo cannot use it; Map is unaffected
+#
+#     This request asks for the projection anyway. A projection reaches EF as one expression it
+#     reads all the way down, and there is no general way to graft mapped properties onto an
+#     object a delegate returned — so the generator emits a projection that THROWS, naming the
+#     map and what to do instead, rather than no projection at all. (No projection would be a
+#     CS0103 in the generated file the moment another map nested this one.)
+#
+#     The way out, when a map has to project, is the one request 1f uses: a constructor
+#     ShiftMapper can match by name, plus ForMember for the arguments convention cannot work out.
+GET {{HostAddress}}/api/invoices/1/label?project=true
+Accept: text/plain
+
 ### 2. Invoices — THE MAP AS A DATABASE QUERY.
 #     db.Invoices.ProjectTo<InvoiceDto>(mapper), and again not one Include, yet the response
 #     is four levels deep: invoice -> lines -> product -> brand and stock.

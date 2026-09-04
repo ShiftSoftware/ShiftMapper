@@ -29,5 +29,27 @@ public static class ProductEndpoints
                 : Results.Ok(query.ToList());
         })
         .WithName("GetProducts");
+
+        // GET /api/products/summary
+        //
+        // THE SAME QUERY INTO A POSITIONAL RECORD. ProductSummaryDto has no settable property at
+        // all — every value arrives as a constructor argument, including the nested
+        // BrandSummaryDto — and it still projects, because the generator writes the `new` itself
+        // rather than an object initializer.
+        //
+        // Add ?sql=true and compare it with /api/products: the same joins, the same columns. The
+        // shape of the DTO changed and the query did not, which is the whole claim.
+        group.MapGet("/summary", (AppDbContext db, AppMapper mapper, bool sql = false) =>
+        {
+            IQueryable<ProductSummaryDto> query = db.Products
+                .AsNoTracking()
+                .OrderBy(p => p.Id)
+                .ProjectTo<ProductSummaryDto>(mapper);
+
+            return sql
+                ? Results.Text(query.ToQueryString(), "text/plain")
+                : Results.Ok(query.ToList());
+        })
+        .WithName("GetProductSummaries");
     }
 }

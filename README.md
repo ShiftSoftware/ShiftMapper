@@ -161,10 +161,66 @@ ShiftMapper answer alike.
   as SM0008.
 - **Nested objects and collections of objects**, composed to any depth from the maps you
   declared — in memory and inside one EF projection.
+- **Destinations built through a constructor**: positional records, primary constructors, and
+  `required` members. See below.
 - **Per-member overrides**: `opt.Ignore()` and `opt.MapFrom(s => ...)`.
 
 Both backends are generated from the same analysis, so `Map` and `ProjectTo` agree on what a
 map means.
+
+### Records, primary constructors and `required` members
+
+A destination does not have to be `new T { }`. ShiftMapper picks a constructor and matches its
+parameters to source properties, so the shapes most DTOs actually take work with nothing
+configured:
+
+```csharp
+public record ProductSummaryDto(int Id, string Name, string Price, BrandSummaryDto Brand);
+
+CreateMap<Brand, BrandSummaryDto>();
+CreateMap<Product, ProductSummaryDto>();   // that is all
+```
+
+**A constructor parameter is a destination member** that happens to be written inside the
+parentheses. It matches a source property by name, converts when the types differ, maps a nested
+object when a `CreateMap` exists for the pair, and a `ForMember` naming the member it stands for
+fills it — which on a positional record is the only way to customize anything, since the property
+is init-only and the constructor has already set it.
+
+**And it projects.** EF is handed one `new` with real arguments, so a record produces the same
+query an ordinary class does. That is the reason this is worth having rather than a convenience.
+
+The rules, briefly:
+
+- A public **parameterless** constructor always wins, so nothing that already mapped changes shape.
+- Otherwise the **greediest** constructor whose every parameter can be filled.
+- Parameter-to-property matching always ignores case (`id` backs `Id`); source matching follows
+  the map's own `PropertyMatching`.
+- A parameter nothing can fill is **SM0013**, naming the parameter.
+- An unmapped `required` member is **SM0014**. It is not a property left empty — C# refuses an
+  initializer that omits one, so it stops the whole destination. `[SetsRequiredMembers]` is taken
+  at its word.
+- A destination with nothing assignable after construction — a positional record — gets **no
+  update overload**. It would return the object it was handed having done nothing, and a compile
+  error at the call site is the better answer.
+
+### `ConstructUsing`, for what convention cannot reach
+
+```csharp
+CreateMap<Invoice, InvoiceLabelDto>()
+    .ConstructUsing(s => new InvoiceLabelDto(_numbering.Prefix + s.Number));
+```
+
+It replaces **construction and nothing else**: every property ShiftMapper would have mapped is
+still assigned onto the object your expression returned, so the ones it cannot assign afterwards
+(`init` and `required` members) are yours to fill in the expression. The generated method's
+`<remarks>` lists exactly which those are.
+
+**It is in-memory only, and the build says so (SM0015).** A projection reaches EF as one
+expression it reads all the way down, and there is no general way to graft mapped properties onto
+an object a delegate returned. Asking for one throws a message naming the map rather than failing
+somewhere inside EF. When a map has to project, the answer is a constructor ShiftMapper can match
+by name plus `ForMember` for the arguments convention cannot work out.
 
 ### For libraries: `IShiftMapper`
 
@@ -224,15 +280,15 @@ and think. Each is reported as SM0002 rather than skipped in silence.
 
 ## Diagnostics
 
-Twelve rules, `SM0001` to `SM0012`. Ten describe a property that will not be mapped; two stop
-the build.
+Fifteen rules, `SM0001` to `SM0015`. Two stop the build; the rest describe something that will
+not be mapped, or will be mapped in a way worth knowing about.
 
 | Id | Default | What it means |
 |---|---|---|
 | SM0001 | Warning | Destination property has no matching source property |
 | SM0002 | Warning | Names match; ShiftMapper does not convert between the two types |
 | SM0003 | Warning | Destination property's setter is not public |
-| SM0004 | Warning | Destination type has no public parameterless constructor |
+| SM0004 | Warning | Destination type has no constructor ShiftMapper can call |
 | SM0005 | Warning | Nothing was generated for a `ShiftMapperBase` class (not `partial`, or generic) |
 | SM0006 | Info | A `ReverseMap` leaves a destination property unmapped |
 | SM0007 | Warning | Several source properties match when case is ignored |
@@ -241,6 +297,9 @@ the build.
 | SM0010 | Warning | Mapped through a conversion that can change the value (e.g. `long` to `int`) |
 | SM0011 | **Error** | A nested object property has no `CreateMap` for its types |
 | SM0012 | **Error** | Nested maps form a circular graph |
+| SM0013 | Warning | A constructor parameter cannot be filled (names the parameter) |
+| SM0014 | Warning | A `required` member is not mapped, so the destination cannot be built |
+| SM0015 | Info | The map uses `ConstructUsing`, so `ProjectTo` cannot use it |
 
 `SM0011` is an error because a null nested object in a response looks exactly like a null in the
 database. Two ways forward, both one line: declare the map, or `opt.Ignore()` the property.
@@ -284,10 +343,10 @@ dotnet_diagnostic.SM0001.severity = none
 
 ## Status
 
-What works today is listed above. What does not exist yet — records and constructor-initialised
-destinations, `Condition` / `NullSubstitute` / `BeforeMap` / `AfterMap`, flattening, inheritance,
-open generics, and the global configuration layer a library needs — is laid out in order in
-[PLAN.md](PLAN.md), which is the roadmap this repository is built from.
+What works today is listed above. What does not exist yet — `Condition` / `NullSubstitute` /
+`BeforeMap` / `AfterMap`, flattening, inheritance, open generics, and the global configuration
+layer a library needs — is laid out in order in [PLAN.md](PLAN.md), which is the roadmap this
+repository is built from.
 
 ## License
 

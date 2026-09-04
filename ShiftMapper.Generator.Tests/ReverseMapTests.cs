@@ -1,4 +1,4 @@
-using Microsoft.CodeAnalysis;
+﻿using Microsoft.CodeAnalysis;
 using ShiftMapper.Generator.Tests.Infrastructure;
 using Xunit;
 
@@ -104,9 +104,8 @@ public class ReverseMapTests
             """
             using ShiftMapper;
 
-            public class Source
+            public abstract class Source
             {
-                public Source(int id) => Id = id;
                 public int Id { get; set; }
             }
 

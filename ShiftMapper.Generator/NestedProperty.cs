@@ -26,8 +26,10 @@ internal sealed class NestedProperty
         string? collectionBuilder,
         string destinationCollectionType,
         bool sourceIsNullable,
-        bool canSetAfterConstruction)
+        bool canSetAfterConstruction,
+        bool isRequired = false)
     {
+        IsRequired = isRequired;
         Destination = destination;
         Source = source;
         SourceElementType = sourceElementType;
@@ -92,6 +94,13 @@ internal sealed class NestedProperty
 
     /// <summary>False for an <c>init</c> property, which the update overload cannot assign.</summary>
     public bool CanSetAfterConstruction { get; }
+
+    /// <summary>
+    /// Whether the property is declared <c>required</c> — which matters for the same reason it
+    /// matters on <see cref="CustomProperty"/>: a nested value is grafted into the projection at
+    /// runtime, and a required member cannot simply be absent from the template that is compiled.
+    /// </summary>
+    public bool IsRequired { get; }
 
     /// <summary>True when this is a collection of objects rather than a single one.</summary>
     public bool IsCollection => CollectionBuilder is not null;

@@ -58,6 +58,9 @@ public class Catalog
 
     /// <summary>A nullable dictionary, for the null-collection policy.</summary>
     public Dictionary<string, string>? Extras { get; set; }
+
+    /// <summary>Read by the ConstructUsing factory, and counted by the map that follows it.</summary>
+    public int LabelCount => Labels.Count;
 }
 
 public class Stock

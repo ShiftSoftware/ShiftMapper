@@ -104,6 +104,79 @@ public static class InvoiceEndpoints
             return Results.Created($"/api/invoices/{invoice.Id}", dto);
         })
         .WithName("CreateInvoice");
+
+        // GET /api/invoices/{id}/receipt
+        //
+        // REQUIRED MEMBERS, and both backends side by side so they can be compared.
+        //
+        // InvoiceReceiptDto declares Number, CustomerName and Total as `required`, which is a
+        // compile-time rule rather than a strong word: C# refuses an object initializer that
+        // leaves one out. So ShiftMapper has to answer for all three before it emits anything,
+        // and says which one is missing (SM0014) when it cannot.
+        //
+        // Total is the one worth watching. It is required AND supplied by a ForMember — and a
+        // customized member is normally absent from the generated projection, because the
+        // expression lives in AppMapper.cs and Compose splices it in at run time. A required one
+        // cannot be absent from a template that is itself compiled, so the generator writes
+        // `Total = default!` and Compose replaces it. If that ever stopped working, the two
+        // values below would differ and everything else would still look fine.
+        group.MapGet("/{id:int}/receipt", async (int id, AppDbContext db, AppMapper mapper) =>
+        {
+            Invoice? invoice = await db.Invoices
+                .AsNoTracking()
+                .Include(i => i.Lines)
+                .FirstOrDefaultAsync(i => i.Id == id);
+
+            InvoiceReceiptDto? inMemory = mapper.MapOrNull<InvoiceReceiptDto>(invoice);
+
+            if (inMemory is null)
+                return Results.NotFound();
+
+            InvoiceReceiptDto? projected = mapper
+                .ProjectTo<InvoiceReceiptDto>(db.Invoices.AsNoTracking().Where(i => i.Id == id))
+                .FirstOrDefault();
+
+            return Results.Ok(new
+            {
+                inMemory,
+                projected,
+                totalsAgree = inMemory.Total == projected!.Total,
+            });
+        })
+        .WithName("GetInvoiceReceipt");
+
+        // GET /api/invoices/{id}/label
+        //
+        // CONSTRUCTUSING. InvoiceLabelDto has no parameterless constructor and no settable Label,
+        // and no constructor ShiftMapper could pick would know about the numbering service — so
+        // AppMapper supplies the construction itself. CustomerName is still mapped by name,
+        // afterwards, onto the object that expression returned.
+        //
+        // Add ?project=true to ask for the projection the build already said does not exist
+        // (SM0015). It throws a message naming this map and what to do instead, rather than
+        // failing somewhere inside EF — which is the whole reason the generator emits a throwing
+        // projection rather than no projection at all.
+        group.MapGet("/{id:int}/label", async (int id, AppDbContext db, AppMapper mapper, bool project = false) =>
+        {
+            if (project)
+            {
+                try
+                {
+                    return Results.Ok(mapper.ProjectTo<InvoiceLabelDto>(db.Invoices).ToList());
+                }
+                catch (InvalidOperationException error)
+                {
+                    return Results.Text(error.Message, "text/plain");
+                }
+            }
+
+            Invoice? invoice = await db.Invoices.AsNoTracking().FirstOrDefaultAsync(i => i.Id == id);
+
+            InvoiceLabelDto? label = mapper.MapOrNull<InvoiceLabelDto>(invoice);
+
+            return label is null ? Results.NotFound() : Results.Ok(label);
+        })
+        .WithName("GetInvoiceLabel");
     }
 
     /// <summary>

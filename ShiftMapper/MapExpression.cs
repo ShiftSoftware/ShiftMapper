@@ -162,4 +162,55 @@ public readonly struct MapExpression<TSource, TDestination>
     /// </param>
     public MapExpression<TDestination, TSource> ReverseMap(Action<MapOptions>? configure = null) =>
         new(_customizations);
+
+    /// <summary>
+    /// Builds the destination YOUR way, instead of by matching a constructor's parameters to
+    /// source properties.
+    ///
+    /// <code>
+    /// CreateMap&lt;Brand, BrandDto&gt;()
+    ///     .ConstructUsing(s =&gt; new BrandDto(s.Id, _clock.UtcNow));
+    /// </code>
+    ///
+    /// ShiftMapper picks a constructor on its own where it can: a positional record, a primary
+    /// constructor, any constructor whose parameters line up with source properties by name. This
+    /// is for the rest — an argument that has no counterpart on the source, one that needs a
+    /// service, a factory that decides which subtype to build.
+    ///
+    /// WHAT HAPPENS AFTERWARDS. Construction is the only step this replaces. Every property
+    /// ShiftMapper would have mapped is still mapped, by assignment, ONTO the object your
+    /// expression returned — so the ones it cannot assign afterwards, the <c>init</c> and
+    /// <c>required</c> members, are yours to fill in the expression. The generated method's
+    /// <c>&lt;remarks&gt;</c> lists exactly which those are.
+    ///
+    /// LIKE MAPFROM, THE TREE SURVIVES. It is declared <see cref="Expression{TDelegate}"/>, so the
+    /// compiler builds a description of your lambda rather than compiling it, with your fields
+    /// captured and your usings resolved. ShiftMapper compiles it once and calls it.
+    ///
+    /// <para><b>IT IS IN-MEMORY ONLY, and the build says so (SM0015).</b></para>
+    ///
+    /// <c>Map</c> uses it. <c>ProjectTo</c> cannot: a projection has to reach EF as one expression
+    /// it can read all the way down, and there is no general way to graft the properties
+    /// ShiftMapper maps onto an object a delegate returned. A map that uses <c>ConstructUsing</c>
+    /// therefore has no projection, and asking for one throws a message that says this rather
+    /// than failing somewhere inside EF.
+    ///
+    /// If you need the map to project, the answer is usually a constructor ShiftMapper can match
+    /// by name — it handles records and primary constructors without being told — plus
+    /// <c>ForMember</c> for the arguments that need working out. Those DO project, because the
+    /// generator writes the <c>new</c> itself.
+    /// </summary>
+    /// <param name="factory">
+    /// How to build the destination from the source. Called once per mapped object.
+    /// </param>
+    /// <exception cref="ArgumentNullException"><paramref name="factory"/> is null.</exception>
+    public MapExpression<TSource, TDestination> ConstructUsing(Expression<Func<TSource, TDestination>> factory)
+    {
+        if (factory is null)
+            throw new ArgumentNullException(nameof(factory));
+
+        _customizations?.RegisterConstructor(typeof(TSource), typeof(TDestination), factory);
+
+        return this;
+    }
 }

@@ -86,17 +86,25 @@ internal static class DiagnosticDescriptors
                      "a public setter. Get-only and computed properties are skipped silently; this " +
                      "warning is for the ones that look assignable but are not.");
 
-    /// <summary>SM0004 — we cannot write <c>new TDestination { ... }</c> for this type.</summary>
+    /// <summary>
+    /// SM0004 — there is no constructor ShiftMapper can call at all.
+    ///
+    /// It used to mean "no public parameterless constructor", which stopped being the interesting
+    /// case once records and primary constructors became mappable. What is left is the type that
+    /// cannot be built by anybody from outside: an abstract class, an interface, a type whose
+    /// every constructor is private. A type whose constructor merely cannot be FILLED gets
+    /// SM0013 instead, which can name the parameter.
+    /// </summary>
     public static readonly DiagnosticDescriptor CannotConstructDestination = new(
         id: "SM0004",
         title: "Destination type cannot be created by ShiftMapper",
-        messageFormat: "ShiftMapper: no Map method was generated to create '{0}' because it has no public parameterless constructor",
+        messageFormat: "ShiftMapper: no Map method was generated to create '{0}' because it has no constructor ShiftMapper can call",
         category: Category,
         defaultSeverity: DiagnosticSeverity.Warning,
         isEnabledByDefault: true,
-        description: "ShiftMapper builds the destination with an object initializer, so it needs a " +
-                     "public parameterless constructor. Positional records, abstract types and " +
-                     "interfaces cannot be created this way.");
+        description: "ShiftMapper builds a destination with a public constructor, matching its " +
+                     "parameters to source properties by name where it has to. An abstract type, an " +
+                     "interface, or a type with no public constructor cannot be created at all.");
 
     /// <summary>
     /// SM0006 — the SM0001 case, but for the map that <c>ReverseMap()</c> added.
@@ -296,6 +304,76 @@ internal static class DiagnosticDescriptors
                      "so the build stops instead. Ignore the property that points back and the rest of " +
                      "the graph maps as normal.");
 
+    /// <summary>
+    /// SM0013 — the constructor exists and one of its parameters has nothing to fill it.
+    ///
+    /// The message names the PARAMETER, which is the whole reason this is not SM0004. A record
+    /// whose <c>createdAt</c> has no counterpart on the entity is one <c>ForMember</c> away from
+    /// working, and "BrandDto cannot be constructed" would not have said which one.
+    ///
+    /// Where several constructors are offered, this describes the one that came CLOSEST — fewest
+    /// unfillable parameters — because that is the one the developer is most likely to have
+    /// meant.
+    /// </summary>
+    public static readonly DiagnosticDescriptor ConstructorParameterNotFilled = new(
+        id: "SM0013",
+        title: "Destination cannot be created because a constructor parameter cannot be filled",
+        messageFormat: "ShiftMapper: no Map method was generated to create '{0}' because its constructor parameter '{1}' ({2}) cannot be filled from '{3}'",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "ShiftMapper matches constructor parameters to source properties by name and " +
+                     "converts them the same way it converts members. Give the source a property of " +
+                     "that name, or supply the value with ForMember on the destination member the " +
+                     "parameter stands for — on a positional record they are the same name.");
+
+    /// <summary>
+    /// SM0014 — a <c>required</c> member nothing fills.
+    ///
+    /// This one is not a property left empty: C# REFUSES an object initializer that leaves a
+    /// required member out, so the destination cannot be built at all. Saying so here is the
+    /// difference between one sentence and a CS9035 inside a generated file the developer cannot
+    /// open.
+    ///
+    /// A constructor carrying <c>[SetsRequiredMembers]</c> is the author's promise to fill them
+    /// itself, and silences this for every member of that type.
+    /// </summary>
+    public static readonly DiagnosticDescriptor RequiredMemberNotFilled = new(
+        id: "SM0014",
+        title: "Destination cannot be created because a required member is not mapped",
+        messageFormat: "ShiftMapper: no Map method was generated to create '{0}' because its required member '{1}' ({2}) is not mapped",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "C# refuses an object initializer that leaves a required member unset, so an " +
+                     "unmapped one stops the whole destination rather than just itself. Map it, fill " +
+                     "it with ForMember, or drop `required` if the member is not really required.");
+
+    /// <summary>
+    /// SM0015 — the map builds its destination with <c>ConstructUsing</c>, so it cannot be
+    /// projected.
+    ///
+    /// <c>Map</c> works and is unaffected. <c>ProjectTo</c> cannot: a projection has to reach EF
+    /// as one expression it can read all the way down, and there is no general way to graft the
+    /// mapped properties onto an object a delegate returned.
+    ///
+    /// INFORMATIONAL, because this is the feature doing what it says rather than a mistake — and
+    /// because the alternative reading, that every ConstructUsing is suspect, is not true. It is
+    /// here so that "why does ProjectTo throw for this one map" is answered at build time instead
+    /// of at run time.
+    /// </summary>
+    public static readonly DiagnosticDescriptor ConstructUsingIsNotProjectable = new(
+        id: "SM0015",
+        title: "Map cannot be projected because it builds its destination with ConstructUsing",
+        messageFormat: "ShiftMapper: the map from '{0}' to '{1}' builds its destination with ConstructUsing, so ProjectTo cannot use it; Map is unaffected",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Info,
+        isEnabledByDefault: true,
+        description: "A projection is handed to the database as one expression, and a factory " +
+                     "delegate is opaque to it. Records and primary constructors project fine when " +
+                     "ShiftMapper picks the constructor itself, so ForMember on the members the " +
+                     "arguments stand for is usually the projectable way to say the same thing.");
+
     /// <summary>SM0005 — the whole mapper produced nothing.</summary>
     public static readonly DiagnosticDescriptor MapperSkipped = new(
         id: "SM0005",
@@ -328,6 +406,9 @@ internal static class DiagnosticDescriptors
         ParsedConversion,
         NarrowingConversion,
         NoMapForNestedProperty,
-        CircularNesting);
+        CircularNesting,
+        ConstructorParameterNotFilled,
+        RequiredMemberNotFilled,
+        ConstructUsingIsNotProjectable);
 }
 

@@ -340,6 +340,50 @@ public partial class AppMapper : ShiftMapperBase
             .ForMember(d => d.Number, opt => opt.MapFrom(s => _numbering.Prefix + s.Number));
 
         // ------------------------------------------------------------------
+        // DESTINATIONS THAT ARE NOT `new T { }`.
+        // ------------------------------------------------------------------
+        //
+        // A POSITIONAL RECORD, which until constructor support was SM0004 and nothing else.
+        // Nothing is configured here: a constructor parameter is a destination member that
+        // happens to be written inside the parentheses, so it matches a source property by name,
+        // converts when the types differ, and maps a nested object when a CreateMap exists.
+        //
+        //   return new ProductSummaryDto(
+        //       source.Id, source.Name, source.Sku,
+        //       ValueConverter.ToInvariantString(source.Price),      // decimal -> string
+        //       MapToBrandSummaryDto(source.Brand));                 // a record inside a record
+        //
+        // AND IT PROJECTS, which is the reason it is worth having: GET /api/products/summary
+        // hands EF one `new` with real arguments. See ProductSummaryDto.
+        CreateMap<Brand, BrandSummaryDto>();
+        CreateMap<Product, ProductSummaryDto>();
+
+        // REQUIRED MEMBERS. C# refuses an object initializer that leaves one out, so an unmapped
+        // required member stops the whole destination rather than just itself — and the build
+        // says which one (SM0014) instead of leaving a CS9035 inside a generated file.
+        //
+        // Total is the interesting one: required AND customized. A customized member is normally
+        // absent from the generated projection, and a required one cannot be, so the projection
+        // names it with a placeholder that Compose replaces. Delete this ForMember to watch
+        // SM0014 arrive. See InvoiceReceiptDto.
+        CreateMap<Invoice, InvoiceReceiptDto>()
+            .ForMember(d => d.Total, opt => opt.MapFrom(s => s.Lines.Sum(l => l.Quantity * l.UnitPrice).ToString("0.00")));
+
+        // CONSTRUCTUSING, for the case convention cannot reach: no constructor ShiftMapper could
+        // pick would know about the numbering service. It replaces CONSTRUCTION and nothing else
+        // — CustomerName is still mapped by name onto the object this expression returned.
+        //
+        // The cost is stated at build time rather than discovered at run time:
+        //
+        //   info SM0015: the map from 'Invoice' to 'InvoiceLabelDto' builds its destination with
+        //                ConstructUsing, so ProjectTo cannot use it; Map is unaffected
+        //
+        // GET /api/invoices/{id}/label?project=true asks for the projection anyway, to show what
+        // the refusal reads like.
+        CreateMap<Invoice, InvoiceLabelDto>()
+            .ConstructUsing(s => new InvoiceLabelDto(_numbering.Prefix + s.Number));
+
+        // ------------------------------------------------------------------
         // DICTIONARIES — the other shape a collection comes in.
         // ------------------------------------------------------------------
         //

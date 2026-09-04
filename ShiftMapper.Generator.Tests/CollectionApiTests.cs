@@ -1,4 +1,4 @@
-using ShiftMapper.Generator.Tests.Infrastructure;
+﻿using ShiftMapper.Generator.Tests.Infrastructure;
 using Xunit;
 
 namespace ShiftMapper.Generator.Tests;
@@ -183,7 +183,7 @@ public class CollectionApiTests
             using ShiftMapper;
 
             public class Source { public int Id { get; set; } }
-            public class Destination { public Destination(int id) { Id = id; } public int Id { get; set; } }
+            public abstract class Destination { public int Id { get; set; } }
 
             public partial class TestMapper : ShiftMapperBase
             {
