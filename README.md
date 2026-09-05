@@ -168,6 +168,55 @@ ShiftMapper answer alike.
 Both backends are generated from the same analysis, so `Map` and `ProjectTo` agree on what a
 map means.
 
+### Flattening and naming conventions
+
+A destination member with no source of its own is filled by WALKING into the source —
+`OrderDto.CustomerName` from `Order.Customer.Name`. It is **on by default**, so this is the whole
+map:
+
+```csharp
+CreateMap<InvoiceLine, InvoiceLineFlatDto>();
+
+// and this turns it off, per map or for a whole mapper in ConfigureDefaults
+CreateMap<Order, OrderDto>(o => o.Flattening = false);
+```
+
+The name is split on PascalCase boundaries and re-joined every way that resolves, each step matched
+by this map's own `Matching` rule. The leaf goes through the conversion table like any other member,
+so a `decimal Price` fills a `string ProductPrice` with no extra configuration. **It projects**: the
+chain reaches EF as one expression, so it becomes a join rather than a second query.
+
+**It is a guess, and SM0020 is how you audit it.** Nothing in the name `CustomerName` says it
+means `Customer.Name` rather than a column nobody has added yet — so every member flattening fills
+is reported, **with the path it chose**, as an informational **SM0020**. That is the audit trail
+AutoMapper does not give you. Raise it where the maps matter:
+`dotnet_diagnostic.SM0020.severity = warning`.
+
+Two things keep the guessing narrow. Flattening **never competes with a real property** — it runs
+only where the direct match already failed, so it can only fill something that would otherwise have
+been SM0001. And a name that resolves **more than one way** is refused outright, not decided.
+
+The limits are as deliberate as the switch:
+
+- **It will not walk into a `string`**, so `NameLength` never quietly becomes `Name.Length`. Nor
+  into a collection or a nullable value type — neither has one traversal to pick.
+- **Two paths is a question, not a tie to break.** When a name resolves more than one way the member
+  is left unmapped and both paths are named (**SM0021**).
+- **A nullable step is guarded**, a required one is not: `source.X == null ? default(string)! :
+  source.X.Y`, which runs in memory and translates to a `CASE WHEN`. Guarding a required
+  relationship would change its SQL to defend against a null the model says cannot happen. Note the
+  consequence — a guarded `int` leaf lands as `0`, indistinguishable from a real zero.
+
+**Naming conventions** widen a plain match, and apply to each step of a walk:
+
+```csharp
+CreateMap<DbBrand, BrandDto>(o => o.RecognizePrefixes("Db"));    // Name  <- DbName
+CreateMap<Order, OrderDto>(o => o.RecognizePostfixes("Id"));     // Customer <- CustomerId
+```
+
+The bare name is always tried first, so a source declaring both `Name` and `DbName` is not
+ambiguous. All three settings can be stated once for a whole mapper in `ConfigureDefaults`.
+
 ### Map-level hooks
 
 Four things can be said about a map as a whole, and they divide on one question — **can it be an
@@ -375,8 +424,8 @@ and think. Each is reported as SM0002 rather than skipped in silence.
 
 ## Diagnostics
 
-Nineteen rules, `SM0001` to `SM0019`. Three stop the build; the rest describe something that will
-not be mapped, or will be mapped in a way worth knowing about.
+Twenty-one rules, `SM0001` to `SM0021`. Three stop the build; the rest describe something that
+will not be mapped, or will be mapped in a way worth knowing about.
 
 | Id | Default | What it means |
 |---|---|---|
@@ -399,6 +448,8 @@ not be mapped, or will be mapped in a way worth knowing about.
 | SM0017 | Warning | The map carries a `Condition`, so `ProjectTo` cannot use it |
 | SM0018 | Warning | The map runs a `BeforeMap`/`AfterMap` hook, so `ProjectTo` cannot use it |
 | SM0019 | Warning | `ConvertUsing` replaces the whole map, so other configuration does nothing |
+| SM0020 | Info | A destination property was filled by flattening (names the path) |
+| SM0021 | Warning | A destination property flattens more than one way, so none was taken |
 
 `SM0011` is an error because a null nested object in a response looks exactly like a null in the
 database. Two ways forward, both one line: declare the map, or `opt.Ignore()` the property.
@@ -442,9 +493,9 @@ dotnet_diagnostic.SM0001.severity = none
 
 ## Status
 
-What works today is listed above. What does not exist yet — `NullSubstitute`, flattening,
-inheritance, open generics, and the global configuration layer a library needs — is laid out in
-order in [PLAN.md](PLAN.md), which is the roadmap this repository is built from.
+What works today is listed above. What does not exist yet — `NullSubstitute`, inheritance, open
+generics, and the global configuration layer a library needs — is laid out in order in
+[PLAN.md](PLAN.md), which is the roadmap this repository is built from.
 
 ## License
 

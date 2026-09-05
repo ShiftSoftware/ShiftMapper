@@ -468,6 +468,92 @@ Content-Type: application/json
   "foundedYear": 1888
 }
 
+### 1k. FLATTENING — reading VALUES out of a graph rather than mapping objects.
+#
+#     InvoiceLineFlatDto carries the product, its brand and its stock BESIDE the line instead of
+#     nested inside it — the shape a grid or a CSV export wants. The whole map is one line, with
+#     no option at all, because flattening is ON by default:
+#
+#         CreateMap<InvoiceLine, InvoiceLineFlatDto>();
+#
+#     Every name is split on its PascalCase boundaries and walked into the source:
+#
+#         ProductName       -> Product.Name
+#         ProductBrandName  -> Product.Brand.Name
+#         ProductStockCity  -> Product.Stock.City
+#         ProductPrice      -> Product.Price, AND converted to text on the way, because a
+#                              flattened leaf goes through the same table a direct match uses
+#
+#     Compare it with request 2, the same data NESTED: that one needs a CreateMap for every type
+#     in the graph, and this one needs none. It is not mapping objects at all — it is reading
+#     values out of them.
+#
+#     IT IS ON BY DEFAULT, as it is in AutoMapper. Turn it off with o.Flattening = false, per map
+#     or for a whole mapper in ConfigureDefaults, and these members go back to being SM0001.
+#
+#     It is still a GUESS — nothing in the name ProductName says it means Product.Name rather
+#     than a column nobody has added yet — so every member it fills is reported WITH THE PATH:
+#
+#         info SM0020: 'InvoiceLineFlatDto.ProductBrandName' is filled by flattening,
+#                      from 'InvoiceLine.Product.Brand.Name'
+#
+#     Informational, so a normal build stays quiet; raise it where the maps matter with
+#     dotnet_diagnostic.SM0020.severity = warning.
+GET {{HostAddress}}/api/invoices/lines/flat
+Accept: application/json
+
+### 1k2. THE SQL, and the request to read for what is NOT in it:
+#
+#         SELECT [i].[Id], [i].[Quantity], [i].[UnitPrice],
+#                [p].[Name] AS [ProductName], [p].[Sku] AS [ProductSku],
+#                CONVERT(varchar(100), [p].[Price]) AS [ProductPrice],
+#                [b].[Name] AS [ProductBrandName], [s].[City] AS [ProductStockCity]
+#         FROM [InvoiceLines] AS [i]
+#         INNER JOIN [Products] AS [p] ON [i].[ProductId] = [p].[Id]
+#         INNER JOIN [Brands]   AS [b] ON [p].[BrandId]   = [b].[Id]
+#         INNER JOIN [Stocks]   AS [s] ON [p].[StockId]   = [s].[Id]
+#
+#     ONE query, three joins, eight columns. Two absences are the interesting part:
+#
+#       * NO CASE. Every step of this chain is a REQUIRED navigation (the entity declares them
+#         `= null!`), so no null guard is emitted. A step declared NULLABLE would get one
+#         — `source.X == null ? default(string)! : source.X.Y` — which translates to a
+#         CASE WHEN and runs in memory too. Guarding a required relationship would change its
+#         SQL to defend against a null the model says cannot happen.
+#       * NO [Brands].[Country]. Nothing on the DTO asks for it, so it is not read. That is the
+#         same thing ProjectTo has always bought, reaching two levels down a chain nobody
+#         wrote an Include for.
+GET {{HostAddress}}/api/invoices/lines/flat?sql=true
+Accept: text/plain
+
+### 1k3. THE TWO THINGS FLATTENING WILL NOT DO — both edits rather than requests.
+#
+#     (a) IT WILL NOT WALK INTO A STRING.
+#
+#     Add `public int ProductNameLength { get; set; }` to InvoiceLineFlatDto and it stays
+#     unmapped, reported as SM0001, rather than quietly becoming Product.Name.Length. That is
+#     the surprise every flattening mapper is remembered for, and a ForMember says it better.
+#     A collection and a nullable value type are excluded for the same reason: there is no one
+#     traversal the generator could pick.
+#
+#     (b) TWO PATHS IS A QUESTION, NOT A TIE TO BREAK.
+#
+#     If a source carried both `Order` (with a CustomerName) and `OrderCustomer` (with a Name),
+#     then OrderCustomerName resolves two ways — and ShiftMapper maps neither:
+#
+#         warning SM0021: 'X.OrderCustomerName' is not mapped because flattening resolves it
+#                         more than one way: Order.CustomerName, OrderCustomer.Name
+#
+#     Same answer SM0007 gives two source names differing only by case. Name it with ForMember.
+#
+#     NAMING CONVENTIONS are the other half of this step and have no natural home in this
+#     schema, so they live in the tests: o.RecognizePrefixes("Db") lets a destination `Name` be
+#     filled by a source `DbName`, and o.RecognizePostfixes("Id") lets `Customer` be filled by
+#     `CustomerId`. The bare name is always tried first, so a source declaring both is not
+#     ambiguous, and both apply to every step of a flattened path.
+GET {{HostAddress}}/api/invoices/lines/flat
+Accept: application/json
+
 ### 2. Invoices — THE MAP AS A DATABASE QUERY.
 #     db.Invoices.ProjectTo<InvoiceDto>(mapper), and again not one Include, yet the response
 #     is four levels deep: invoice -> lines -> product -> brand and stock.

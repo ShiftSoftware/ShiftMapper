@@ -84,6 +84,15 @@ public partial class TestMapper : ShiftMapperBase
         CreateMap<ProfileUpdate, ProfileBlanket>()
             .ForAllMembers(opt => opt.Condition((s, d, value) => value is string text && text.Length > 0));
 
+        // FLATTENING, opt-in. Nothing here is configured per member: ProductName walks
+        // Product.Name and ProductBrandName walks Product.Brand.Name, with the leaf converted by
+        // the same table a direct match uses. Both navigations are non-nullable, so no guard.
+        CreateMap<InvoiceLine, InvoiceLineFlatDto>(o => o.Flattening = true);
+
+        // The same, through an OPTIONAL step. Catalog.Owner is nullable, so every member reached
+        // through it is guarded — and a null owner leaves the string null and the int zero.
+        CreateMap<Catalog, CatalogOwnerDto>(o => o.Flattening = true);
+
         // MAPFROMSOURCE. Lines.Count is an int and LineCount is text, so MapFrom could not say
         // this at all — its expression has to return the destination member's type. The
         // conversion is the table's, so it projects, and both backends agree.

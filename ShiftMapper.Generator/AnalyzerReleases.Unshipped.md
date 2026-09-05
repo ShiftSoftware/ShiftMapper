@@ -25,3 +25,5 @@ SM0016 | ShiftMapper | Error | Member cannot be given a Condition because its va
 SM0017 | ShiftMapper | Warning | Map cannot be projected because a member carries a Condition
 SM0018 | ShiftMapper | Warning | Map cannot be projected because it runs a BeforeMap or AfterMap hook
 SM0019 | ShiftMapper | Warning | Configuration has no effect because ConvertUsing replaces the whole map
+SM0020 | ShiftMapper | Info | Destination property is filled by flattening
+SM0021 | ShiftMapper | Warning | Destination property could be flattened more than one way

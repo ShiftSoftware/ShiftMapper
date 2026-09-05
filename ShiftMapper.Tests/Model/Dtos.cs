@@ -146,6 +146,51 @@ public class ProfileBlanket
 }
 
 /// <summary>
+/// FLATTENED: a line of an invoice with the product and brand pulled up beside it, so nothing here
+/// is a nested DTO.
+///
+/// Not one member is configured. <c>ProductName</c> walks <c>Product.Name</c>,
+/// <c>ProductBrandName</c> walks <c>Product.Brand.Name</c>, and <c>ProductPrice</c> walks
+/// <c>Product.Price</c> AND converts the decimal to text on the way — a flattened leaf goes
+/// through the same conversion table a directly matched one does.
+///
+/// Both navigations are declared non-nullable (<c>= null!</c>), which is the model saying the
+/// relationship is required — so the generated chain carries no null guard and the projection is
+/// a plain INNER JOIN.
+/// </summary>
+public class InvoiceLineFlatDto
+{
+    public int Id { get; set; }
+
+    public int Quantity { get; set; }
+
+    public string ProductName { get; set; } = string.Empty;
+
+    public string ProductSku { get; set; } = string.Empty;
+
+    /// <summary>Converted as well as walked: the entity holds a decimal.</summary>
+    public string ProductPrice { get; set; } = string.Empty;
+
+    /// <summary>Two steps, and the reason the search re-joins the split rather than taking the first.</summary>
+    public string ProductBrandName { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// The same idea where a step is OPTIONAL, which is what the null guard is for.
+///
+/// <c>Catalog.Owner</c> is declared nullable, so every member reached through it is guarded — and
+/// the two leaf kinds answer differently: a <c>string</c> lands as null, an <c>int</c> lands as
+/// <c>0</c>. That is the ordinary "absence becomes the default" rule rather than a special case,
+/// and it is the reason a guarded value leaf cannot be told from a real zero.
+/// </summary>
+public class CatalogOwnerDto
+{
+    public string OwnerName { get; set; } = string.Empty;
+
+    public int OwnerAge { get; set; }
+}
+
+/// <summary>
 /// A value the entity does not store, converted by ShiftMapper rather than by hand.
 ///
 /// <c>LineCount</c> is text and <c>Invoice.Lines.Count</c> is an int, so <c>MapFrom</c> could not

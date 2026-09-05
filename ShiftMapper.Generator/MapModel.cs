@@ -41,8 +41,12 @@ internal sealed class MapModel
         bool convertsWithExpression,
         bool hasBeforeMap,
         bool hasAfterMap,
-        ImmutableArray<string> deadConfiguration)
+        ImmutableArray<string> deadConfiguration,
+        ImmutableArray<FlattenedMember> flattenedMembers,
+        ImmutableArray<FlattenedMember> ambiguousFlattening)
     {
+        FlattenedMembers = flattenedMembers;
+        AmbiguousFlattening = ambiguousFlattening;
         ConvertsWithExpression = convertsWithExpression;
         HasBeforeMap = hasBeforeMap;
         HasAfterMap = hasAfterMap;
@@ -149,6 +153,23 @@ internal sealed class MapModel
     /// the developer's expression rather than something composed.
     /// </summary>
     public bool ConvertsWithExpression { get; }
+
+    /// <summary>
+    /// Members filled by FLATTENING — walking into the source because nothing on it carried the
+    /// destination member's own name — each with the path it took.
+    ///
+    /// Reported as SM0020, informational. Flattening is a guess the developer asked for, and being
+    /// able to read the guesses back is most of what makes an opt-in convention safe to turn on.
+    /// </summary>
+    public ImmutableArray<FlattenedMember> FlattenedMembers { get; }
+
+    /// <summary>
+    /// Members flattening refused because MORE than one path resolved, with the competing paths.
+    ///
+    /// Reported as SM0021 and left unmapped. Two answers is a question only the developer can
+    /// settle, and picking one would be the silent guess this library exists not to make.
+    /// </summary>
+    public ImmutableArray<FlattenedMember> AmbiguousFlattening { get; }
 
     /// <summary>Whether the map declared a <c>BeforeMap</c> hook.</summary>
     public bool HasBeforeMap { get; }
@@ -369,7 +390,8 @@ internal sealed class MapModel
             WritablePropertyNames, UnmappedProperties, ConvertedProperties, CustomProperties,
             nestedProperties, DestinationName, Location, IsReverse, AllowNullCollections,
             Constructor, ConstructionProblems, ConstructsWithFactory, ConditionedMembers,
-            RefusedConditions, ConvertsWithExpression, HasBeforeMap, HasAfterMap, DeadConfiguration);
+            RefusedConditions, ConvertsWithExpression, HasBeforeMap, HasAfterMap, DeadConfiguration,
+            FlattenedMembers, AmbiguousFlattening);
 
     /// <summary>
     /// The same map with a constructor argument's nested value settled, produced by the resolve
@@ -385,5 +407,6 @@ internal sealed class MapModel
             WritablePropertyNames, UnmappedProperties, ConvertedProperties, CustomProperties,
             NestedProperties, DestinationName, Location, IsReverse, AllowNullCollections,
             constructor, ConstructionProblems, ConstructsWithFactory, ConditionedMembers,
-            RefusedConditions, ConvertsWithExpression, HasBeforeMap, HasAfterMap, DeadConfiguration);
+            RefusedConditions, ConvertsWithExpression, HasBeforeMap, HasAfterMap, DeadConfiguration,
+            FlattenedMembers, AmbiguousFlattening);
 }

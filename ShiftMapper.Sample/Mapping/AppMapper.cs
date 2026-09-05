@@ -397,6 +397,36 @@ public partial class AppMapper : ShiftMapperBase
             .ForMember(d => d.LineCount, opt => opt.MapFromSource(s => s.Lines.Count));
 
         // ------------------------------------------------------------------
+        // FLATTENING — reading VALUES out of a graph rather than mapping objects.
+        // ------------------------------------------------------------------
+        //
+        // One option, no per-member configuration. Each name on InvoiceLineFlatDto is split on its
+        // PascalCase boundaries and walked into the source:
+        //
+        //   ProductName       -> Product.Name
+        //   ProductBrandName  -> Product.Brand.Name
+        //   ProductPrice      -> Product.Price, converted to text by the same table a direct
+        //                        match would have used
+        //
+        // Compare it with the InvoiceLine -> InvoiceLineDto map above, which is the same data
+        // NESTED: that one needs a CreateMap for every type in the graph, and this one needs none.
+        //
+        // ON BY DEFAULT, so this map needs no option at all — which is the point: a destination
+        // that reads like a path just works. Turn it off with o.Flattening = false, per map or for
+        // a whole mapper in ConfigureDefaults, and these members go back to being SM0001.
+        //
+        // It is still a GUESS, so every member it fills is reported WITH THE PATH IT CHOSE:
+        //
+        //   info SM0020: 'InvoiceLineFlatDto.ProductBrandName' is filled by flattening,
+        //                from 'InvoiceLine.Product.Brand.Name'
+        //
+        // Raise that where the maps matter:  dotnet_diagnostic.SM0020.severity = warning
+        //
+        // GET /api/invoices/lines/flat?sql=true is ONE query with three joins. See
+        // InvoiceLineFlatDto for what is deliberately NOT in it.
+        CreateMap<InvoiceLine, InvoiceLineFlatDto>();
+
+        // ------------------------------------------------------------------
         // CONDITION — how the update overload stops being a PUT.
         // ------------------------------------------------------------------
         //

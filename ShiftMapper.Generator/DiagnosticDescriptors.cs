@@ -465,6 +465,49 @@ internal static class DiagnosticDescriptors
                      "afterwards. Delete the configuration it ignores, or fold what it does into " +
                      "the ConvertUsing expression.");
 
+    /// <summary>
+    /// SM0020 — a member FLATTENING filled, and the path it walked.
+    ///
+    /// INFORMATIONAL, and it is the price of the feature rather than a complaint about it.
+    /// Flattening is a GUESS: nothing in <c>CustomerName</c> says it means <c>Customer.Name</c>
+    /// rather than a column somebody has not added yet. The developer asked for the guess by
+    /// turning it on; this is how they read back which guesses were made, in the IDE and under
+    /// <c>dotnet build -v d</c>, without a normal build filling up with them.
+    ///
+    /// Raise it where flattening is on and the maps matter:
+    /// <c>dotnet_diagnostic.SM0020.severity = warning</c>.
+    /// </summary>
+    public static readonly DiagnosticDescriptor FlattenedMember = new(
+        id: "SM0020",
+        title: "Destination property is filled by flattening",
+        messageFormat: "ShiftMapper: '{0}.{1}' is filled by flattening, from '{2}.{3}'",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Info,
+        isEnabledByDefault: true,
+        description: "Flattening walks into the source when no property carries the destination " +
+                     "member's own name. It is off unless the map asks for it, and every member it " +
+                     "fills is named here so the conventions can be checked rather than trusted.");
+
+    /// <summary>
+    /// SM0021 — more than one path flattens to the same member, so none is taken.
+    ///
+    /// The member is left unmapped and reported. A source carrying both <c>Order</c> (with a
+    /// <c>CustomerName</c>) and <c>OrderCustomer</c> (with a <c>Name</c>) makes
+    /// <c>OrderCustomerName</c> a genuine question, and picking the first would be exactly the
+    /// silent guess this library exists not to make — the same answer SM0007 gives two source
+    /// names differing only by case.
+    /// </summary>
+    public static readonly DiagnosticDescriptor AmbiguousFlattening = new(
+        id: "SM0021",
+        title: "Destination property could be flattened more than one way",
+        messageFormat: "ShiftMapper: '{0}.{1}' is not mapped because flattening resolves it more than one way: {2}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "Two source paths lead to the same destination member, and only you can say " +
+                     "which was meant. Name it with ForMember, or rename one of the source " +
+                     "properties so the split is unambiguous.");
+
     /// <summary>SM0005 — the whole mapper produced nothing.</summary>
     public static readonly DiagnosticDescriptor MapperSkipped = new(
         id: "SM0005",
@@ -504,6 +547,8 @@ internal static class DiagnosticDescriptors
         MemberCannotBeConditioned,
         ConditionIsNotProjectable,
         HookIsNotProjectable,
-        ConvertUsingIgnoresConfiguration);
+        ConvertUsingIgnoresConfiguration,
+        FlattenedMember,
+        AmbiguousFlattening);
 }
 

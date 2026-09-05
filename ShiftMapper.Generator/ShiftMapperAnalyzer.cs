@@ -263,6 +263,31 @@ public sealed class ShiftMapperAnalyzer : DiagnosticAnalyzer
                     string.Join(" / ", map.DeadConfiguration));
             }
 
+            // SM0020 — what flattening filled, and by which path. Informational: the developer
+            // asked for the guess, and this is how they read it back.
+            foreach (FlattenedMember walked in map.FlattenedMembers)
+            {
+                report.Report(
+                    DiagnosticDescriptors.FlattenedMember,
+                    location,
+                    map.DestinationName,
+                    walked.Destination,
+                    map.SourceName,
+                    walked.Path);
+            }
+
+            // SM0021 — two paths, so neither. The member is unmapped, and this says why in place
+            // of the SM0001 that would otherwise have been reported for it.
+            foreach (FlattenedMember ambiguous in map.AmbiguousFlattening)
+            {
+                report.Report(
+                    DiagnosticDescriptors.AmbiguousFlattening,
+                    location,
+                    map.DestinationName,
+                    ambiguous.Destination,
+                    ambiguous.Path);
+            }
+
             // SM0016 — a Condition on a member there is no assignment to guard. Named per member,
             // because which one it is IS the message.
             foreach (ConditionRefusal refusal in map.RefusedConditions)

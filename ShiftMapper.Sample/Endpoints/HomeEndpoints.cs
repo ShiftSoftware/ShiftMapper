@@ -17,6 +17,7 @@ public static class HomeEndpoints
                 "GET  /api/invoices          (PROJECTION, nested 4 levels; ?sql=true shows the SQL)",
                 "GET  /api/invoices/{id}     (IN MEMORY: mapper.Map<InvoiceDto>(invoice))",
                 "GET  /api/products/summary  (RECORDS: a positional record, projected; ?sql=true)",
+                "GET  /api/invoices/lines/flat (FLATTENING: Product.Brand.Name -> ProductBrandName; ?sql=true)",
                 "GET  /api/brands/labels     (CONVERTUSING: the one map-level hook that projects; ?sql=true)",
                 "GET  /api/invoices/{id}/receipt (REQUIRED members, both backends side by side)",
                 "GET  /api/invoices/{id}/label   (CONSTRUCTUSING; ?project=true shows the refusal)",

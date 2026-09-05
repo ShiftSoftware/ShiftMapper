@@ -190,6 +190,13 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             semanticModel.Compilation, classSymbol, baseClass, mapOptions,
             AllowNullCollectionsOption, cancellationToken) as bool?;
 
+        bool? classDefaultFlattening = ReadClassDefault(
+            semanticModel.Compilation, classSymbol, baseClass, mapOptions,
+            FlatteningOption, cancellationToken) as bool?;
+
+        NamingConventions classDefaultNaming = ReadClassDefaultNaming(
+            semanticModel.Compilation, classSymbol, baseClass, mapOptions, cancellationToken);
+
         var maps = ImmutableArray.CreateBuilder<MapModel>();
         var seen = new HashSet<string>();
 
@@ -214,6 +221,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                          mapOptions,
                          classDefaultCaseSensitive,
                          classDefaultAllowNullCollections,
+                         classDefaultFlattening,
+                         classDefaultNaming,
                          cancellationToken))
             {
                 if (seen.Add(map.Key))
@@ -947,6 +956,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         INamedTypeSymbol? mapOptions,
         bool? classDefaultCaseSensitive,
         bool? classDefaultAllowNullCollections,
+        bool? classDefaultFlattening,
+        NamingConventions classDefaultNaming,
         CancellationToken cancellationToken)
     {
         TypeSyntax sourceSyntax = createMap.TypeArgumentList.Arguments[0];
@@ -966,6 +977,24 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             AllowNullCollectionsOption, cancellationToken) as bool?;
 
         bool allowNullCollections = declaredNullCollections ?? classDefaultAllowNullCollections ?? false;
+
+        // The same three-step precedence again. Flattening's default is TRUE, so a destination
+        // that reads like a path just works — but it is the one option here that GUESSES, so
+        // every member it fills is reported with its path (SM0020), and a name that resolves more
+        // than one way is refused rather than decided (SM0021).
+        bool? declaredFlattening = ReadOption(
+            semanticModel, FirstArgument(invocation), mapOptions,
+            FlatteningOption, cancellationToken) as bool?;
+
+        bool flattening = declaredFlattening ?? classDefaultFlattening ?? true;
+
+        // Prefixes and postfixes REPLACE rather than merge when a map states its own, on the same
+        // reading as every other option: what the map says wins outright, and saying nothing
+        // inherits.
+        NamingConventions declaredNaming = ReadNaming(
+            semanticModel, FirstArgument(invocation), mapOptions, cancellationToken);
+
+        NamingConventions naming = declaredNaming.IsEmpty ? classDefaultNaming : declaredNaming;
 
         // Ask the compiler: what type does the text "Brand" actually refer to here?
         if (semanticModel.GetSymbolInfo(sourceSyntax, cancellationToken).Symbol is not INamedTypeSymbol sourceType)
@@ -988,6 +1017,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             isReverse: false,
             caseSensitive: caseSensitive,
             allowNullCollections: allowNullCollections,
+            flattening: flattening,
+            naming: naming,
             refinements: chain.Forward);
 
         if (chain.ReverseMapName is null)
@@ -1017,6 +1048,13 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             semanticModel, reverseArgument, mapOptions,
             AllowNullCollectionsOption, cancellationToken) as bool?;
 
+        bool? reverseFlattening = ReadOption(
+            semanticModel, reverseArgument, mapOptions,
+            FlatteningOption, cancellationToken) as bool?;
+
+        NamingConventions reverseNaming = ReadNaming(
+            semanticModel, reverseArgument, mapOptions, cancellationToken);
+
         yield return BuildMapModel(
             semanticModel.Compilation,
             destinationType,
@@ -1025,6 +1063,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             isReverse: true,
             caseSensitive: reverseDeclared ?? caseSensitive,
             allowNullCollections: reverseNullCollections ?? allowNullCollections,
+            flattening: reverseFlattening ?? flattening,
+            naming: reverseNaming.IsEmpty ? naming : reverseNaming,
             refinements: chain.Reverse);
     }
 
@@ -1047,6 +1087,9 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// <see cref="ReadOption"/> rather than a parser of its own.
     /// </summary>
     private const string AllowNullCollectionsOption = "AllowNullCollections";
+
+    /// <inheritdoc cref="AllowNullCollectionsOption"/>
+    private const string FlatteningOption = "Flattening";
 
     /// <summary>
     /// Reads the options a configure lambda sets, e.g. the <c>o =&gt; o.Matching = ...</c> in
@@ -1078,6 +1121,96 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// forms work — a one-line expression body and a block setting several options — and is why
     /// a new option costs one call here rather than a parser of its own.
     /// </summary>
+    /// <summary>
+    /// Reads the <c>RecognizePrefixes</c> / <c>RecognizePostfixes</c> calls out of one options
+    /// lambda.
+    ///
+    /// A METHOD rather than a property assignment, so <see cref="ReadOption"/> cannot serve: what
+    /// is wanted is the ARGUMENT LIST, and every argument has to be a compile-time constant string
+    /// or there is nothing to bake in. A non-constant one is skipped rather than guessed at, which
+    /// is the same answer <see cref="ReadOption"/> gives a non-constant assignment.
+    ///
+    /// Name first and symbol second, as everywhere else here: some other object's
+    /// <c>RecognizePrefixes</c> must not configure our map.
+    /// </summary>
+    private static NamingConventions ReadNaming(
+        SemanticModel semanticModel,
+        SyntaxNode? scope,
+        INamedTypeSymbol? mapOptions,
+        CancellationToken cancellationToken)
+    {
+        if (scope is null || mapOptions is null)
+            return NamingConventions.Empty;
+
+        var prefixes = ImmutableArray.CreateBuilder<string>();
+        var postfixes = ImmutableArray.CreateBuilder<string>();
+
+        foreach (InvocationExpressionSyntax invocation in scope.DescendantNodesAndSelf().OfType<InvocationExpressionSyntax>())
+        {
+            if (invocation.Expression is not MemberAccessExpressionSyntax access)
+                continue;
+
+            string name = access.Name.Identifier.ValueText;
+
+            if (name != "RecognizePrefixes" && name != "RecognizePostfixes")
+                continue;
+
+            if (semanticModel.GetSymbolInfo(invocation, cancellationToken).Symbol is not IMethodSymbol method
+                || !SymbolEqualityComparer.Default.Equals(method.ContainingType, mapOptions))
+            {
+                continue;
+            }
+
+            ImmutableArray<string>.Builder into = name == "RecognizePrefixes" ? prefixes : postfixes;
+
+            foreach (ArgumentSyntax argument in invocation.ArgumentList.Arguments)
+            {
+                Optional<object?> value = semanticModel.GetConstantValue(argument.Expression, cancellationToken);
+
+                if (value.HasValue && value.Value is string text && text.Length > 0 && !into.Contains(text))
+                    into.Add(text);
+            }
+        }
+
+        return prefixes.Count == 0 && postfixes.Count == 0
+            ? NamingConventions.Empty
+            : new NamingConventions(prefixes.ToImmutable(), postfixes.ToImmutable());
+    }
+
+    /// <summary>
+    /// <see cref="ReadNaming"/> against the mapper's <c>ConfigureDefaults</c> override, so a whole
+    /// mapper can state its conventions once.
+    /// </summary>
+    private static NamingConventions ReadClassDefaultNaming(
+        Compilation compilation,
+        INamedTypeSymbol classSymbol,
+        INamedTypeSymbol baseClass,
+        INamedTypeSymbol? mapOptions,
+        CancellationToken cancellationToken)
+    {
+        if (mapOptions is null)
+            return NamingConventions.Empty;
+
+        foreach (ISymbol member in classSymbol.GetMembers("ConfigureDefaults"))
+        {
+            if (member is not IMethodSymbol method || !OverridesMethodOn(method, baseClass))
+                continue;
+
+            foreach (SyntaxReference reference in method.DeclaringSyntaxReferences)
+            {
+                SyntaxNode syntax = reference.GetSyntax(cancellationToken);
+                SemanticModel model = compilation.GetSemanticModel(syntax.SyntaxTree);
+
+                NamingConventions naming = ReadNaming(model, syntax, mapOptions, cancellationToken);
+
+                if (!naming.IsEmpty)
+                    return naming;
+            }
+        }
+
+        return NamingConventions.Empty;
+    }
+
     private static object? ReadOption(
         SemanticModel semanticModel,
         SyntaxNode? scope,
@@ -1193,6 +1326,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         bool isReverse,
         bool caseSensitive,
         bool allowNullCollections,
+        bool flattening,
+        NamingConventions naming,
         Refinements refinements)
     {
         // ONE PLACE where "what the developer asked for" becomes "what the generated code does".
@@ -1203,7 +1338,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         allowNullCollections |= !ConversionResolver.SupportsNullCollectionPolicy(compilation);
 
         PropertyAnalysis analysis = FindMatchingProperties(
-            compilation, sourceType, destinationType, caseSensitive, allowNullCollections, refinements);
+            compilation, sourceType, destinationType, caseSensitive, allowNullCollections,
+            flattening, naming, refinements);
 
         return new MapModel(
             sourceType: sourceType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
@@ -1232,7 +1368,9 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             convertsWithExpression: refinements.ConvertsWithExpression,
             hasBeforeMap: refinements.HasBeforeMap,
             hasAfterMap: refinements.HasAfterMap,
-            deadConfiguration: DeadConfiguration(refinements));
+            deadConfiguration: DeadConfiguration(refinements),
+            flattenedMembers: analysis.Flattened,
+            ambiguousFlattening: analysis.AmbiguousFlattening);
     }
 
     /// <summary>The result of comparing one source type against one destination type.</summary>
@@ -1249,10 +1387,14 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             ImmutableArray<ConstructionProblem> constructionProblems,
             ImmutableArray<CustomProperty> customized,
             ImmutableArray<string> conditioned,
-            ImmutableArray<ConditionRefusal> refusedConditions)
+            ImmutableArray<ConditionRefusal> refusedConditions,
+            ImmutableArray<FlattenedMember> flattened,
+            ImmutableArray<FlattenedMember> ambiguousFlattening)
         {
             Conditioned = conditioned;
             RefusedConditions = refusedConditions;
+            Flattened = flattened;
+            AmbiguousFlattening = ambiguousFlattening;
             All = all;
             Writable = writable;
             Unmapped = unmapped;
@@ -1273,6 +1415,12 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         /// and would evaluate the developer's expression twice per mapped object.
         /// </summary>
         public ImmutableArray<CustomProperty> Customized { get; }
+
+        /// <summary>Members filled by walking into the source, with the path each one took.</summary>
+        public ImmutableArray<FlattenedMember> Flattened { get; }
+
+        /// <summary>Members flattening refused because more than one path resolved.</summary>
+        public ImmutableArray<FlattenedMember> AmbiguousFlattening { get; }
 
         /// <summary>Members with a live condition.</summary>
         public ImmutableArray<string> Conditioned { get; }
@@ -1339,6 +1487,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         INamedTypeSymbol destinationType,
         bool caseSensitive,
         bool allowNullCollections,
+        bool flattening,
+        NamingConventions naming,
         Refinements refinements)
     {
         // A ConvertUsing map has no members to analyse AT ALL. The expression is the whole map,
@@ -1358,7 +1508,9 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                 constructionProblems: ImmutableArray<ConstructionProblem>.Empty,
                 customized: ImmutableArray<CustomProperty>.Empty,
                 conditioned: ImmutableArray<string>.Empty,
-                refusedConditions: ImmutableArray<ConditionRefusal>.Empty);
+                refusedConditions: ImmutableArray<ConditionRefusal>.Empty,
+                flattened: ImmutableArray<FlattenedMember>.Empty,
+                ambiguousFlattening: ImmutableArray<FlattenedMember>.Empty);
         }
 
         // Properties the developer has already spoken for with a ForMember. opt.Ignore() says
@@ -1409,13 +1561,22 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             }
         }
 
+        // What flattening filled, and what it refused to decide. Both are reported: a member
+        // filled by walking is a GUESS the developer asked for, and being able to read the guesses
+        // back is most of what makes an opt-in convention safe to turn on.
+        //
+        // Declared before the constructor plan because a CONSTRUCTOR ARGUMENT can be flattened too,
+        // and it records into the same list.
+        var flattened = ImmutableArray.CreateBuilder<FlattenedMember>();
+        var ambiguousFlattening = ImmutableArray.CreateBuilder<FlattenedMember>();
+
         // THE CONSTRUCTOR, before anything else. See the remarks above for why the order
         // matters rather than merely reading tidily.
         ConstructionOutcome construction = refinements.ConstructsWithFactory
             ? ConstructionOutcome.Factory
             : PlanConstruction(
                 compilation, sourceType, destinationType, sourceProperties, byIgnoreCase,
-                ignored, customized, allowNullCollections);
+                ignored, customized, allowNullCollections, flattening, naming, flattened);
 
         // Members the constructor already fills. Skipped below entirely: not assigned a second
         // time, and not reported as unmapped either, because they ARE mapped.
@@ -1507,10 +1668,19 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             // That ordering is the whole point: a type carrying both Id and ID has each of
             // them find its own exact counterpart before any fallback is considered, so the
             // two can never be mistaken for one another.
-            if (!sourceProperties.TryGetValue(destinationProperty.Name, out IPropertySymbol? sourceProperty))
+            // A naming convention widens the SAME two-step lookup rather than adding a third:
+            // the bare name exactly, then each prefixed and postfixed spelling exactly, then the
+            // whole list again ignoring case. `Name` still beats `DbName` when the source declares
+            // both, which is "exact match wins" applied one level out.
+            string? matchedBy = MatchByName(
+                sourceProperties, byIgnoreCase, naming, destinationProperty.Name,
+                out IPropertySymbol? sourceProperty, out List<IPropertySymbol>? candidates);
+
+            // Only null when nothing matched at all; the two out-parameters carry the rest.
+            _ = matchedBy;
+
+            if (sourceProperty is null)
             {
-                List<IPropertySymbol>? candidates = null;
-                byIgnoreCase?.TryGetValue(destinationProperty.Name, out candidates);
 
                 // Several source names differ only by case and none of them matched exactly,
                 // so there is no right answer. Guessing would silently pick one of the
@@ -1528,21 +1698,83 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                     continue;
                 }
 
-                if (candidates is { Count: 1 })
+                // FLATTENING, and only here — after every direct spelling has failed. It never
+                // competes with a real property, so turning it on cannot change what an existing
+                // map does; it can only fill something that was SM0001 before.
+                if (flattening)
                 {
-                    sourceProperty = candidates[0];
-                }
-                else
-                {
-                    unmapped.Add(new UnmappedProperty(
-                        destinationProperty.Name,
-                        UnmappedReason.NoSourceProperty,
-                        ShortTypeName(destinationProperty.Type),
-                        sourcePropertyType: null));
+                    Flattening.Result walk = Flattening.Resolve(
+                        compilation, sourceType, destinationProperty.Name, caseSensitive, naming);
 
-                    NoteRequired(unfilledRequired, isRequired, destinationProperty);
-                    continue;
+                    if (walk.IsAmbiguous)
+                    {
+                        ambiguousFlattening.Add(new FlattenedMember(
+                            destinationProperty.Name, string.Join(", ", walk.Alternatives)));
+
+                        NoteRequired(unfilledRequired, isRequired, destinationProperty);
+                        continue;
+                    }
+
+                    if (walk.Found)
+                    {
+                        ITypeSymbol leafType = walk.Path[walk.Path.Length - 1].Type;
+                        string path = Flattening.Describe(walk.Path);
+
+                        ValueConversion? walked = ConversionResolver.Resolve(
+                            compilation,
+                            leafType,
+                            destinationProperty.Type,
+                            $"{sourceType.Name}.{path} -> {destinationType.Name}.{destinationProperty.Name}",
+                            allowNullCollections);
+
+                        if (walked is null)
+                        {
+                            unmapped.Add(new UnmappedProperty(
+                                destinationProperty.Name,
+                                UnmappedReason.NotConvertible,
+                                ShortTypeName(destinationProperty.Type),
+                                ShortTypeName(leafType)));
+
+                            NoteRequired(unfilledRequired, isRequired, destinationProperty);
+                            continue;
+                        }
+
+                        var walkedPair = new PropertyPair(
+                            destinationProperty.Name,
+                            path,
+                            walked.Template,
+                            walked.QueryTemplate,
+                            Flattening.Access(walk.Path, query: false),
+                            Flattening.Access(walk.Path, query: true));
+
+                        all.Add(walkedPair);
+
+                        if (!setter.IsInitOnly)
+                            writable.Add(walkedPair);
+
+                        if (walked.Risk != ConversionRisk.None)
+                        {
+                            converted.Add(new ConvertedProperty(
+                                destinationProperty.Name,
+                                ShortTypeName(leafType),
+                                ShortTypeName(destinationProperty.Type),
+                                walked.Risk,
+                                walked.Note));
+                        }
+
+                        flattened.Add(new FlattenedMember(destinationProperty.Name, path));
+                        continue;
+                    }
                 }
+
+                unmapped.Add(new UnmappedProperty(
+                    destinationProperty.Name,
+                    UnmappedReason.NoSourceProperty,
+                    ShortTypeName(destinationProperty.Type),
+                    sourcePropertyType: null));
+
+                NoteRequired(unfilledRequired, isRequired, destinationProperty);
+                continue;
             }
 
             // The names line up. Can the types? The answer is either the C# that converts
@@ -1748,7 +1980,67 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             constructionProblems: problems,
             customized: stillMembers,
             conditioned: conditioned.ToImmutable(),
-            refusedConditions: refusedConditions.ToImmutable());
+            refusedConditions: refusedConditions.ToImmutable(),
+            flattened: flattened.ToImmutable(),
+            ambiguousFlattening: ambiguousFlattening.ToImmutable());
+    }
+
+    /// <summary>
+    /// The source property for one destination name, by the map's own two-step rule, widened by
+    /// its naming conventions.
+    ///
+    /// EXACT FIRST, for every candidate spelling, before ANY case-insensitive attempt. That
+    /// ordering is the one the direct match has always used, and extending it rather than adding
+    /// a separate prefix pass is what keeps a source declaring both <c>Name</c> and <c>DbName</c>
+    /// unambiguous.
+    ///
+    /// Returns the candidate that matched, or null when nothing did; <paramref name="candidates"/>
+    /// carries the competing case-insensitive matches so the caller can report SM0007 as before.
+    /// </summary>
+    private static string? MatchByName(
+        Dictionary<string, IPropertySymbol> sourceProperties,
+        Dictionary<string, List<IPropertySymbol>>? byIgnoreCase,
+        NamingConventions naming,
+        string name,
+        out IPropertySymbol? match,
+        out List<IPropertySymbol>? candidates)
+    {
+        candidates = null;
+
+        foreach (string candidate in naming.Candidates(name))
+        {
+            if (sourceProperties.TryGetValue(candidate, out IPropertySymbol? exact))
+            {
+                match = exact;
+                return candidate;
+            }
+        }
+
+        if (byIgnoreCase is not null)
+        {
+            foreach (string candidate in naming.Candidates(name))
+            {
+                if (!byIgnoreCase.TryGetValue(candidate, out List<IPropertySymbol>? bucket))
+                    continue;
+
+                // Several source names differing only by case, and no exact match to settle it.
+                // Reported by the caller rather than guessed at — and reported for the FIRST
+                // candidate that is ambiguous, since a later prefixed spelling matching cleanly
+                // would not make the bare name any less of a question.
+                if (bucket.Count > 1)
+                {
+                    candidates = bucket;
+                    match = null;
+                    return null;
+                }
+
+                match = bucket[0];
+                return candidate;
+            }
+        }
+
+        match = null;
+        return null;
     }
 
     /// <summary>
@@ -1871,7 +2163,10 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         Dictionary<string, List<IPropertySymbol>>? byIgnoreCase,
         HashSet<string> ignored,
         Dictionary<string, CustomProperty> customized,
-        bool allowNullCollections)
+        bool allowNullCollections,
+        bool flattening,
+        NamingConventions naming,
+        ImmutableArray<FlattenedMember>.Builder flattened)
     {
         // Every struct has a parameterless constructor, including a positional record struct, so
         // the object-initializer path always applies and its members are settable.
@@ -1925,11 +2220,17 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             var arguments = ImmutableArray.CreateBuilder<ConstructorArgument>(constructor.Parameters.Length);
             var problems = ImmutableArray.CreateBuilder<ConstructionProblem>();
 
+            // Collected per CANDIDATE and merged only if this constructor is the one chosen. A
+            // greedier constructor that is probed and then abandoned must not leave its guesses
+            // behind for the analyzer to report.
+            var flattenedHere = new List<FlattenedMember>();
+
             foreach (IParameterSymbol parameter in constructor.Parameters)
             {
                 ConstructorArgument? argument = FillParameter(
                     compilation, sourceType, destinationType, sourceProperties, byIgnoreCase,
-                    ignored, customized, allowNullCollections, parameter);
+                    ignored, customized, allowNullCollections, flattening, naming, flattenedHere,
+                    parameter);
 
                 if (argument is null)
                 {
@@ -1945,7 +2246,11 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             }
 
             if (problems.Count == 0)
+            {
+                flattened.AddRange(flattenedHere);
+
                 return ConstructionOutcome.Chosen(new ConstructorPlan(arguments.ToImmutable()), SetsRequired(constructor));
+            }
 
             if (!haveClosest || problems.Count < closest.Length)
             {
@@ -1973,6 +2278,9 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         HashSet<string> ignored,
         Dictionary<string, CustomProperty> customized,
         bool allowNullCollections,
+        bool flattening,
+        NamingConventions naming,
+        List<FlattenedMember> flattened,
         IParameterSymbol parameter)
     {
         string parameterType = parameter.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
@@ -1988,17 +2296,49 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         if (customized.TryGetValue(member, out CustomProperty? custom))
             return new ConstructorArgument(parameter.Name, parameterType, member, null, custom, null);
 
-        if (!sourceProperties.TryGetValue(member, out IPropertySymbol? sourceProperty))
-        {
-            List<IPropertySymbol>? candidates = null;
-            byIgnoreCase?.TryGetValue(member, out candidates);
+        MatchByName(sourceProperties, byIgnoreCase, naming, member, out IPropertySymbol? sourceProperty, out _);
 
-            // Several source names differing only by case is no more answerable here than it is
-            // for a property; the difference is that here it costs the whole constructor.
-            if (candidates is not { Count: 1 })
+        if (sourceProperty is null)
+        {
+            // FLATTENING reaches an argument exactly as it reaches a member — a record's
+            // BrandName parameter is filled from Brand.Name by the same walk. An argument cannot
+            // be left half-filled, so an ambiguous one simply does not resolve and the parameter
+            // is reported unfillable (SM0013), which names it.
+            if (!flattening)
                 return null;
 
-            sourceProperty = candidates[0];
+            Flattening.Result walk = Flattening.Resolve(
+                compilation, sourceType, member, caseSensitive: byIgnoreCase is null, naming);
+
+            if (!walk.Found)
+                return null;
+
+            ITypeSymbol walkedLeaf = walk.Path[walk.Path.Length - 1].Type;
+            string walkedPath = Flattening.Describe(walk.Path);
+
+            ValueConversion? walkedConversion = ConversionResolver.Resolve(
+                compilation, walkedLeaf, parameter.Type,
+                $"{sourceType.Name}.{walkedPath} -> {destinationType.Name}.{parameter.Name}",
+                allowNullCollections);
+
+            if (walkedConversion is null)
+                return null;
+
+            flattened.Add(new FlattenedMember(member, walkedPath));
+
+            return new ConstructorArgument(
+                parameter.Name,
+                parameterType,
+                member,
+                new PropertyPair(
+                    parameter.Name,
+                    walkedPath,
+                    walkedConversion.Template,
+                    walkedConversion.QueryTemplate,
+                    Flattening.Access(walk.Path, query: false),
+                    Flattening.Access(walk.Path, query: true)),
+                null,
+                null);
         }
 
         string mapping = $"{sourceType.Name}.{sourceProperty.Name} -> {destinationType.Name}.{parameter.Name}";
@@ -2085,6 +2425,25 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// Public, non-static, non-indexer properties of a type and everything it inherits from,
     /// most-derived declaration first.
     /// </summary>
+    /// <summary>
+    /// <see cref="GetProperties"/> for a type that may not be a named one, and filtered to the
+    /// properties that can actually be READ.
+    ///
+    /// Flattening needs both: it walks into whatever a property's declared type happens to be, and
+    /// every step of the chain is a get.
+    /// </summary>
+    internal static IEnumerable<IPropertySymbol> ReadableProperties(ITypeSymbol type)
+    {
+        if (type is not INamedTypeSymbol named)
+            yield break;
+
+        foreach (IPropertySymbol property in GetProperties(named))
+        {
+            if (property.GetMethod is not null)
+                yield return property;
+        }
+    }
+
     private static IEnumerable<IPropertySymbol> GetProperties(INamedTypeSymbol type)
     {
         for (INamedTypeSymbol? current = type;

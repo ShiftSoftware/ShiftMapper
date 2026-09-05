@@ -105,6 +105,30 @@ public static class InvoiceEndpoints
         })
         .WithName("CreateInvoice");
 
+        // GET /api/invoices/lines/flat
+        //
+        // FLATTENING. InvoiceLineFlatDto carries the product, its brand and its stock BESIDE the
+        // line rather than nested inside it, and the whole map is one option:
+        //
+        //     CreateMap<InvoiceLine, InvoiceLineFlatDto>(o => o.Flattening = true);
+        //
+        // Add ?sql=true and read for what is missing. Three joins and eight columns — no CASE,
+        // because every step of this chain is a REQUIRED navigation and a guard would only be
+        // there for a null the model says cannot happen; and no Brand.Country, because nothing on
+        // the DTO asks for it.
+        group.MapGet("/lines/flat", (AppDbContext db, AppMapper mapper, bool sql = false) =>
+        {
+            IQueryable<InvoiceLineFlatDto> query = db.InvoiceLines
+                .AsNoTracking()
+                .OrderBy(line => line.Id)
+                .ProjectTo<InvoiceLineFlatDto>(mapper);
+
+            return sql
+                ? Results.Text(query.ToQueryString(), "text/plain")
+                : Results.Ok(query.ToList());
+        })
+        .WithName("GetFlatInvoiceLines");
+
         // GET /api/invoices/{id}/receipt
         //
         // REQUIRED MEMBERS, and both backends side by side so they can be compared.

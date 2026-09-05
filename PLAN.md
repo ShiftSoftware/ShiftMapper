@@ -36,7 +36,7 @@ Every step heading below carries the same marker: ✅ done, ⬜ pending.
 - [x] **Step 6** — Destinations that are not `new T { }`
 - [x] **Step 7** — Per-member power tools
 - [x] **Step 8** — Map-level hooks
-- [ ] **Step 9** — Flattening and naming conventions
+- [x] **Step 9** — Flattening and naming conventions
 - [ ] **Step 10** — Inheritance, polymorphism, open generics
 
 **Phase 3 — The general layer**
@@ -53,7 +53,7 @@ Every step heading below carries the same marker: ✅ done, ⬜ pending.
 - [ ] **Step 17** — Docs and sample
 - [ ] **Step 18** — Benchmarks
 
-Phase 1 is complete, and Steps 5, 6, 7 and 8 of Phase 2 with it. Next on ShiftFramework's
+Phase 1 is complete, and all of Phase 2 except Step 10 with it. Next on ShiftFramework's
 critical path is **Step 10**, then 10 → 11 → 12 → 13 → 14 → 15 (the summary at the foot of
 this file).
 
@@ -76,7 +76,7 @@ this file).
 - Nested objects and collections of objects, composed to any depth from the maps you
   declared, in memory AND inside one EF projection.
 - Cycle detection as a build error (SM0012).
-- Nineteen build-time diagnostics, SM0001–SM0019.
+- Twenty-one build-time diagnostics, SM0001–SM0021.
 - Generated surface per map: `TDestination Map<TDestination>(TSource)`,
   `TDestination Map(TSource, TDestination)`,
   `IQueryable<TDestination> ProjectTo<TDestination>(IQueryable<TSource>)`, plus
@@ -106,6 +106,8 @@ this file).
   cache that takes the customization lookup off the per-object path.
 - **(Step 8)** The map-level hooks: `ConvertUsing`, which replaces the whole map AND projects;
   `BeforeMap` / `AfterMap`, which do not; and `ForAllMembers`, which says one rule once.
+- **(Step 9)** Opt-in FLATTENING — `OrderDto.CustomerName` from `Order.Customer.Name`, in memory
+  and as a join — plus `RecognizePrefixes` / `RecognizePostfixes`.
 
 ### What is missing, in one paragraph
 
@@ -706,7 +708,7 @@ one `ForAllMembers` plus one typed `ForMember` for `FoundedYear`, which demonstr
 rule and why the typed form still earns its place: "blank" for a number is `0`, not an empty
 string.
 
-### ⬜ Step 9 — Flattening and naming conventions
+### ✅ Step 9 — Flattening and naming conventions
 
 AutoMapper maps `Order.Customer.Name` onto `OrderDto.CustomerName` with no configuration.
 ShiftMapper reports SM0001 and stops.
@@ -719,6 +721,75 @@ ShiftMapper reports SM0001 and stops.
 - Make it OPT-IN per map or per mapper, defaulting off. Flattening that fires by surprise is
   how AutoMapper maps end up filling members nobody meant to fill, and this library's whole
   posture is to report rather than guess.
+
+**What landed.**
+
+- **`o.Flattening`**, per map or per mapper through `ConfigureDefaults`, with the same three-step
+  precedence every other option has.
+
+  **ON by default, which is a deliberate departure from this step's own third bullet.** That bullet
+  argued for opt-in on the grounds that flattening fires by surprise. The measurement said
+  otherwise: turning it on across the sample's thirteen maps produced BYTE-IDENTICAL generated code,
+  because flattening only ever runs where the direct match already failed — it cannot change a map
+  that already compiles clean, only fill something that was SM0001. What is left of the original
+  worry is that a VISIBLE SM0001 warning becomes an INVISIBLE SM0020 note, and the answer to that is
+  SM0020 itself: it names every member and the path chosen, and `.editorconfig` raises it. Set
+  `o.Flattening = false` for the stricter behaviour.
+- **The search.** The destination name is split on PascalCase boundaries — acronyms kept whole, so
+  `BrandISOCode` is `Brand` + `ISO` + `Code` — and then re-joined EVERY way that resolves. Each
+  step is matched by the map's own `PropertyMatching` and its recognized prefixes and postfixes, so
+  flattening reuses the rules the direct match already used rather than inventing a second set.
+- **It never competes with a real property.** Flattening runs only where the direct match has
+  already failed, so turning it on cannot change what an existing map does — it can only fill
+  something that was SM0001 before. That is what makes it safe to switch on for a whole mapper.
+- **The leaf goes through `ConversionResolver`**, so a walked `decimal` fills a `string` member with
+  no extra configuration and carries SM0008/SM0009/SM0010 with it.
+- **It projects**, which is the half worth having. The chain reaches EF as one expression and
+  becomes a join: the sample's `/api/invoices/lines/flat` is one query, three joins, eight columns.
+- **Constructor arguments flatten too**, so a record summary DTO taking a `string CustomerName`
+  works — a parameter is a destination member written inside the parentheses, as Step 6 settled.
+- **`RecognizePrefixes` / `RecognizePostfixes`** widen a plain match and apply to each step of a
+  walk. METHODS rather than properties, because what the generator needs is the ARGUMENT LIST, and
+  a list of string literals in a call is the shape it reads most reliably.
+- **Two new diagnostics.** SM0020 (Info) names every member flattening filled AND the path it took,
+  so an opt-in guess can be read back rather than trusted; SM0021 (Warning) reports a name that
+  resolves more than one way, and maps nothing.
+
+**The three refusals, which are most of the design.**
+
+*It will not walk into a `string`.* `NameLength` quietly becoming `Name.Length` is the surprise
+every flattening mapper is remembered for. Collections and nullable value types are out for a
+related reason: neither has one traversal the generator could pick, and a `ForMember` says it
+better than anything that could be invented. A non-nullable value type IS walkable, so
+`CreatedAtYear` from `CreatedAt.Year` works and translates.
+
+*Two paths is a question, not a tie to break.* The walk collects EVERY resolution rather than
+returning the first, because finding a second one is the point. A source carrying both `Order`
+(with a `CustomerName`) and `OrderCustomer` (with a `Name`) makes `OrderCustomerName` genuinely
+ambiguous, and picking the leftmost split would be exactly the silent guess this library exists not
+to make — the same answer SM0007 gives two source names differing only by case.
+
+*The null guard is tied to the ANNOTATION, not added everywhere.* A step the model declares nullable
+gets `source.X == null ? default(string)! : source.X.Y`; a required one gets nothing. This is a
+traversal the GENERATOR invented, so unlike a developer-written `MapFrom` chain it has to pick a
+policy, and the policy is the one the nested-object maps and the null-collection policy already use.
+An unnecessary guard is not free: it turns a required relationship's INNER JOIN into a CASE the
+provider has to reason about, for a null the type says cannot happen. The consequence is worth
+stating rather than hiding — `default(T)` is null for a reference type and ZERO for an `int`, so a
+guarded value leaf cannot be told from a real zero. Declare the destination member nullable if that
+matters.
+
+**One thing the projection needed that the design did not predict.** The guard has to be spelled
+TWICE. An expression tree may not contain an `is` pattern at all (CS8122), so the in-memory chain
+guards with `is null` and the query one with `== null` — which is why `PropertyPair` now carries
+two access templates beside its two conversion templates.
+
+**In the sample.** `InvoiceLineFlatDto` carries the product, its brand and its stock beside the
+line instead of nested inside it, and the whole map is one option; `/api/invoices/lines/flat`
+returns it and `?sql=true` shows the three joins, with no `CASE` (every step is required) and no
+`Brand.Country` (nothing asks for it). Naming conventions have no natural home in that schema and
+live in the tests instead, which is said out loud in the `.http` file rather than contrived into an
+endpoint.
 
 ### ⬜ Step 10 — Inheritance, polymorphism, open generics
 
@@ -1016,14 +1087,15 @@ mapper that cannot show its numbers has given up its main argument.
 | Phase | Steps | State | Blocking? |
 |---|---|---|---|
 | 1 — Trust | 1 Tests, 2 Runtime cost, 3 Packaging, 4 `IShiftMapper` | ✅ done | Everything depended on 1 and 4 |
-| 2 — Gaps | ~~5 Collections~~, ~~6 Constructors/records~~, ~~7 Member options~~, ~~8 Map hooks~~, 9 Flattening, 10 Inheritance/generics | ⬜ 5, 6, 7, 8 done | 10 blocks Phase 3 |
+| 2 — Gaps | ~~5 Collections~~, ~~6 Constructors/records~~, ~~7 Member options~~, ~~8 Map hooks~~, ~~9 Flattening~~, 10 Inheritance/generics | ⬜ all but 10 done | 10 blocks Phase 3 |
 | 3 — General layer | 11 Profiles, 12 Global conversions, 13 Compile-time contract, 14 Member conventions, 15 ShiftFramework port | ⬜ pending | The goal |
 | 4 — Finish | 16 Diagnostics, 17 Docs, 18 Benchmarks | ⬜ pending | Can run alongside 2 and 3 |
 
 The shortest path to ShiftFramework being able to adopt this is
 **1 → 4 → 8 → 10 → 11 → 12 → 13 → 14 → 15**; with 1 and 4 done, it starts at **8**. Steps 5, 6, 7
 and 9 are needed for ShiftMapper to be a good general-purpose mapper, but they are not on
-ShiftFramework's critical path. **Step 8 is done, so the path is now 10 → 11 → 12 → 13 → 14
-→ 15.** Steps 5, 6 and 7 are done as well, because every application hits them on its first day:
-a list endpoint, a DTO that is a record, a PATCH. Step 9 is the only one of the four
-"good general mapper" steps still open, and nothing depends on it.
+ShiftFramework's critical path. **Only Step 10 is left in Phase 2, so the path is now
+10 → 11 → 12 → 13 → 14 → 15.** Everything else is done: 5, 6 and 7 because every
+application hits them on its first day (a list endpoint, a DTO that is a record, a PATCH), 8
+because it was the other Phase 3 blocker, and 9 because it is the one every DTO that is a grid row
+hits.

@@ -61,6 +61,19 @@ public class Catalog
 
     /// <summary>Read by the ConstructUsing factory, and counted by the map that follows it.</summary>
     public int LabelCount => Labels.Count;
+
+    /// <summary>
+    /// Declared NULLABLE, which is what makes the flattened chain through it carry a guard.
+    /// </summary>
+    public CatalogOwner? Owner { get; set; }
+}
+
+/// <summary>The far end of an optional relationship, reached only by flattening.</summary>
+public class CatalogOwner
+{
+    public string Name { get; set; } = string.Empty;
+
+    public int Age { get; set; }
 }
 
 public class Stock
