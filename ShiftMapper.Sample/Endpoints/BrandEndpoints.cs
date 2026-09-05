@@ -113,6 +113,30 @@ public static class BrandEndpoints
         })
         .WithName("GetBrandById");
 
+        // GET /api/brands/labels
+        //
+        // CONVERTUSING, and the reason it is the important map-level hook: the expression IS the
+        // map, and because an expression is exactly what a projection is, EF gets it unchanged.
+        //
+        //     CreateMap<Brand, BrandLabelDto>()
+        //         .ConvertUsing(b => new BrandLabelDto { Label = b.Name + " (" + b.ISOCode + ")" });
+        //
+        // Add ?sql=true: the concatenation is done by the database, and only Name and ISOCode are
+        // read. Compare that with the label in request 1h, which ConstructUsing builds in C# and
+        // which therefore cannot be projected at all.
+        group.MapGet("/labels", (AppDbContext db, AppMapper mapper, bool sql = false) =>
+        {
+            IQueryable<BrandLabelDto> query = db.Brands
+                .AsNoTracking()
+                .OrderBy(brand => brand.Id)
+                .ProjectTo<BrandLabelDto>(mapper);
+
+            return sql
+                ? Results.Text(query.ToQueryString(), "text/plain")
+                : Results.Ok(query.ToList());
+        })
+        .WithName("GetBrandLabels");
+
         // PATCH /api/brands/{id}
         //
         // CONDITION, and the endpoint that could not be written before it.

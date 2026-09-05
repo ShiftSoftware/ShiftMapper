@@ -35,7 +35,7 @@ Every step heading below carries the same marker: ✅ done, ⬜ pending.
 - [x] **Step 5** — Collections and null policy at the top level
 - [x] **Step 6** — Destinations that are not `new T { }`
 - [x] **Step 7** — Per-member power tools
-- [ ] **Step 8** — Map-level hooks
+- [x] **Step 8** — Map-level hooks
 - [ ] **Step 9** — Flattening and naming conventions
 - [ ] **Step 10** — Inheritance, polymorphism, open generics
 
@@ -53,8 +53,9 @@ Every step heading below carries the same marker: ✅ done, ⬜ pending.
 - [ ] **Step 17** — Docs and sample
 - [ ] **Step 18** — Benchmarks
 
-Phase 1 is complete, and Steps 5, 6 and 7 of Phase 2 with it. Next on ShiftFramework's critical
-path is **Step 8**, then 8 → 10 → 11 → 12 → 13 → 14 → 15 (the summary at the foot of this file).
+Phase 1 is complete, and Steps 5, 6, 7 and 8 of Phase 2 with it. Next on ShiftFramework's
+critical path is **Step 10**, then 10 → 11 → 12 → 13 → 14 → 15 (the summary at the foot of
+this file).
 
 ---
 
@@ -75,7 +76,7 @@ path is **Step 8**, then 8 → 10 → 11 → 12 → 13 → 14 → 15 (the summar
 - Nested objects and collections of objects, composed to any depth from the maps you
   declared, in memory AND inside one EF projection.
 - Cycle detection as a build error (SM0012).
-- Seventeen build-time diagnostics, SM0001–SM0017.
+- Nineteen build-time diagnostics, SM0001–SM0019.
 - Generated surface per map: `TDestination Map<TDestination>(TSource)`,
   `TDestination Map(TSource, TDestination)`,
   `IQueryable<TDestination> ProjectTo<TDestination>(IQueryable<TSource>)`, plus
@@ -103,10 +104,12 @@ path is **Step 8**, then 8 → 10 → 11 → 12 → 13 → 14 → 15 (the summar
 - **(Step 7)** `MapFromSource`, which puts a customized member back through the conversion table;
   `Condition`, which turns the update overload from a PUT into a PATCH; and a per-member delegate
   cache that takes the customization lookup off the per-object path.
+- **(Step 8)** The map-level hooks: `ConvertUsing`, which replaces the whole map AND projects;
+  `BeforeMap` / `AfterMap`, which do not; and `ForAllMembers`, which says one rule once.
 
 ### What is missing, in one paragraph
 
-There is no `NullSubstitute`, `BeforeMap`/`AfterMap`,
+There is no `NullSubstitute`,
 `ConvertUsing`, flattening, inheritance or open generics. And — the item this plan is
 mostly about — there is no GLOBAL configuration layer at all: every rule has to be
 restated on every map, in every application, so a framework cannot contribute a rule that
@@ -611,7 +614,7 @@ text, which cannot drift) carries the `MapFromSource` demonstration.
 `BrandPatch` and `PATCH /api/brands/{id}` are `Condition`: send `{ "country": "Ireland" }` and
 watch the name, ISO code and founded year survive the blanks that would have overwritten them.
 
-### ⬜ Step 8 — Map-level hooks
+### ✅ Step 8 — Map-level hooks
 
 ```csharp
 CreateMap<Brand, BrandDto>()
@@ -631,6 +634,77 @@ CreateMap<Brand, BrandDto>()
   expressed.
 - Emit a diagnostic when a map carrying an in-memory-only hook is used inside a projection —
   the hook will not run, and today nothing says so.
+
+**What landed.** `ConstructUsing` arrived early, in Step 6, so this step is the other four — and
+they turn out to divide on ONE question, which is the thing worth taking away from it:
+
+> **Can it be an EXPRESSION?** A projection is one expression handed to the database. Anything that
+> needs a STATEMENT cannot be in one.
+
+| Hook | What it replaces | Projects? |
+|---|---|---|
+| `ConvertUsing` | the WHOLE map | **yes** — it is already an expression |
+| `ConstructUsing` | construction only | no (SM0015, info) |
+| `BeforeMap` / `AfterMap` | nothing; adds a statement | no (SM0018, warning) |
+| `ForAllMembers(opt.Condition)` | nothing; guards every assignment | no (SM0017, warning) |
+
+**`ConvertUsing`, and it is as important as this step's own bullet said.** The expression IS the
+map: no member is matched, converted or reported, so a destination the developer is building by
+hand does not produce an SM0001 per property. And because a tree is exactly what a projection
+needs, `ProjectTo` returns it UNCHANGED — nothing is composed into it, because there is nothing to
+merge. Verified against SQL Server in the sample:
+`SELECT [b].[Name] + N' (' + [b].[ISOCode] + N')' AS [Label]`. That is the shape Step 12's global
+conversion table is: a conversion registered once for a type PAIR is a `ConvertUsing` declared
+somewhere else, and it is worth nothing to a list endpoint unless it reaches SQL.
+
+Two consequences worth stating. It has **no update overload** — `Map(source, destination)` promises
+to fill the object it was handed and give it back, and an expression that builds a new one cannot,
+so the method is not generated and calling it is a compile error. And anything else on such a map
+does nothing, which **SM0019** names rather than leaving to look configured: a `ForMember` written
+above a `ConvertUsing` reads as though it refines the map, refines nothing, and leaves no trace at
+runtime to work backwards from.
+
+**`BeforeMap` / `AfterMap`, and one thing the first attempt got wrong.** "Before" has to mean
+something, and on a create it very nearly did not: the destination must EXIST to be handed over, so
+the hook ran after the object initializer — which is every convention-mapped member. `BeforeMap`
+would then have differed from `AfterMap` only in which conditioned members had run, a distinction
+nobody could use. The fix is to move every member the map can assign afterwards OUT of the
+initializer when a `BeforeMap` is declared, which is the same build-then-assign shape `Condition`
+already introduced. What construction genuinely settles — constructor arguments, `init`-only and
+`required` members — is still settled, and that is the documented limit rather than a gap. A test
+asserts it: the hook sees the property's own initializer value, not the mapped one.
+
+**SM0018 is a WARNING, not SM0015's note,** and the severity is the argument. `ConstructUsing`'s
+projection throws the moment it is asked for, so nobody is misled. A hook's would not: `Compose`
+has no idea a hook exists, so the projection would be built, run, and hand back rows the hook never
+touched — silently, per row, with `Map` and `ProjectTo` disagreeing about the same map.
+
+**A hook is an `Action` the generator cannot see inside**, so it does not know which members the
+hook fills, and reports them as unmapped — correctly. The answer is `opt.Ignore()` on those
+members, which is what it has always meant: this is the pattern, and both the sample and the test
+model use it deliberately rather than working around it.
+
+**`ForAllMembers` got its own options type** rather than reusing `MemberOptions`, and that is the
+decision worth recording. A blanket `MapFrom` has no meaning — there is no expression that fills
+every member — and a blanket `Ignore` is a map that maps nothing. Offering them and then reporting
+them would be a diagnostic where a TYPE will do, so `AllMemberOptions<TSource, TDestination>` offers
+one method and there is nothing to get wrong. It also avoids a real hazard: a `MapFrom` registered
+under a wildcard member name would reach `Compose`, which would try to bind a member called `*` and
+throw at runtime.
+
+Its value is an `object`, since one predicate serves members of every type, and that boxing is the
+price of saying the rule once. A member's own `Condition` always wins, never both; members that
+cannot be guarded at all are SKIPPED rather than refused, unlike naming one individually, which is
+SM0016 — a rule about everything is understood to apply where it can, and a rule about one member
+is a statement about that member.
+
+**In the sample.** `BrandLabelDto` is a `ConvertUsing` map and `GET /api/brands/labels?sql=true`
+shows it reaching SQL. `InvoiceLabelDto.Display` is an `AfterMap`, and it is the case the hook
+exists for: derived from the FINISHED destination — the factory's label plus the mapped customer
+name — which no `MapFrom` could produce. And the `BrandPatch` map's four conditions collapsed into
+one `ForAllMembers` plus one typed `ForMember` for `FoundedYear`, which demonstrates the precedence
+rule and why the typed form still earns its place: "blank" for a number is `0`, not an empty
+string.
 
 ### ⬜ Step 9 — Flattening and naming conventions
 
@@ -942,13 +1016,14 @@ mapper that cannot show its numbers has given up its main argument.
 | Phase | Steps | State | Blocking? |
 |---|---|---|---|
 | 1 — Trust | 1 Tests, 2 Runtime cost, 3 Packaging, 4 `IShiftMapper` | ✅ done | Everything depended on 1 and 4 |
-| 2 — Gaps | ~~5 Collections~~, ~~6 Constructors/records~~, ~~7 Member options~~, 8 Map hooks, 9 Flattening, 10 Inheritance/generics | ⬜ 5, 6, 7 done | 8 and 10 block Phase 3 |
+| 2 — Gaps | ~~5 Collections~~, ~~6 Constructors/records~~, ~~7 Member options~~, ~~8 Map hooks~~, 9 Flattening, 10 Inheritance/generics | ⬜ 5, 6, 7, 8 done | 10 blocks Phase 3 |
 | 3 — General layer | 11 Profiles, 12 Global conversions, 13 Compile-time contract, 14 Member conventions, 15 ShiftFramework port | ⬜ pending | The goal |
 | 4 — Finish | 16 Diagnostics, 17 Docs, 18 Benchmarks | ⬜ pending | Can run alongside 2 and 3 |
 
 The shortest path to ShiftFramework being able to adopt this is
 **1 → 4 → 8 → 10 → 11 → 12 → 13 → 14 → 15**; with 1 and 4 done, it starts at **8**. Steps 5, 6, 7
 and 9 are needed for ShiftMapper to be a good general-purpose mapper, but they are not on
-ShiftFramework's critical path — 5, 6 and 7 are done because they are the three of those four
-that every application hits on its first day: a list endpoint, a DTO that is a record, and a PATCH.
-Step 7 also left `Condition` in place, which Step 8's `ForAllMembers` needs.
+ShiftFramework's critical path. **Step 8 is done, so the path is now 10 → 11 → 12 → 13 → 14
+→ 15.** Steps 5, 6 and 7 are done as well, because every application hits them on its first day:
+a list endpoint, a DTO that is a record, a PATCH. Step 9 is the only one of the four
+"good general mapper" steps still open, and nothing depends on it.

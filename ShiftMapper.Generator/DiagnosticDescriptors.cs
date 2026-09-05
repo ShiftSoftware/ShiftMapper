@@ -420,6 +420,51 @@ internal static class DiagnosticDescriptors
                      "way to leave one binding out per row. Asking for the projection throws a " +
                      "message naming this map rather than returning data that disagrees with Map.");
 
+    /// <summary>
+    /// SM0018 — the map carries a <c>BeforeMap</c> or <c>AfterMap</c>, so it cannot be projected.
+    ///
+    /// A WARNING, on the same reasoning as SM0017 and not SM0015's note. <c>ConstructUsing</c>'s
+    /// projection throws the moment it is asked for, so nobody can be misled by it; a hook's would
+    /// not. <c>Compose</c> has no idea a hook exists, so the projection would be built, run, and
+    /// hand back rows the hook never touched — silently, per row, in a list endpoint, with
+    /// <c>Map</c> and <c>ProjectTo</c> disagreeing about the same map.
+    ///
+    /// THE USUAL FIX IS NOT TO SILENCE IT. A value worked out from the SOURCE belongs in a
+    /// <c>ForMember</c>, which projects; <c>AfterMap</c> earns its place only where the finished
+    /// DESTINATION is genuinely needed, and those maps are the ones you <c>Map</c> rather than
+    /// project.
+    /// </summary>
+    public static readonly DiagnosticDescriptor HookIsNotProjectable = new(
+        id: "SM0018",
+        title: "Map cannot be projected because it runs an in-memory hook",
+        messageFormat: "ShiftMapper: the map from '{0}' to '{1}' runs {2} over its destination, so ProjectTo cannot use it; Map is unaffected",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "A projection is one expression handed to the database, and there is no " +
+                     "statement in it for your code to be. Where the value can be worked out from " +
+                     "the source, a ForMember says the same thing and keeps the projection.");
+
+    /// <summary>
+    /// SM0019 — configuration on a <c>ConvertUsing</c> map, which replaces the whole map and so
+    /// ignores it.
+    ///
+    /// It matters because it LOOKS configured. A <c>ForMember</c> written above a
+    /// <c>ConvertUsing</c> reads as though it refines the map, and refines nothing — and unlike
+    /// most mistakes this one leaves no trace at runtime to work backwards from, because the
+    /// member it names is simply never assigned by anything.
+    /// </summary>
+    public static readonly DiagnosticDescriptor ConvertUsingIgnoresConfiguration = new(
+        id: "SM0019",
+        title: "Configuration has no effect because ConvertUsing replaces the whole map",
+        messageFormat: "ShiftMapper: the map from '{0}' to '{1}' uses ConvertUsing, which replaces the whole map, so its {2} does nothing",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "ConvertUsing is the whole map: no member is matched, converted or assigned " +
+                     "afterwards. Delete the configuration it ignores, or fold what it does into " +
+                     "the ConvertUsing expression.");
+
     /// <summary>SM0005 — the whole mapper produced nothing.</summary>
     public static readonly DiagnosticDescriptor MapperSkipped = new(
         id: "SM0005",
@@ -457,6 +502,8 @@ internal static class DiagnosticDescriptors
         RequiredMemberNotFilled,
         ConstructUsingIsNotProjectable,
         MemberCannotBeConditioned,
-        ConditionIsNotProjectable);
+        ConditionIsNotProjectable,
+        HookIsNotProjectable,
+        ConvertUsingIgnoresConfiguration);
 }
 

@@ -65,6 +65,13 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     private const string MapOptionsMetadataName = "ShiftMapper.MapOptions";
 
     /// <summary>
+    /// Full name of the <c>opt</c> object <c>ForAllMembers</c> hands its lambda. Looked up for the
+    /// same reason as the others: a <c>Condition</c> call only configures this map when it is OUR
+    /// Condition, on OUR options object.
+    /// </summary>
+    private const string AllMemberOptionsMetadataName = "ShiftMapper.AllMemberOptions`2";
+
+    /// <summary>
     /// The single namespace every generated extension class lives in. It is globally
     /// imported, so it deliberately contains nothing but ShiftMapper's own classes.
     /// </summary>
@@ -169,6 +176,11 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         INamedTypeSymbol? mapOptions = semanticModel.Compilation
             .GetTypeByMetadataName(MapOptionsMetadataName);
 
+        // Null on the same terms as the others: a runtime predating ForAllMembers simply has no
+        // such type, and the chain walker then finds no blanket condition rather than falling over.
+        INamedTypeSymbol? allMemberOptions = semanticModel.Compilation
+            .GetTypeByMetadataName(AllMemberOptionsMetadataName);
+
         // Resolved once per declaration, from the class symbol, so an override living in
         // another part of a partial mapper still counts.
         bool? classDefaultCaseSensitive = ReadClassDefaultCaseSensitive(
@@ -198,6 +210,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                          createMap,
                          mapExpression,
                          memberOptions,
+                         allMemberOptions,
                          mapOptions,
                          classDefaultCaseSensitive,
                          classDefaultAllowNullCollections,
@@ -222,6 +235,38 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             fullyQualifiedName: classSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
             isPublic: IsEffectivelyPublic(classSymbol),
             maps: maps.ToImmutable());
+    }
+
+    /// <summary>
+    /// What a <c>ConvertUsing</c> map was ALSO told, and therefore ignores.
+    ///
+    /// Empty for every map that has no <c>ConvertUsing</c>, so this costs nothing where it does
+    /// not apply. The names are the developer's own vocabulary rather than internal ones, because
+    /// the message is a list of the calls to delete.
+    /// </summary>
+    private static ImmutableArray<string> DeadConfiguration(Refinements refinements)
+    {
+        if (!refinements.ConvertsWithExpression)
+            return ImmutableArray<string>.Empty;
+
+        var dead = ImmutableArray.CreateBuilder<string>();
+
+        if (!refinements.Customized.IsEmpty || !refinements.Ignored.IsEmpty || !refinements.Unconvertible.IsEmpty)
+            dead.Add("ForMember");
+
+        if (refinements.ConstructsWithFactory)
+            dead.Add("ConstructUsing");
+
+        if (!refinements.Conditioned.IsEmpty || refinements.HasAllMembersCondition)
+            dead.Add("Condition");
+
+        if (refinements.HasBeforeMap)
+            dead.Add("BeforeMap");
+
+        if (refinements.HasAfterMap)
+            dead.Add("AfterMap");
+
+        return dead.ToImmutable();
     }
 
     /// <summary>
@@ -371,6 +416,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         InvocationExpressionSyntax createMap,
         INamedTypeSymbol? mapExpression,
         INamedTypeSymbol? memberOptions,
+        INamedTypeSymbol? allMemberOptions,
         INamedTypeSymbol? mapOptions,
         INamedTypeSymbol sourceType,
         INamedTypeSymbol destinationType,
@@ -446,6 +492,35 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                     case "ConstructUsing":
                         current.ConstructsWithFactory = true;
                         break;
+
+                    // Like ConstructUsing, the expression itself is never read here — it stays a
+                    // tree in the developer's file. What changes is everything else: this one
+                    // replaces the WHOLE map, so no member is matched, converted or reported.
+                    case "ConvertUsing":
+                        current.ConvertsWithExpression = true;
+                        break;
+
+                    // In-memory hooks. The generator needs only to know THAT there is one: it
+                    // changes the shape of the create method and takes the map's projection away.
+                    case "BeforeMap":
+                        current.HasBeforeMap = true;
+                        break;
+
+                    case "AfterMap":
+                        current.HasAfterMap = true;
+                        break;
+
+                    // A blanket Condition. The NAME gets the call looked at and the SYMBOL decides,
+                    // as everywhere else — an opt.Condition inside the lambda counts only when it
+                    // is ours, on our wildcard options object.
+                    case "ForAllMembers":
+                        if (allMemberOptions is not null && HasAllMembersCondition(
+                                semanticModel, invocation, allMemberOptions, cancellationToken))
+                        {
+                            current.HasAllMembersCondition = true;
+                        }
+
+                        break;
                 }
             }
 
@@ -453,6 +528,38 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         }
 
         return new ChainInfo(reverseMapName, forward.Build(), reverse.Build());
+    }
+
+    /// <summary>
+    /// Whether a <c>ForAllMembers</c> lambda contains a <c>Condition</c> call of ours.
+    ///
+    /// The whole lambda is walked rather than its shape matched, for the reason
+    /// <see cref="ReadForMember"/> walks one: a block body and a single expression must read the
+    /// same way. And each candidate is checked against <c>AllMemberOptions&lt;,&gt;</c> before it
+    /// counts, so somebody else's <c>Condition</c> written inside the predicate cannot configure
+    /// the map.
+    /// </summary>
+    private static bool HasAllMembersCondition(
+        SemanticModel semanticModel,
+        InvocationExpressionSyntax invocation,
+        INamedTypeSymbol allMemberOptions,
+        CancellationToken cancellationToken)
+    {
+        foreach (InvocationExpressionSyntax call in invocation.ArgumentList.Arguments
+                     .SelectMany(argument => argument.DescendantNodes())
+                     .OfType<InvocationExpressionSyntax>())
+        {
+            if (call.Expression is not MemberAccessExpressionSyntax option
+                || option.Name.Identifier.ValueText != "Condition")
+            {
+                continue;
+            }
+
+            if (IsDeclaredOn(semanticModel, call, allMemberOptions, cancellationToken))
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -734,14 +841,34 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             ImmutableArray<CustomProperty> customized,
             ImmutableArray<UnmappedProperty> unconvertible,
             ImmutableArray<string> conditioned,
-            bool constructsWithFactory)
+            bool constructsWithFactory,
+            bool convertsWithExpression,
+            bool hasBeforeMap,
+            bool hasAfterMap,
+            bool hasAllMembersCondition)
         {
             Ignored = ignored;
             Customized = customized;
             Unconvertible = unconvertible;
             Conditioned = conditioned;
             ConstructsWithFactory = constructsWithFactory;
+            ConvertsWithExpression = convertsWithExpression;
+            HasBeforeMap = hasBeforeMap;
+            HasAfterMap = hasAfterMap;
+            HasAllMembersCondition = hasAllMembersCondition;
         }
+
+        /// <summary>Whether <c>.ConvertUsing(...)</c> replaced the whole map.</summary>
+        public bool ConvertsWithExpression { get; }
+
+        /// <summary>Whether <c>.BeforeMap(...)</c> was chained onto this direction.</summary>
+        public bool HasBeforeMap { get; }
+
+        /// <summary>Whether <c>.AfterMap(...)</c> was chained onto this direction.</summary>
+        public bool HasAfterMap { get; }
+
+        /// <summary>Whether <c>.ForAllMembers(...)</c> stated a blanket condition.</summary>
+        public bool HasAllMembersCondition { get; }
 
         /// <summary>
         /// Destination members an <c>opt.Condition</c> named. Unlike everything else here they are
@@ -769,7 +896,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         public static Refinements Empty { get; } = new(
             ImmutableArray<string>.Empty, ImmutableArray<CustomProperty>.Empty,
             ImmutableArray<UnmappedProperty>.Empty, ImmutableArray<string>.Empty,
-            constructsWithFactory: false);
+            constructsWithFactory: false, convertsWithExpression: false,
+            hasBeforeMap: false, hasAfterMap: false, hasAllMembersCondition: false);
     }
 
     /// <summary>Collects one direction's refinements while the chain is being walked.</summary>
@@ -785,14 +913,24 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
         public bool ConstructsWithFactory { get; set; }
 
+        public bool ConvertsWithExpression { get; set; }
+
+        public bool HasBeforeMap { get; set; }
+
+        public bool HasAfterMap { get; set; }
+
+        public bool HasAllMembersCondition { get; set; }
+
         public Refinements Build() =>
             Ignored.Count == 0 && Customized.Count == 0 && Unconvertible.Count == 0
-            && Conditioned.Count == 0 && !ConstructsWithFactory
+            && Conditioned.Count == 0 && !ConstructsWithFactory && !ConvertsWithExpression
+            && !HasBeforeMap && !HasAfterMap && !HasAllMembersCondition
                 ? Refinements.Empty
                 : new Refinements(
                     Ignored.ToImmutableArray(), Customized.ToImmutableArray(),
                     Unconvertible.ToImmutableArray(), Conditioned.ToImmutableArray(),
-                    ConstructsWithFactory);
+                    ConstructsWithFactory, ConvertsWithExpression,
+                    HasBeforeMap, HasAfterMap, HasAllMembersCondition);
     }
 
     /// <summary>
@@ -805,6 +943,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         GenericNameSyntax createMap,
         INamedTypeSymbol? mapExpression,
         INamedTypeSymbol? memberOptions,
+        INamedTypeSymbol? allMemberOptions,
         INamedTypeSymbol? mapOptions,
         bool? classDefaultCaseSensitive,
         bool? classDefaultAllowNullCollections,
@@ -838,7 +977,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         // Read once, for both directions. The chain cannot be walked before the two types are
         // known, because a MapFrom needs its destination type to look the property up on.
         ChainInfo chain = ReadChain(
-            semanticModel, invocation, mapExpression, memberOptions, mapOptions,
+            semanticModel, invocation, mapExpression, memberOptions, allMemberOptions, mapOptions,
             sourceType, destinationType, allowNullCollections, cancellationToken);
 
         yield return BuildMapModel(
@@ -1089,7 +1228,11 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             constructionProblems: analysis.ConstructionProblems,
             constructsWithFactory: refinements.ConstructsWithFactory,
             conditionedMembers: analysis.Conditioned,
-            refusedConditions: analysis.RefusedConditions);
+            refusedConditions: analysis.RefusedConditions,
+            convertsWithExpression: refinements.ConvertsWithExpression,
+            hasBeforeMap: refinements.HasBeforeMap,
+            hasAfterMap: refinements.HasAfterMap,
+            deadConfiguration: DeadConfiguration(refinements));
     }
 
     /// <summary>The result of comparing one source type against one destination type.</summary>
@@ -1198,6 +1341,26 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         bool allowNullCollections,
         Refinements refinements)
     {
+        // A ConvertUsing map has no members to analyse AT ALL. The expression is the whole map,
+        // so matching names would produce assignments nothing emits and diagnostics about
+        // properties this map never touches — SM0001 for every member of a destination the
+        // developer is building by hand.
+        if (refinements.ConvertsWithExpression)
+        {
+            return new PropertyAnalysis(
+                ImmutableArray<PropertyPair>.Empty,
+                ImmutableArray<PropertyPair>.Empty,
+                ImmutableArray<UnmappedProperty>.Empty,
+                ImmutableArray<ConvertedProperty>.Empty,
+                ImmutableArray<NestedProperty>.Empty,
+                canConstruct: true,
+                constructor: ConstructorPlan.Parameterless,
+                constructionProblems: ImmutableArray<ConstructionProblem>.Empty,
+                customized: ImmutableArray<CustomProperty>.Empty,
+                conditioned: ImmutableArray<string>.Empty,
+                refusedConditions: ImmutableArray<ConditionRefusal>.Empty);
+        }
+
         // Properties the developer has already spoken for with a ForMember. opt.Ignore() says
         // leave it alone; opt.MapFrom() supplies its own value. Either way the convention must
         // not fill it, and — just as importantly — must not REPORT on it: SM0001 telling you a
@@ -1505,7 +1668,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         var conditioned = ImmutableArray.CreateBuilder<string>();
         var refusedConditions = ImmutableArray.CreateBuilder<ConditionRefusal>();
 
-        if (!refinements.Conditioned.IsEmpty)
+        if (!refinements.Conditioned.IsEmpty || refinements.HasAllMembersCondition)
         {
             var assignable = new HashSet<string>(StringComparer.Ordinal);
             foreach (PropertyPair pair in writable)
@@ -1559,6 +1722,21 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
                 // Anything left is a condition on a member nothing maps: dead configuration, and
                 // the member's own SM0001 is the message worth hearing. Say nothing extra.
+            }
+
+            // A BLANKET condition covers every member that can carry one. Members it cannot guard
+            // — init-only, required, a constructor argument — are skipped SILENTLY here, where
+            // naming one individually is SM0016: a rule about everything is understood to apply
+            // where it can, and a rule about one member is a statement about that member.
+            if (refinements.HasAllMembersCondition)
+            {
+                var already = new HashSet<string>(conditioned, StringComparer.Ordinal);
+
+                foreach (string member in assignable)
+                {
+                    if (already.Add(member))
+                        conditioned.Add(member);
+                }
             }
         }
 
@@ -2546,6 +2724,16 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         sb.AppendLine($"{indent}    {{");
         AppendNullGuard(sb, $"{indent}        ", "source", map.IsSourceValueType);
 
+        // A ConvertUsing map IS the developer's expression. Nothing is matched, nothing is
+        // assigned, and there is no destination for a hook to touch — which is why every other
+        // refinement on such a map is reported as dead (SM0019) rather than quietly emitted here.
+        if (map.ConvertsWithExpression)
+        {
+            sb.AppendLine($"{indent}        return ({ConverterFieldName(map)} ??= Customizations.Converter<{map.SourceType}, {map.DestinationType}>())(source);");
+            sb.AppendLine($"{indent}    }}");
+            return;
+        }
+
         // A ConstructUsing map builds the object the developer's way and then assigns onto it,
         // which is a statement body rather than one expression — and can only reach the members
         // that are still settable, since the object already exists. The remarks above name the
@@ -2553,7 +2741,9 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         if (map.ConstructsWithFactory)
         {
             sb.AppendLine($"{indent}        {map.DestinationType} destination = Customizations.Construct<{map.SourceType}, {map.DestinationType}>()(source);");
+            AppendHook(sb, $"{indent}        ", map, before: true);
             AppendAssignments(sb, $"{indent}        ", map, directNames);
+            AppendHook(sb, $"{indent}        ", map, before: false);
             sb.AppendLine();
             sb.AppendLine($"{indent}        return destination;");
             sb.AppendLine($"{indent}    }}");
@@ -2568,7 +2758,12 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         // This is a third shape, not the ConstructUsing one: it still writes its own `new`, and it
         // must not call AppendAssignments, which would re-assign every member the initializer has
         // already bound.
-        bool guarded = map.ConditionedMembers.Length > 0;
+        // A HOOK needs the same shape for a different reason: it is a statement, and it has to
+        // be handed the destination, so the object must exist as a LOCAL before the method ends.
+        // On a create that settles what "before" means — anything decided during construction
+        // (constructor arguments, init-only and required members) is already set when BeforeMap
+        // runs, and everything else is not.
+        bool guarded = map.ConditionedMembers.Length > 0 || map.HasHooks;
 
         sb.Append(guarded
             ? $"{indent}        {map.DestinationType} destination = new {map.DestinationType}{ConstructorArguments(map, directNames, $"{indent}        ")}"
@@ -2581,14 +2776,19 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         // so a parameterless destination always keeps its braces however empty they are.
         // Counted over the members the initializer will actually bind — a record whose every
         // remaining member is conditioned has nothing left to put in braces.
-        bool nothingToInitialise =
-            map.PropertyNames.All(property => map.ConditionedMembers.Contains(property.Destination))
-            && map.CustomProperties.All(custom => map.ConditionedMembers.Contains(custom.Name))
-            && map.NestedProperties.All(nested => map.ConditionedMembers.Contains(nested.Destination));
+        ImmutableArray<string> deferred = map.DeferredMembers;
 
-        if (!map.Constructor.IsParameterless && nothingToInitialise)
+        bool nothingToInitialise =
+            map.PropertyNames.All(property => deferred.Contains(property.Destination))
+            && map.CustomProperties.All(custom => deferred.Contains(custom.Name))
+            && map.NestedProperties.All(nested => deferred.Contains(nested.Destination));
+
+        if (nothingToInitialise)
         {
-            sb.AppendLine(";");
+            // `new BrandDto(a, b) { }` reads like a mistake rather than like nothing, and a
+            // parameterless `new BrandDto` is not an expression at all — so the one case that
+            // needs anything written is the parameterless one, which gets its parentheses.
+            sb.AppendLine(map.Constructor.IsParameterless ? "();" : ";");
             AppendGuardedCreateTail(sb, indent, map, directNames, guarded);
             return;
         }
@@ -2598,7 +2798,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
         foreach (PropertyPair property in map.PropertyNames)
         {
-            if (map.ConditionedMembers.Contains(property.Destination))
+            if (deferred.Contains(property.Destination))
                 continue;
 
             sb.AppendLine($"{indent}            {property.Destination} = {property.ValueExpression("source")},");
@@ -2606,7 +2806,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
         foreach (CustomProperty custom in map.CustomProperties)
         {
-            if (map.ConditionedMembers.Contains(custom.Name))
+            if (deferred.Contains(custom.Name))
                 continue;
 
             sb.AppendLine($"{indent}            {custom.Name} = {CustomValueExpression(map, custom)},");
@@ -2614,7 +2814,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
         foreach (NestedProperty nested in map.NestedProperties)
         {
-            if (map.ConditionedMembers.Contains(nested.Destination))
+            if (deferred.Contains(nested.Destination))
                 continue;
 
             sb.AppendLine($"{indent}            {nested.Destination} = {NestedValueExpression(nested, "source", directNames, map.AllowNullCollections)},");
@@ -2638,10 +2838,12 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         if (guarded)
         {
             sb.AppendLine();
+            AppendHook(sb, $"{indent}        ", map, before: true);
 
-            foreach (string member in map.ConditionedMembers)
-                AppendConditionedCreateAssignment(sb, $"{indent}        ", map, member, directNames);
+            foreach (string member in map.DeferredMembers)
+                AppendDeferredCreateAssignment(sb, $"{indent}        ", map, member, directNames);
 
+            AppendHook(sb, $"{indent}        ", map, before: false);
             sb.AppendLine();
             sb.AppendLine($"{indent}        return destination;");
         }
@@ -2650,10 +2852,11 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     }
 
     /// <summary>
-    /// One conditioned member's guarded assignment inside a CREATE method, looked up by name
-    /// across the three kinds of thing that can fill it.
+    /// One DEFERRED member's assignment inside a create method, looked up by name across the three
+    /// kinds of thing that can fill it — guarded when the member carries a condition, plain when
+    /// it was deferred only so a <c>BeforeMap</c> could precede it.
     /// </summary>
-    private static void AppendConditionedCreateAssignment(
+    private static void AppendDeferredCreateAssignment(
         StringBuilder sb,
         string indent,
         MapModel map,
@@ -3179,7 +3382,11 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         AppendNullGuard(sb, $"{indent}        ", "source", map.IsSourceValueType);
         AppendNullGuard(sb, $"{indent}        ", "destination", map.IsDestinationValueType);
 
+        // Here "before" means what it says: the object arrived built, so the hook sees it exactly
+        // as the caller passed it, before the first assignment.
+        AppendHook(sb, $"{indent}        ", map, before: true);
         AppendAssignments(sb, $"{indent}        ", map, directNames);
+        AppendHook(sb, $"{indent}        ", map, before: false);
 
         sb.AppendLine();
         sb.AppendLine($"{indent}        return destination;");
@@ -3213,6 +3420,22 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         return custom.ConversionTemplate is null ? call : custom.ConversionTemplate.Replace("{0}", call);
     }
 
+    /// <summary>
+    /// One <c>BeforeMap</c> or <c>AfterMap</c> call, emitted only where the chain declared one —
+    /// so a map without hooks pays nothing, not even a lookup.
+    /// </summary>
+    private static void AppendHook(StringBuilder sb, string indent, MapModel map, bool before)
+    {
+        if (before ? !map.HasBeforeMap : !map.HasAfterMap)
+            return;
+
+        sb.AppendLine($"{indent}Customizations.Run{(before ? "Before" : "After")}(source, destination);");
+    }
+
+    /// <summary>The field holding a map's compiled <c>ConvertUsing</c> delegate.</summary>
+    private static string ConverterFieldName(MapModel map) =>
+        "_ShiftMapperConverter_" + Identifier(map.SourceType) + "_To_" + Identifier(map.DestinationType);
+
     /// <summary>The field holding one customization's compiled delegate.</summary>
     private static string CustomizationFieldName(MapModel map, CustomProperty custom) =>
         "_ShiftMapperValue_" + Identifier(map.SourceType) + "_To_" + Identifier(map.DestinationType) + "_" + custom.Name;
@@ -3228,6 +3451,13 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// </summary>
     private static void AppendCustomizationFields(StringBuilder sb, string indent, MapModel map)
     {
+        if (map.ConvertsWithExpression)
+        {
+            sb.AppendLine($"{indent}    /// <summary>Holds the compiled {map.DestinationName} converter once it has been fetched.</summary>");
+            sb.AppendLine($"{indent}    private global::System.Func<{map.SourceType}, {map.DestinationType}>? {ConverterFieldName(map)};");
+            sb.AppendLine();
+        }
+
         foreach (CustomProperty custom in map.CustomProperties)
         {
             sb.AppendLine($"{indent}    /// <summary>Holds the compiled {map.DestinationName}.{custom.Name} customization once it has been fetched.</summary>");
@@ -3455,24 +3685,42 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         string field = "_" + name;
         string type = $"global::System.Linq.Expressions.Expression<global::System.Func<{map.SourceType}, {map.DestinationType}>>";
 
-        // A map that needs a STATEMENT has no projection, and this is where that is said. Two
-        // things need one, and they are the same fact twice: a projection is one member
-        // initializer, so there is no room for a call whose result is then assigned onto
-        // (ConstructUsing, SM0015) and none for an `if` around a single binding (Condition,
-        // SM0017).
+        // A ConvertUsing map's projection IS the developer's expression, handed to EF unchanged.
+        // Nothing is composed into it because there is nothing to merge: the expression is the
+        // whole map. That is what makes it the one map-level hook that projects.
+        if (map.ConvertsWithExpression)
+        {
+            sb.AppendLine($"{indent}    /// <summary>Holds the ConvertUsing expression once it has been fetched.</summary>");
+            sb.AppendLine($"{indent}    private {type}? {field};");
+            sb.AppendLine();
+            sb.AppendLine($"{indent}    /// <summary>The {map.SourceName} to {map.DestinationName} map, which IS the ConvertUsing expression.</summary>");
+            sb.AppendLine($"{indent}    private {type} {name} =>");
+            sb.AppendLine($"{indent}        {field} ??= Customizations.ConverterExpression<{map.SourceType}, {map.DestinationType}>();");
+            return;
+        }
+
+        // A map that needs a STATEMENT has no projection, and this is where that is said. Three
+        // things need one, and they are the same fact three times: a projection is one expression,
+        // so there is no room for a call whose result is then assigned onto (ConstructUsing,
+        // SM0015), none for an `if` around a single binding (Condition, SM0017), and none for a
+        // statement of the developer's own (BeforeMap / AfterMap, SM0018).
         //
         // The member is emitted anyway, throwing, rather than left out: a map that NESTS this one
         // refers to it by name, and a missing member would be a CS0103 inside a generated file
         // instead of a sentence explaining which map cannot be projected and why.
         if (!map.IsProjectable)
         {
-            string cause = map.ConstructsWithFactory
-                ? "builds its destination with ConstructUsing"
-                : $"assigns {string.Join(", ", map.ConditionedMembers)} behind a Condition";
+            string cause = map.HasHooks
+                ? $"runs {HookNames(map)} over its destination"
+                : map.ConstructsWithFactory
+                    ? "builds its destination with ConstructUsing"
+                    : $"assigns {string.Join(", ", map.ConditionedMembers)} behind a Condition";
 
-            string fix = map.ConstructsWithFactory
-                ? $"Use Map instead, or give '{map.DestinationName}' a constructor ShiftMapper can match by name."
-                : "Use Map instead, or drop the Condition and map the member unconditionally.";
+            string fix = map.HasHooks
+                ? "Use Map instead, or move what the hook does into a ForMember, which projects."
+                : map.ConstructsWithFactory
+                    ? $"Use Map instead, or give '{map.DestinationName}' a constructor ShiftMapper can match by name."
+                    : "Use Map instead, or drop the Condition and map the member unconditionally.";
 
             sb.AppendLine($"{indent}    /// <summary>Not projectable: {XmlEscape(cause)}.</summary>");
             sb.AppendLine($"{indent}    private {type} {name} =>");
@@ -3605,6 +3853,12 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
         return converted;
     }
+
+    /// <summary>The hooks a map declared, for a message: <c>BeforeMap</c>, or both.</summary>
+    private static string HookNames(MapModel map) =>
+        map.HasBeforeMap && map.HasAfterMap ? "BeforeMap and AfterMap"
+        : map.HasBeforeMap ? "BeforeMap"
+        : "AfterMap";
 
     /// <summary>
     /// The <c>required</c> members a projection template has to name even though it has no value

@@ -419,10 +419,19 @@ public partial class AppMapper : ShiftMapperBase
         // leave a binding out per row. Asking for one throws a message naming this map.
         //
         // Try it: PATCH /api/brands/1 with only { "country": "Ireland" }.
+        // FORALLMEMBERS replaces what used to be the same line written three times, once for
+        // Name, Country and ISOCode. The rule is uniform — "do not overwrite with a blank" — so
+        // it is said once.
+        //
+        // The value arrives as an OBJECT, because one predicate has to serve members of every
+        // type. That is the price of saying it once, and it is why FoundedYear keeps a condition
+        // of its OWN below: "blank" for a number is 0, not an empty string, and a typed predicate
+        // says that far better than a cast would.
+        //
+        // A MEMBER'S OWN CONDITION WINS, never both. FoundedYear uses the typed one; the other
+        // three fall back to the blanket rule.
         CreateMap<BrandPatch, Brand>()
-            .ForMember(d => d.Name, opt => opt.Condition((s, d, value) => !string.IsNullOrWhiteSpace(value)))
-            .ForMember(d => d.Country, opt => opt.Condition((s, d, value) => !string.IsNullOrWhiteSpace(value)))
-            .ForMember(d => d.ISOCode, opt => opt.Condition((s, d, value) => !string.IsNullOrWhiteSpace(value)))
+            .ForAllMembers(opt => opt.Condition((s, d, value) => value is not string text || text.Length > 0))
             .ForMember(d => d.FoundedYear, opt => opt.Condition((s, d, value) => value > 0))
 
             // Everything Brand has that a patch body does not. Without these the map reports four
@@ -444,8 +453,40 @@ public partial class AppMapper : ShiftMapperBase
         //
         // GET /api/invoices/{id}/label?project=true asks for the projection anyway, to show what
         // the refusal reads like.
+        // AFTERMAP is added here because this is the one case it earns: Display is derived from
+        // the FINISHED destination — the factory's Label plus the mapped CustomerName — and no
+        // MapFrom could produce it, since a MapFrom sees the source and this needs the result.
+        //
+        // The Ignore is the pattern, not boilerplate. A hook is an Action the generator cannot see
+        // inside, so it has no idea Display gets filled, and "'InvoiceLabelDto.Display' is not
+        // mapped" is a true statement about the conventions. Ignoring it says which member the
+        // hook owns.
         CreateMap<Invoice, InvoiceLabelDto>()
-            .ConstructUsing(s => new InvoiceLabelDto(_numbering.Prefix + s.Number));
+            .ConstructUsing(s => new InvoiceLabelDto(_numbering.Prefix + s.Number))
+            .ForMember(d => d.Display, opt => opt.Ignore())
+            .AfterMap((s, d) => d.Display = d.Label + " — " + d.CustomerName);
+
+        // ------------------------------------------------------------------
+        // CONVERTUSING — the expression IS the map, and the one hook that projects.
+        // ------------------------------------------------------------------
+        //
+        // No member is matched, converted or reported: BrandLabelDto.Label has no counterpart on
+        // Brand and never produces an SM0001, because this map does not do conventions at all.
+        //
+        // AND IT REACHES THE DATABASE, which is why it is the important one. BeforeMap, AfterMap
+        // and Condition are STATEMENTS, and a projection is one expression handed to SQL — there
+        // is nowhere in it for a statement to be, so those three cost the map its projection. A
+        // ConvertUsing is already an expression, so nothing has to be composed into it:
+        //
+        //     SELECT [b].[Name] + N' (' + [b].[ISOCode] + N')' FROM [Brands] AS [b]
+        //
+        // That is what makes it the foundation of the global conversion table this library is
+        // heading for: a conversion registered once for a TYPE PAIR is a ConvertUsing declared
+        // somewhere else, and it is worth nothing to a list endpoint unless it reaches SQL.
+        //
+        // GET /api/brands/labels?sql=true
+        CreateMap<Brand, BrandLabelDto>()
+            .ConvertUsing(b => new BrandLabelDto { Label = b.Name + " (" + b.ISOCode + ")" });
 
         // ------------------------------------------------------------------
         // DICTIONARIES — the other shape a collection comes in.

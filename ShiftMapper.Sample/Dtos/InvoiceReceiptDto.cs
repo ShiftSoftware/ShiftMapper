@@ -138,4 +138,25 @@ public class InvoiceLabelDto
 
     /// <summary>Mapped by name, after the factory has run.</summary>
     public string CustomerName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Filled by an <c>AfterMap</c>, and it is the case that hook exists for: the value is derived
+    /// from the FINISHED DESTINATION — <see cref="Label"/>, which only the factory knows, and
+    /// <see cref="CustomerName"/>, which only the member mapping knows. No <c>MapFrom</c> could
+    /// produce it, because a MapFrom sees the source and this needs the result.
+    ///
+    /// <code>
+    /// .AfterMap((s, d) =&gt; d.Display = d.Label + " — " + d.CustomerName)
+    /// </code>
+    ///
+    /// <b>THE HOOK IS AN <c>Action</c>, so the generator cannot see inside it</b> and has no idea
+    /// this member gets filled. "'InvoiceLabelDto.Display' is not mapped" would be a TRUE statement
+    /// about the conventions, so the map carries an <c>opt.Ignore()</c> for it — which is the
+    /// pattern rather than boilerplate: it says out loud which members the hook owns.
+    ///
+    /// The map was already in-memory only because of <c>ConstructUsing</c> (SM0015). The hook adds
+    /// its own reason (SM0018), and both are reported, because removing one would not restore the
+    /// projection on its own.
+    /// </summary>
+    public string Display { get; set; } = string.Empty;
 }

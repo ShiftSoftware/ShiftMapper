@@ -213,4 +213,151 @@ public readonly struct MapExpression<TSource, TDestination>
 
         return this;
     }
+
+    /// <summary>
+    /// REPLACES THE WHOLE MAP with an expression of your own.
+    ///
+    /// <code>
+    /// CreateMap&lt;Money, string&gt;()
+    ///     .ConvertUsing(m =&gt; m.Amount + " " + m.Currency);
+    /// </code>
+    ///
+    /// Not one member is matched, converted or reported after this: the expression IS the map.
+    /// Where <see cref="ConstructUsing"/> replaces only construction and lets the members be
+    /// mapped onto what it returned, this replaces the lot — so a <c>ForMember</c> or a
+    /// <c>ConstructUsing</c> on the same map has nothing left to do, and the build says so
+    /// (SM0019) rather than letting it look configured.
+    ///
+    /// <para><b>AND IT PROJECTS, which is the whole reason it exists.</b> It is the one map-level
+    /// hook that does. Because it is an <see cref="Expression{TDelegate}"/>, the tree is exactly
+    /// what a projection needs, so <c>ProjectTo</c> hands it to EF unchanged — nothing is
+    /// composed into it, because there is nothing to merge:</para>
+    ///
+    /// <code>
+    /// db.Prices.ProjectTo&lt;string&gt;(mapper)   // SELECT [p].[Amount] + ' ' + [p].[Currency]
+    /// </code>
+    ///
+    /// That is what makes it the foundation of the global conversion table this library is heading
+    /// for: a conversion registered for a type PAIR is just a <c>ConvertUsing</c> that was declared
+    /// somewhere else, and it has to reach SQL to be worth having.
+    ///
+    /// <para><b>NO UPDATE OVERLOAD.</b> <c>Map(source, destination)</c> promises to fill the object
+    /// you handed it and give it back; an expression that builds a NEW one cannot keep that
+    /// promise. So the overload is not generated, and calling it is a compile error rather than a
+    /// surprise about which object you are holding.</para>
+    /// </summary>
+    /// <param name="converter">How to turn a source into a destination, whole.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="converter"/> is null.</exception>
+    public MapExpression<TSource, TDestination> ConvertUsing(Expression<Func<TSource, TDestination>> converter)
+    {
+        if (converter is null)
+            throw new ArgumentNullException(nameof(converter));
+
+        _customizations?.RegisterConverter(typeof(TSource), typeof(TDestination), converter);
+
+        return this;
+    }
+
+    /// <summary>
+    /// Runs your code on the destination BEFORE the map fills it in.
+    ///
+    /// <code>
+    /// CreateMap&lt;Brand, BrandDto&gt;()
+    ///     .BeforeMap((s, d) =&gt; d.MappedAt = _clock.UtcNow);
+    /// </code>
+    ///
+    /// <para><b>WHEN "BEFORE" IS, exactly.</b> The destination has to EXIST to be handed to you, so
+    /// on a create it is constructed first and every member ShiftMapper can assign afterwards is
+    /// moved OUT of the object initializer so this really does precede them. What construction
+    /// settles is still settled and the hook finds it already there: constructor arguments,
+    /// <c>init</c>-only members and <c>required</c> members cannot be assigned later, so they are
+    /// in the initializer. Everything else is untouched when you are handed the object.</para>
+    ///
+    /// <para>On the update overload there is nothing to arrange: the object arrived built, so this
+    /// runs before the first assignment with it exactly as you passed it.</para>
+    ///
+    /// <para><b>IT IS IN-MEMORY ONLY, and it takes the map's projection with it (SM0018).</b> A
+    /// projection is one expression handed to the database; there is no statement in it for your
+    /// code to be. Leaving the projection in place and silently not running the hook is the one
+    /// outcome this library refuses, so <c>ProjectTo</c> throws a message naming the map instead.
+    /// Put hooks on the maps you <c>Map</c>, not on the ones your list endpoints project.</para>
+    /// </summary>
+    /// <param name="action">Given the source and the destination as it stands.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="action"/> is null.</exception>
+    public MapExpression<TSource, TDestination> BeforeMap(Action<TSource, TDestination> action)
+    {
+        if (action is null)
+            throw new ArgumentNullException(nameof(action));
+
+        _customizations?.RegisterHook(
+            typeof(TSource), typeof(TDestination), MapCustomizations.BeforeMember, action);
+
+        return this;
+    }
+
+    /// <summary>
+    /// Runs your code on the destination AFTER the map has filled it in — the last thing that
+    /// happens, on both the create and the update overload.
+    ///
+    /// <code>
+    /// CreateMap&lt;Invoice, InvoiceDto&gt;()
+    ///     .AfterMap((s, d) =&gt; d.Display = d.Number + " — " + d.CustomerName);
+    /// </code>
+    ///
+    /// This is the useful one of the pair: everything the map produced is in place, so it is where
+    /// a value derived from SEVERAL mapped members belongs, and where a destination that needs
+    /// touching up after the fact gets it.
+    ///
+    /// <para>The same limit as <see cref="BeforeMap"/>, and for the same reason: in-memory only,
+    /// and the map loses its projection (SM0018). Where the value can be worked out from the
+    /// SOURCE alone, a <c>ForMember</c> with <c>MapFrom</c> says the same thing and keeps the
+    /// projection — prefer it, and keep <c>AfterMap</c> for what genuinely needs the finished
+    /// destination.</para>
+    /// </summary>
+    /// <param name="action">Given the source and the finished destination.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="action"/> is null.</exception>
+    public MapExpression<TSource, TDestination> AfterMap(Action<TSource, TDestination> action)
+    {
+        if (action is null)
+            throw new ArgumentNullException(nameof(action));
+
+        _customizations?.RegisterHook(
+            typeof(TSource), typeof(TDestination), MapCustomizations.AfterMember, action);
+
+        return this;
+    }
+
+    /// <summary>
+    /// Says one thing about EVERY member of this map, instead of repeating it on each.
+    ///
+    /// <code>
+    /// // a DTO never writes a navigation entity back
+    /// CreateMap&lt;BrandDto, Brand&gt;()
+    ///     .ForAllMembers(opt =&gt; opt.Condition((s, d, value) =&gt; value is not null));
+    /// </code>
+    ///
+    /// What can be said is deliberately one thing — see
+    /// <see cref="AllMemberOptions{TSource, TDestination}"/> for why a blanket <c>MapFrom</c> or
+    /// <c>Ignore</c> is not offered rather than offered and then reported.
+    ///
+    /// A member with its OWN <c>ForMember(..., opt =&gt; opt.Condition(...))</c> uses that instead;
+    /// this is the fallback, never an addition. And a member the map cannot guard at all —
+    /// <c>init</c>-only, <c>required</c>, a constructor argument — is skipped silently here,
+    /// where naming it individually would be SM0016: a rule about everything is understood to
+    /// apply where it can.
+    ///
+    /// YOUR LAMBDA RUNS IMMEDIATELY, once, while your constructor is running.
+    /// </summary>
+    /// <param name="options">What to say about every member.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="options"/> is null.</exception>
+    public MapExpression<TSource, TDestination> ForAllMembers(
+        Action<AllMemberOptions<TSource, TDestination>> options)
+    {
+        if (options is null)
+            throw new ArgumentNullException(nameof(options));
+
+        options(new AllMemberOptions<TSource, TDestination>(_customizations));
+
+        return this;
+    }
 }

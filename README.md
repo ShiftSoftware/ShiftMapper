@@ -168,6 +168,57 @@ ShiftMapper answer alike.
 Both backends are generated from the same analysis, so `Map` and `ProjectTo` agree on what a
 map means.
 
+### Map-level hooks
+
+Four things can be said about a map as a whole, and they divide on one question — **can it be an
+EXPRESSION?** A projection is one expression handed to the database, so anything needing a
+statement cannot be in one.
+
+```csharp
+CreateMap<Brand, BrandLabelDto>()
+    .ConvertUsing(b => new BrandLabelDto { Label = b.Name + " (" + b.ISOCode + ")" });
+
+CreateMap<Invoice, InvoiceLabelDto>()
+    .ForMember(d => d.Display, opt => opt.Ignore())
+    .AfterMap((s, d) => d.Display = d.Label + " — " + d.CustomerName);
+
+CreateMap<BrandPatch, Brand>()
+    .ForAllMembers(opt => opt.Condition((s, d, value) => value is not string text || text.Length > 0));
+```
+
+| Hook | What it replaces | Projects? |
+|---|---|---|
+| `ConvertUsing` | the WHOLE map | **yes** — it is already an expression |
+| `ConstructUsing` | construction only | no (SM0015) |
+| `BeforeMap` / `AfterMap` | nothing; adds a statement | no (SM0018) |
+| `ForAllMembers(opt => opt.Condition(...))` | nothing; guards every assignment | no (SM0017) |
+
+**`ConvertUsing` is the one that matters most.** The expression IS the map: no member is matched,
+converted or reported, and because a tree is exactly what a projection needs, EF gets it unchanged
+— `SELECT [b].[Name] + N' (' + [b].[ISOCode] + N')'`. That is the foundation of the global
+conversion table this library is heading for: a conversion registered once for a type PAIR is a
+`ConvertUsing` declared somewhere else, and it is worth nothing to a list endpoint unless it
+reaches SQL. It has no update overload — an expression that builds a new object cannot fill one
+it was handed — and anything else configured on such a map is reported as doing nothing
+(**SM0019**).
+
+**`BeforeMap` / `AfterMap` are in-memory only, and the map loses its projection (SM0018).** A
+warning rather than a note, because the failure would otherwise be silent: the projection would be
+built, run, and hand back rows the hook never touched. `AfterMap` earns its place where the value
+needs the FINISHED destination; anything derivable from the source belongs in a `ForMember`, which
+projects. On a create, ShiftMapper moves every member it can assign afterwards out of the object
+initializer so `BeforeMap` genuinely precedes them — only what construction settles (constructor
+arguments, `init` and `required` members) is already there.
+
+A hook is an `Action` the generator cannot see inside, so it does not know which members the hook
+fills. Give those an `opt.Ignore()`: it is what says which members the hook owns.
+
+**`ForAllMembers`** says one thing about every member instead of repeating it. It offers only
+`Condition`, because a blanket `MapFrom` has no meaning and a blanket `Ignore` is a map that maps
+nothing — a type does that job better than a diagnostic would. The value arrives boxed as
+`object`, since one predicate serves members of every type; a member's own `Condition` always wins
+over the blanket one, and members that cannot be guarded at all are skipped rather than refused.
+
 ### Per-member options
 
 `ForMember` takes more than `Ignore` and `MapFrom`. Each option changes one part of the single
@@ -324,8 +375,8 @@ and think. Each is reported as SM0002 rather than skipped in silence.
 
 ## Diagnostics
 
-Seventeen rules, `SM0001` to `SM0017`. Three stop the build; the rest describe something that
-will not be mapped, or will be mapped in a way worth knowing about.
+Nineteen rules, `SM0001` to `SM0019`. Three stop the build; the rest describe something that will
+not be mapped, or will be mapped in a way worth knowing about.
 
 | Id | Default | What it means |
 |---|---|---|
@@ -346,6 +397,8 @@ will not be mapped, or will be mapped in a way worth knowing about.
 | SM0015 | Info | The map uses `ConstructUsing`, so `ProjectTo` cannot use it |
 | SM0016 | **Error** | A member whose value is settled at construction cannot carry a `Condition` |
 | SM0017 | Warning | The map carries a `Condition`, so `ProjectTo` cannot use it |
+| SM0018 | Warning | The map runs a `BeforeMap`/`AfterMap` hook, so `ProjectTo` cannot use it |
+| SM0019 | Warning | `ConvertUsing` replaces the whole map, so other configuration does nothing |
 
 `SM0011` is an error because a null nested object in a response looks exactly like a null in the
 database. Two ways forward, both one line: declare the map, or `opt.Ignore()` the property.
@@ -389,10 +442,9 @@ dotnet_diagnostic.SM0001.severity = none
 
 ## Status
 
-What works today is listed above. What does not exist yet — `NullSubstitute`, `BeforeMap` /
-`AfterMap`, flattening, inheritance, open generics, and the global configuration layer a library
-needs — is laid out in order in [PLAN.md](PLAN.md), which is the roadmap this repository is built
-from.
+What works today is listed above. What does not exist yet — `NullSubstitute`, flattening,
+inheritance, open generics, and the global configuration layer a library needs — is laid out in
+order in [PLAN.md](PLAN.md), which is the roadmap this repository is built from.
 
 ## License
 

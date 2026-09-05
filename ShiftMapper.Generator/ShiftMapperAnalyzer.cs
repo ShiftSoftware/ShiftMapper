@@ -238,6 +238,31 @@ public sealed class ShiftMapperAnalyzer : DiagnosticAnalyzer
                     map.DestinationName);
             }
 
+            // SM0018 — an in-memory hook, so no projection. Said once for the map: it is the
+            // map's projection that is gone, and one hook is enough to take it.
+            if (map.HasHooks)
+            {
+                report.Report(
+                    DiagnosticDescriptors.HookIsNotProjectable,
+                    location,
+                    map.SourceName,
+                    map.DestinationName,
+                    map.HasBeforeMap && map.HasAfterMap ? "BeforeMap and AfterMap"
+                        : map.HasBeforeMap ? "BeforeMap" : "AfterMap");
+            }
+
+            // SM0019 — configuration a ConvertUsing map ignores. Listed rather than reported one
+            // per call, because the fix is to delete them together.
+            if (!map.DeadConfiguration.IsEmpty)
+            {
+                report.Report(
+                    DiagnosticDescriptors.ConvertUsingIgnoresConfiguration,
+                    location,
+                    map.SourceName,
+                    map.DestinationName,
+                    string.Join(" / ", map.DeadConfiguration));
+            }
+
             // SM0016 — a Condition on a member there is no assignment to guard. Named per member,
             // because which one it is IS the message.
             foreach (ConditionRefusal refusal in map.RefusedConditions)

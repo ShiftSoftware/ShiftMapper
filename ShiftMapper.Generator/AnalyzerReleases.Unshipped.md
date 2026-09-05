@@ -23,3 +23,5 @@ SM0014 | ShiftMapper | Warning | Destination cannot be created because a require
 SM0015 | ShiftMapper | Info | Map cannot be projected because it builds its destination with ConstructUsing
 SM0016 | ShiftMapper | Error | Member cannot be given a Condition because its value is settled when the object is created
 SM0017 | ShiftMapper | Warning | Map cannot be projected because a member carries a Condition
+SM0018 | ShiftMapper | Warning | Map cannot be projected because it runs a BeforeMap or AfterMap hook
+SM0019 | ShiftMapper | Warning | Configuration has no effect because ConvertUsing replaces the whole map

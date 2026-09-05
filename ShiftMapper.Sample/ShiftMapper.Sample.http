@@ -326,11 +326,14 @@ Accept: application/json
 #     "absent", so this body arrives with Name = "", ISOCode = "" and FoundedYear = 0 — and
 #     without a Condition the generated update writes all three over the tracked entity.
 #
-#     AppMapper guards each member on the incoming value:
+#     AppMapper guards each member on the incoming value. The rule is uniform for the three
+#     strings, so it is said once with ForAllMembers (see 1n) and FoundedYear keeps a TYPED one
+#     of its own:
 #
-#         .ForMember(d => d.Name, opt => opt.Condition((s, d, value) => !string.IsNullOrWhiteSpace(value)))
+#         .ForAllMembers(opt => opt.Condition((s, d, value) => value is not string text || text.Length > 0))
+#         .ForMember(d => d.FoundedYear, opt => opt.Condition((s, d, value) => value > 0))
 #
-#     which generates, in the update overload:
+#     Either spelling generates the same guard in the update overload:
 #
 #         {
 #             var value = source.Name;
@@ -365,6 +368,105 @@ Content-Type: application/json
 #     and they are untouched.
 GET {{HostAddress}}/api/brands/1
 Accept: application/json
+
+### 1k. CONVERTUSING — the expression IS the map, and the one map-level hook that projects.
+#
+#     CreateMap<Brand, BrandLabelDto>()
+#         .ConvertUsing(b => new BrandLabelDto { Label = b.Name + " (" + b.ISOCode + ")" });
+#
+#     Not one member is matched. BrandLabelDto.Label has no counterpart on Brand and never
+#     produces an SM0001, because this map does not do conventions at all. Where ConstructUsing
+#     (request 1h) replaces only CONSTRUCTION and lets the members be mapped onto what it
+#     returned, this replaces the lot.
+GET {{HostAddress}}/api/brands/labels
+Accept: application/json
+
+### 1k2. AND IT REACHES THE DATABASE, which is the whole reason it matters:
+#
+#         SELECT [b].[Name] + N' (' + [b].[ISOCode] + N')' AS [Label]
+#         FROM [Brands] AS [b]
+#         ORDER BY [b].[Id]
+#
+#     One expression, two columns. Compare it with 1h2, where ConstructUsing REFUSES to project.
+#
+#     THE DIFFERENCE IS NOT ARBITRARY. A projection is one expression handed to SQL, so anything
+#     that needs a STATEMENT cannot be in one — and that is three of the four map-level hooks:
+#
+#         ConstructUsing   a call whose result is then assigned onto    (SM0015, info)
+#         Condition        an `if` around one binding                   (SM0017, warning)
+#         BeforeMap/AfterMap  a statement of your own                   (SM0018, warning)
+#         ConvertUsing     ...is already an expression                  projects
+#
+#     That is why ConvertUsing is the one this library is built around: a conversion registered
+#     once for a TYPE PAIR is a ConvertUsing declared somewhere else, and it is worth nothing to
+#     a list endpoint unless it reaches SQL.
+#
+#     One more thing it will not let you do quietly: anything ELSE configured on such a map does
+#     nothing, so the build says so rather than letting it look configured —
+#
+#         warning SM0019: the map from 'X' to 'Y' uses ConvertUsing, which replaces the whole
+#                         map, so its ForMember / AfterMap does nothing
+GET {{HostAddress}}/api/brands/labels?sql=true
+Accept: text/plain
+
+### 1m. AFTERMAP — the case a ForMember cannot cover.
+#
+#     Look at "display". It is derived from the FINISHED destination: "label", which only the
+#     ConstructUsing factory knows, plus "customerName", which only the member mapping knows.
+#     No MapFrom could produce it, because a MapFrom sees the SOURCE and this needs the result.
+#
+#         .ForMember(d => d.Display, opt => opt.Ignore())
+#         .AfterMap((s, d) => d.Display = d.Label + " — " + d.CustomerName);
+#
+#     THE IGNORE IS THE PATTERN, not boilerplate. A hook is an Action the generator cannot see
+#     inside, so it has no idea Display gets filled, and "'InvoiceLabelDto.Display' is not
+#     mapped" would be a TRUE statement about the conventions. Ignoring it says out loud which
+#     members the hook owns — which is what opt.Ignore() has always meant.
+#
+#     BeforeMap is the other half of the pair and runs at the other end. On an update it sees the
+#     object exactly as you passed it; on a create ShiftMapper moves every member it can assign
+#     afterwards OUT of the object initializer so that "before" means what it says — only what
+#     construction settles (constructor arguments, init-only and required members) is already
+#     there.
+#
+#     Both are IN-MEMORY ONLY and the map loses its projection (SM0018). This one had already
+#     lost it to ConstructUsing (SM0015), and BOTH are reported, because removing one would not
+#     give the projection back.
+GET {{HostAddress}}/api/invoices/1/label
+Accept: application/json
+
+### 1n. FORALLMEMBERS — one rule instead of the same line four times.
+#
+#     The BrandPatch map used to carry four Conditions, three of them identical. Now:
+#
+#         .ForAllMembers(opt => opt.Condition((s, d, value) => value is not string text || text.Length > 0))
+#         .ForMember(d => d.FoundedYear, opt => opt.Condition((s, d, value) => value > 0))
+#
+#     The value arrives as an OBJECT, because one predicate has to serve members of every type.
+#     That is the price of saying it once — and it is exactly why FoundedYear keeps a condition
+#     of its OWN: "blank" for a number is 0, not an empty string, and a TYPED predicate says that
+#     far better than a cast inside a blanket rule would.
+#
+#     A MEMBER'S OWN CONDITION WINS, never both. This request sends blanks for all four, so the
+#     three strings are refused by the blanket rule and the year by its own.
+PATCH {{HostAddress}}/api/brands/4
+Content-Type: application/json
+
+{
+  "name": "",
+  "country": "",
+  "isoCode": "",
+  "foundedYear": 0
+}
+
+### 1n2. And a real year IS accepted, which is the typed rule doing its job — the blanket one
+#     would have taken 0 just as happily, because 0 is not a blank string.
+PATCH {{HostAddress}}/api/brands/4
+Content-Type: application/json
+
+{
+  "foundedYear": 1888
+}
 
 ### 2. Invoices — THE MAP AS A DATABASE QUERY.
 #     db.Invoices.ProjectTo<InvoiceDto>(mapper), and again not one Include, yet the response

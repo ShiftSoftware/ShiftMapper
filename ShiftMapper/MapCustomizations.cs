@@ -159,6 +159,26 @@ public sealed class MapCustomizations
     internal const string ConstructorMember = ".ctor";
 
     /// <summary>
+    /// The key a map-level <c>ConvertUsing</c> expression is stored under, beside
+    /// <see cref="ConstructorMember"/> and for the same reason: it is a tree the compiler built in
+    /// the developer's file, so it wants the same compile-once caching, and a name no property can
+    /// have keeps it out of the member bindings.
+    /// </summary>
+    internal const string ConverterMember = ".convert";
+
+    /// <summary>The key a <c>BeforeMap</c> hook is stored under.</summary>
+    internal const string BeforeMember = ".before";
+
+    /// <summary>The key an <c>AfterMap</c> hook is stored under.</summary>
+    internal const string AfterMember = ".after";
+
+    /// <summary>
+    /// The key a <c>ForAllMembers</c> condition is stored under — a wildcard, consulted for any
+    /// member that has no condition of its own.
+    /// </summary>
+    internal const string AllMembers = "*";
+
+    /// <summary>
     /// Records the expression a <c>ConstructUsing</c> call supplied. Internal for the same reason
     /// as <see cref="Register"/>: the only supported way here is through
     /// <see cref="MapExpression{TSource, TDestination}.ConstructUsing"/>.
@@ -181,6 +201,78 @@ public sealed class MapCustomizations
     /// </exception>
     public Func<TSource, TDestination> Construct<TSource, TDestination>() =>
         Value<TSource, TDestination, TDestination>(ConstructorMember);
+
+    /// <summary>
+    /// Records the expression a map-level <c>ConvertUsing</c> supplied.
+    /// </summary>
+    internal void RegisterConverter(Type source, Type destination, LambdaExpression converter) =>
+        Register(source, destination, ConverterMember, converter);
+
+    /// <summary>
+    /// The <c>ConvertUsing</c> expression for one map, compiled and ready to call.
+    ///
+    /// Cached on exactly the terms a <c>MapFrom</c> is — per instance when the expression
+    /// captured the mapper's own state, per process when it did not.
+    /// </summary>
+    public Func<TSource, TDestination> Converter<TSource, TDestination>() =>
+        Value<TSource, TDestination, TDestination>(ConverterMember);
+
+    /// <summary>
+    /// The same expression as a TREE, which is what makes <c>ConvertUsing</c> the one map-level
+    /// hook that projects.
+    ///
+    /// The generated projection returns this unchanged rather than composing anything into it: the
+    /// developer's expression IS the whole map, so there is nothing to merge and nothing for EF to
+    /// see through. That is the difference between it and <c>ConstructUsing</c>, which builds an
+    /// object a projection would then have to assign onto.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// No converter was registered for this map, which means the generated code and this store
+    /// disagree. Rebuild.
+    /// </exception>
+    public Expression<Func<TSource, TDestination>> ConverterExpression<TSource, TDestination>()
+    {
+        if (!_values.TryGetValue(
+                new CustomizationKey(typeof(TSource), typeof(TDestination), ConverterMember),
+                out LambdaExpression? converter))
+        {
+            throw new InvalidOperationException(
+                $"ShiftMapper: no ConvertUsing was registered for '{typeof(TSource).Name} -> " +
+                $"{typeof(TDestination).Name}', but the generated mapper expects one. Rebuild — this " +
+                "normally means the generated mapper is out of date with your CreateMap calls.");
+        }
+
+        return (Expression<Func<TSource, TDestination>>)converter;
+    }
+
+    /// <summary>Records a <c>BeforeMap</c> or <c>AfterMap</c> hook.</summary>
+    internal void RegisterHook(Type source, Type destination, string member, Delegate hook) =>
+        _conditions[new CustomizationKey(source, destination, member)] = hook;
+
+    /// <summary>
+    /// Runs the map's <c>BeforeMap</c> hook, if it has one.
+    ///
+    /// The generated code only calls this where the chain declared one, so the lookup is not a
+    /// per-object cost on maps without hooks. It still tolerates a missing entry, on the same
+    /// reasoning as <see cref="Condition"/>: if the generated file and this store ever disagree,
+    /// doing nothing is the safe direction.
+    /// </summary>
+    public void RunBefore<TSource, TDestination>(TSource source, TDestination destination) =>
+        Run(BeforeMember, source, destination);
+
+    /// <inheritdoc cref="RunBefore"/>
+    public void RunAfter<TSource, TDestination>(TSource source, TDestination destination) =>
+        Run(AfterMember, source, destination);
+
+    private void Run<TSource, TDestination>(string member, TSource source, TDestination destination)
+    {
+        if (_conditions.TryGetValue(
+                new CustomizationKey(typeof(TSource), typeof(TDestination), member),
+                out Delegate? hook))
+        {
+            ((Action<TSource, TDestination>)hook)(source, destination);
+        }
+    }
 
     /// <summary>
     /// Records the predicate a <c>Condition</c> call supplied. Internal for the same reason as
@@ -240,10 +332,16 @@ public sealed class MapCustomizations
     {
         _ = current;
 
-        if (!_conditions.TryGetValue(new CustomizationKey(typeof(TSource), typeof(TDestination), member), out Delegate? predicate))
-            return true;
+        if (_conditions.TryGetValue(new CustomizationKey(typeof(TSource), typeof(TDestination), member), out Delegate? predicate))
+            return ((Func<TSource, TDestination, TProperty, bool>)predicate)(source, destination, candidate);
 
-        return ((Func<TSource, TDestination, TProperty, bool>)predicate)(source, destination, candidate);
+        // A ForAllMembers condition, which is stored once under a wildcard rather than copied onto
+        // every member. It is typed in OBJECT because it has to serve members of every type, so the
+        // value is boxed on the way in — the one cost of saying a rule once instead of per member.
+        if (_conditions.TryGetValue(new CustomizationKey(typeof(TSource), typeof(TDestination), AllMembers), out Delegate? all))
+            return ((Func<TSource, TDestination, object?, bool>)all)(source, destination, candidate);
+
+        return true;
     }
 
     /// <summary>
@@ -482,7 +580,8 @@ public sealed class MapCustomizations
         List<KeyValuePair<CustomizationKey, LambdaExpression>> applicable = _values
             .Where(entry => entry.Key.Source == typeof(TSource)
                          && entry.Key.Destination == typeof(TDestination)
-                         && entry.Key.Member != ConstructorMember)
+                         && entry.Key.Member != ConstructorMember
+                         && entry.Key.Member != ConverterMember)
             .ToList();
 
         if (applicable.Count == 0 && nested.Length == 0 && constructorArguments.Length == 0)

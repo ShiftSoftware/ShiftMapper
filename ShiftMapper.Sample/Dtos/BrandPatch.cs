@@ -1,4 +1,4 @@
-namespace ShiftMapper.Sample.Dtos;
+﻿namespace ShiftMapper.Sample.Dtos;
 
 /// <summary>
 /// A PARTIAL update to a <see cref="Entities.Brand"/> — the body of a PATCH, where every field is
@@ -17,13 +17,18 @@ namespace ShiftMapper.Sample.Dtos;
 /// Before <c>Condition</c> the only fixes were to stop using the overload, or to copy the
 /// non-blank fields by hand — which is the code a mapper exists to delete.
 ///
-/// <para><b>THE FIX</b>, in AppMapper, is one <c>Condition</c> per member:</para>
+/// <para><b>THE FIX</b>, in AppMapper, is a <c>Condition</c>. The rule is the same for all three
+/// strings, so it is said ONCE with <c>ForAllMembers</c>; <see cref="FoundedYear"/> keeps a TYPED
+/// one of its own, because "blank" for a number is <c>0</c> rather than an empty string and a
+/// blanket predicate sees every value as an <c>object</c>:</para>
 ///
 /// <code>
-/// .ForMember(d =&gt; d.Name, opt =&gt; opt.Condition((s, d, value) =&gt; !string.IsNullOrWhiteSpace(value)))
+/// .ForAllMembers(opt =&gt; opt.Condition((s, d, value) =&gt; value is not string text || text.Length &gt; 0))
+/// .ForMember(d =&gt; d.FoundedYear, opt =&gt; opt.Condition((s, d, value) =&gt; value &gt; 0))
 /// </code>
 ///
-/// which generates
+/// A member's own condition always wins over the blanket one, never both. Either spelling
+/// generates the same guard:
 ///
 /// <code>
 /// {

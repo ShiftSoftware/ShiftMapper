@@ -58,6 +58,32 @@ public partial class TestMapper : ShiftMapperBase
         CreateMap<Stock, StockRequiredDto>()
             .ForMember(d => d.Summary, opt => opt.MapFrom(s => s.Name + ", " + s.City));
 
+        // CONVERTUSING — the expression IS the map, and the one map-level hook that projects.
+        // No member is matched, so Label is never reported unmapped; and the tree is exactly what
+        // a projection needs, so ProjectTo hands it to EF unchanged.
+        CreateMap<Brand, BrandLabelDto>()
+            .ConvertUsing(b => new BrandLabelDto { Label = b.Name + " (" + b.ISOCode + ")" });
+
+        // BEFOREMAP / AFTERMAP — in-memory only, so this map has no projection (SM0018).
+        // Summary is what earns the hook: it reads members of the DESTINATION after they have been
+        // mapped, which a MapFrom over the source cannot see.
+        //
+        // The two Ignores are the pattern rather than boilerplate. A hook is an Action the
+        // generator cannot see inside, so it has no idea Trace and Summary get filled — and
+        // "'StockAuditDto.Summary' is not mapped" is a TRUE statement about the conventions.
+        // Ignoring them says out loud which members the hook owns, which is the same thing
+        // opt.Ignore() has always meant.
+        CreateMap<Stock, StockAuditDto>()
+            .ForMember(d => d.Trace, opt => opt.Ignore())
+            .ForMember(d => d.Summary, opt => opt.Ignore())
+            .BeforeMap((s, d) => d.Trace = "before:" + d.Name)
+            .AfterMap((s, d) => d.Summary = d.Name + ", " + d.City);
+
+        // FORALLMEMBERS — one rule said once. Same semantics as a per-member Condition, applied
+        // to every member the map can guard.
+        CreateMap<ProfileUpdate, ProfileBlanket>()
+            .ForAllMembers(opt => opt.Condition((s, d, value) => value is string text && text.Length > 0));
+
         // MAPFROMSOURCE. Lines.Count is an int and LineCount is text, so MapFrom could not say
         // this at all — its expression has to return the destination member's type. The
         // conversion is the table's, so it projects, and both backends agree.

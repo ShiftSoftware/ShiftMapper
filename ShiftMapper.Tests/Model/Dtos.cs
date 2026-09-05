@@ -98,6 +98,54 @@ public class CatalogSummaryDto
 }
 
 /// <summary>
+/// Built ENTIRELY by a <c>ConvertUsing</c> expression — the one map-level hook that projects.
+///
+/// Nothing here is matched by name: <c>Label</c> has no counterpart on <c>Brand</c> and is never
+/// reported as unmapped, because the expression is the whole map. And because that expression is a
+/// TREE, it is exactly what a projection wants, so <c>ProjectTo</c> hands it to EF unchanged rather
+/// than composing anything into it.
+/// </summary>
+public class BrandLabelDto
+{
+    public string Label { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// Filled by the ordinary conventions and then TOUCHED UP by an <c>AfterMap</c>.
+///
+/// <c>Summary</c> is the reason the hook exists: it is derived from members of the DESTINATION
+/// after they have been mapped, which a <c>MapFrom</c> over the source cannot see. The price is
+/// stated at build time — the map has no projection (SM0018), because a projection is one
+/// expression and a hook is a statement.
+/// </summary>
+public class StockAuditDto
+{
+    public string Name { get; set; } = string.Empty;
+
+    public string City { get; set; } = string.Empty;
+
+    /// <summary>Set by BeforeMap, so it proves the hook ran before the members were assigned.</summary>
+    public string Trace { get; set; } = string.Empty;
+
+    /// <summary>Set by AfterMap from the two members above.</summary>
+    public string Summary { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// The <c>ForAllMembers</c> destination: one rule said once instead of on every member.
+///
+/// It is the shape ShiftFramework needs for "a DTO never writes a navigation entity back" — a
+/// blanket condition rather than a condition repeated per member, with the same semantics as a
+/// per-member one, including losing the projection.
+/// </summary>
+public class ProfileBlanket
+{
+    public string Name { get; set; } = "unset-name";
+
+    public string City { get; set; } = "unset-city";
+}
+
+/// <summary>
 /// A value the entity does not store, converted by ShiftMapper rather than by hand.
 ///
 /// <c>LineCount</c> is text and <c>Invoice.Lines.Count</c> is an int, so <c>MapFrom</c> could not

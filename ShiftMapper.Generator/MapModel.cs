@@ -1,4 +1,6 @@
-﻿using System.Collections.Immutable;
+﻿using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
 
 namespace ShiftMapper.Generator;
 
@@ -35,8 +37,16 @@ internal sealed class MapModel
         ImmutableArray<ConstructionProblem> constructionProblems,
         bool constructsWithFactory,
         ImmutableArray<string> conditionedMembers,
-        ImmutableArray<ConditionRefusal> refusedConditions)
+        ImmutableArray<ConditionRefusal> refusedConditions,
+        bool convertsWithExpression,
+        bool hasBeforeMap,
+        bool hasAfterMap,
+        ImmutableArray<string> deadConfiguration)
     {
+        ConvertsWithExpression = convertsWithExpression;
+        HasBeforeMap = hasBeforeMap;
+        HasAfterMap = hasAfterMap;
+        DeadConfiguration = deadConfiguration;
         ConditionedMembers = conditionedMembers;
         RefusedConditions = refusedConditions;
         Constructor = constructor;
@@ -131,15 +141,110 @@ internal sealed class MapModel
     public ImmutableArray<ConditionRefusal> RefusedConditions { get; }
 
     /// <summary>
+    /// Whether the map is REPLACED WHOLE by a <c>ConvertUsing</c> expression.
+    ///
+    /// It is the one map-level hook that projects, and the odd one out in almost every other way:
+    /// no member is matched, converted or reported; there is no update overload, because an
+    /// expression that builds a new object cannot fill one it was handed; and the projection IS
+    /// the developer's expression rather than something composed.
+    /// </summary>
+    public bool ConvertsWithExpression { get; }
+
+    /// <summary>Whether the map declared a <c>BeforeMap</c> hook.</summary>
+    public bool HasBeforeMap { get; }
+
+    /// <summary>Whether the map declared an <c>AfterMap</c> hook.</summary>
+    public bool HasAfterMap { get; }
+
+    /// <summary>Whether the map declared either hook — which is what costs it its projection.</summary>
+    public bool HasHooks => HasBeforeMap || HasAfterMap;
+
+    /// <summary>
+    /// Members the create method assigns AFTER the object exists, rather than binding in the
+    /// object initializer.
+    ///
+    /// Two things put a member here, and they want the same shape for different reasons.
+    ///
+    /// A CONDITIONED member has to be deferred because C# has no syntax for leaving a binding out
+    /// of an initializer per object.
+    ///
+    /// A <c>BeforeMap</c> defers EVERYTHING it can, and that is what makes "before" mean what it
+    /// says. Left in the initializer, every convention-mapped member would already be set by the
+    /// time the hook was handed the object, and <c>BeforeMap</c> would differ from
+    /// <c>AfterMap</c> only in which conditioned members had run — a distinction nobody could
+    /// use. Deferred, the hook sees the object as construction left it.
+    ///
+    /// What construction settles is still settled: constructor arguments, <c>init</c>-only and
+    /// <c>required</c> members cannot be assigned afterwards, so they are in the initializer and
+    /// the hook finds them already there. That is the documented limit rather than a gap.
+    /// </summary>
+    public ImmutableArray<string> DeferredMembers
+    {
+        get
+        {
+            if (!HasBeforeMap)
+                return ConditionedMembers;
+
+            var deferred = ImmutableArray.CreateBuilder<string>();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+
+            foreach (PropertyPair property in WritablePropertyNames)
+            {
+                if (seen.Add(property.Destination))
+                    deferred.Add(property.Destination);
+            }
+
+            foreach (CustomProperty custom in CustomProperties)
+            {
+                if (custom.CanSetAfterConstruction && seen.Add(custom.Name))
+                    deferred.Add(custom.Name);
+            }
+
+            foreach (NestedProperty nested in NestedProperties)
+            {
+                if (nested.CanSetAfterConstruction && seen.Add(nested.Destination))
+                    deferred.Add(nested.Destination);
+            }
+
+            // A conditioned member that is somehow not in those lists still has to be deferred,
+            // or its guard would be emitted for an assignment the initializer already made.
+            foreach (string member in ConditionedMembers)
+            {
+                if (seen.Add(member))
+                    deferred.Add(member);
+            }
+
+            return deferred.ToImmutable();
+        }
+    }
+
+    /// <summary>Whether one member is assigned after construction rather than bound in the initializer.</summary>
+    public bool IsDeferred(string member) => DeferredMembers.Contains(member);
+
+    /// <summary>
+    /// Configuration on a <c>ConvertUsing</c> map that therefore does nothing, named for SM0019.
+    ///
+    /// It matters because it LOOKS configured. A <c>ForMember</c> sitting above a
+    /// <c>ConvertUsing</c> reads as though it refines the map, and refines nothing.
+    /// </summary>
+    public ImmutableArray<string> DeadConfiguration { get; }
+
+    /// <summary>
     /// Whether this map has a projection at all.
     ///
-    /// Two things take one away, and they are the same thing twice: a projection is ONE member
-    /// initializer handed to the database, so anything that needs a statement cannot be in it.
+    /// Three things take one away, and they are the same thing three times: a projection is ONE
+    /// expression handed to the database, so anything needing a STATEMENT cannot be in it.
     /// <c>ConstructUsing</c> needs a call whose result is then assigned onto (SM0015); a
-    /// <c>Condition</c> needs an <c>if</c> around one binding (SM0017). Neither exists in an
-    /// expression tree.
+    /// <c>Condition</c> needs an <c>if</c> around one binding (SM0017); a hook needs a statement of
+    /// the developer's own (SM0018).
+    ///
+    /// <c>ConvertUsing</c> is the exception that proves the rule — it replaces the map with an
+    /// expression, which is exactly what a projection is, so it needs nothing composed and
+    /// projects unchanged.
     /// </summary>
-    public bool IsProjectable => !ConstructsWithFactory && ConditionedMembers.Length == 0;
+    public bool IsProjectable =>
+        ConvertsWithExpression
+        || (!ConstructsWithFactory && ConditionedMembers.Length == 0 && !HasHooks);
 
     /// <summary>
     /// Whether anything at all can be assigned to the destination after it exists — which is
@@ -159,7 +264,8 @@ internal sealed class MapModel
     /// (mutating a copy of a struct would silently do nothing) AND have something that can be
     /// assigned once it exists.
     /// </summary>
-    public bool CanUpdate => !IsDestinationValueType && HasAssignableMembers;
+    public bool CanUpdate =>
+        !IsDestinationValueType && HasAssignableMembers && !ConvertsWithExpression;
 
     private static bool AnySettable(ImmutableArray<CustomProperty> properties)
     {
@@ -263,7 +369,7 @@ internal sealed class MapModel
             WritablePropertyNames, UnmappedProperties, ConvertedProperties, CustomProperties,
             nestedProperties, DestinationName, Location, IsReverse, AllowNullCollections,
             Constructor, ConstructionProblems, ConstructsWithFactory, ConditionedMembers,
-            RefusedConditions);
+            RefusedConditions, ConvertsWithExpression, HasBeforeMap, HasAfterMap, DeadConfiguration);
 
     /// <summary>
     /// The same map with a constructor argument's nested value settled, produced by the resolve
@@ -279,5 +385,5 @@ internal sealed class MapModel
             WritablePropertyNames, UnmappedProperties, ConvertedProperties, CustomProperties,
             NestedProperties, DestinationName, Location, IsReverse, AllowNullCollections,
             constructor, ConstructionProblems, ConstructsWithFactory, ConditionedMembers,
-            RefusedConditions);
+            RefusedConditions, ConvertsWithExpression, HasBeforeMap, HasAfterMap, DeadConfiguration);
 }
