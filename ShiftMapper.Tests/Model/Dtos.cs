@@ -98,6 +98,49 @@ public class CatalogSummaryDto
 }
 
 /// <summary>
+/// A value the entity does not store, converted by ShiftMapper rather than by hand.
+///
+/// <c>LineCount</c> is text and <c>Invoice.Lines.Count</c> is an int, so <c>MapFrom</c> could not
+/// express it — its expression must return the DESTINATION member's type. <c>MapFromSource</c>
+/// can, and the conversion is then the one the table picks, in both backends: an int is written
+/// out the same way whether that happens in C# or in SQL, which is what makes the parity
+/// assertion meaningful.
+/// </summary>
+public class InvoiceCountDto
+{
+    public int Id { get; set; }
+
+    public string LineCount { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// A PARTIAL UPDATE, and the shape <c>Condition</c> exists for.
+///
+/// <c>Map(update, profile)</c> is otherwise a PUT: it assigns every mapped member every time, so a
+/// caller who sent only a city silently blanks the name and zeroes the age. Each member here is
+/// guarded by a predicate over the incoming value, so an absent one is left exactly as it was.
+/// </summary>
+public class ProfileUpdate
+{
+    public string Name { get; set; } = string.Empty;
+
+    public string City { get; set; } = string.Empty;
+
+    public int Age { get; set; }
+}
+
+/// <inheritdoc cref="ProfileUpdate"/>
+public class Profile
+{
+    /// <summary>The defaults are what a DECLINED condition leaves behind on a create.</summary>
+    public string Name { get; set; } = "unset-name";
+
+    public string City { get; set; } = "unset-city";
+
+    public int Age { get; set; } = -1;
+}
+
+/// <summary>
 /// The dictionary destinations, one per case: copied unchanged, values converted, keys
 /// converted, and a nullable source under the default policy.
 /// </summary>

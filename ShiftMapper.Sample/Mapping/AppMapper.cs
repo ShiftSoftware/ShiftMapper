@@ -366,8 +366,72 @@ public partial class AppMapper : ShiftMapperBase
         // absent from the generated projection, and a required one cannot be, so the projection
         // names it with a placeholder that Compose replaces. Delete this ForMember to watch
         // SM0014 arrive. See InvoiceReceiptDto.
+        //
+        // AND IT IS MAPFROMSOURCE, WHICH IS THE POINT. The sum is a decimal and Total is a string,
+        // so plain MapFrom cannot express this at all — its expression must return the
+        // DESTINATION member's type. Until MapFromSource existed this line read
+        //
+        //     .ForMember(d => d.Total, opt => opt.MapFrom(s => s.Lines.Sum(...).ToString("0.00")))
+        //
+        // which compiled, worked, and was WRONG: ToString with no format provider reads the
+        // machine's culture, so the total left a German server as "1596,00" — in a library whose
+        // ValueConverter exists to make exactly that impossible, and which gets it right for
+        // ProductSummaryDto.Price two maps up. Handing the decimal over and letting the conversion
+        // table write the ToString is the whole feature.
         CreateMap<Invoice, InvoiceReceiptDto>()
-            .ForMember(d => d.Total, opt => opt.MapFrom(s => s.Lines.Sum(l => l.Quantity * l.UnitPrice).ToString("0.00")));
+            // Money stays a decimal. Converting a COMPUTED decimal to text is where the two
+            // backends part company, and not because of anything ShiftMapper does: EF writes
+            // CAST([Quantity] AS decimal(18,2)) * [UnitPrice], so SQL multiplies scale 2 by scale
+            // 2 and gets 4 where C# gets 2 — "1596.0000" against "1596.00". See
+            // InvoiceReceiptDto.Total, which records the whole finding.
+            .ForMember(d => d.Total, opt => opt.MapFrom(s => s.Lines.Sum(l => l.Quantity * l.UnitPrice)))
+
+            // MAPFROMSOURCE, on a conversion that cannot drift. Lines.Count is an int and
+            // LineCount is text, so MapFrom cannot say this at all — its expression has to return
+            // the destination member's type, which is why the old Total read
+            // `.MapFrom(s => s.Lines.Sum(...).ToString("0.00"))`: a hand-written conversion, with
+            // no format provider, that sent "1596,00" from a German server.
+            //
+            // Handing the value over instead puts it back through the conversion table, so it gets
+            // the invariant ToString AND the table's diagnostics, in both backends.
+            .ForMember(d => d.LineCount, opt => opt.MapFromSource(s => s.Lines.Count));
+
+        // ------------------------------------------------------------------
+        // CONDITION — how the update overload stops being a PUT.
+        // ------------------------------------------------------------------
+        //
+        // mapper.Map(dto, entity) assigns every mapped member, every time. That is right for a
+        // full replace and wrong for a PATCH: a client who sends only a city would blank the name
+        // and zero the founded year, because an absent JSON field arrives as "" and 0.
+        //
+        // A Condition guards the assignment and changes nothing else — the member still matches
+        // by name, still goes through the same generated conversion, still reports the same
+        // diagnostics. Think of it as a runtime opt.Ignore(): Ignore decides once at build time,
+        // this decides per object.
+        //
+        // THE TRADE, which the build states rather than leaving to be found:
+        //
+        //   warning SM0017: the map from 'BrandPatch' to 'Brand' assigns 'Name', 'Country',
+        //                   'ISOCode', 'FoundedYear' behind a Condition, so ProjectTo cannot use
+        //                   it; Map is unaffected
+        //
+        // A projection is one member initializer handed to the database and there is no way to
+        // leave a binding out per row. Asking for one throws a message naming this map.
+        //
+        // Try it: PATCH /api/brands/1 with only { "country": "Ireland" }.
+        CreateMap<BrandPatch, Brand>()
+            .ForMember(d => d.Name, opt => opt.Condition((s, d, value) => !string.IsNullOrWhiteSpace(value)))
+            .ForMember(d => d.Country, opt => opt.Condition((s, d, value) => !string.IsNullOrWhiteSpace(value)))
+            .ForMember(d => d.ISOCode, opt => opt.Condition((s, d, value) => !string.IsNullOrWhiteSpace(value)))
+            .ForMember(d => d.FoundedYear, opt => opt.Condition((s, d, value) => value > 0))
+
+            // Everything Brand has that a patch body does not. Without these the map reports four
+            // SM0001s for members a partial update was never going to carry.
+            .ForMember(d => d.Id, opt => opt.Ignore())
+            .ForMember(d => d.Tags, opt => opt.Ignore())
+            .ForMember(d => d.ExternalIds, opt => opt.Ignore())
+            .ForMember(d => d.Aliases, opt => opt.Ignore())
+            .ForMember(d => d.Products, opt => opt.Ignore());
 
         // CONSTRUCTUSING, for the case convention cannot reach: no constructor ShiftMapper could
         // pick would know about the numbering service. It replaces CONSTRUCTION and nothing else

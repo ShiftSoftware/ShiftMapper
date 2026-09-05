@@ -33,8 +33,12 @@ internal sealed class MapModel
         bool allowNullCollections,
         ConstructorPlan constructor,
         ImmutableArray<ConstructionProblem> constructionProblems,
-        bool constructsWithFactory)
+        bool constructsWithFactory,
+        ImmutableArray<string> conditionedMembers,
+        ImmutableArray<ConditionRefusal> refusedConditions)
     {
+        ConditionedMembers = conditionedMembers;
+        RefusedConditions = refusedConditions;
         Constructor = constructor;
         ConstructionProblems = constructionProblems;
         ConstructsWithFactory = constructsWithFactory;
@@ -112,6 +116,30 @@ internal sealed class MapModel
     /// not exist. Reported as SM0015.
     /// </summary>
     public bool ConstructsWithFactory { get; }
+
+    /// <summary>
+    /// The members carrying a live <c>Condition</c> — assigned behind an <c>if</c> rather than
+    /// unconditionally, and pulled out of the object initializer so a declined one keeps the
+    /// value its own initializer gave it.
+    /// </summary>
+    public ImmutableArray<string> ConditionedMembers { get; }
+
+    /// <summary>
+    /// Conditions ShiftMapper refuses, each with its reason — SM0016. The member is still
+    /// emitted, unconditioned, so the generated file compiles while the build fails.
+    /// </summary>
+    public ImmutableArray<ConditionRefusal> RefusedConditions { get; }
+
+    /// <summary>
+    /// Whether this map has a projection at all.
+    ///
+    /// Two things take one away, and they are the same thing twice: a projection is ONE member
+    /// initializer handed to the database, so anything that needs a statement cannot be in it.
+    /// <c>ConstructUsing</c> needs a call whose result is then assigned onto (SM0015); a
+    /// <c>Condition</c> needs an <c>if</c> around one binding (SM0017). Neither exists in an
+    /// expression tree.
+    /// </summary>
+    public bool IsProjectable => !ConstructsWithFactory && ConditionedMembers.Length == 0;
 
     /// <summary>
     /// Whether anything at all can be assigned to the destination after it exists — which is
@@ -234,7 +262,8 @@ internal sealed class MapModel
             IsSourceValueType, IsDestinationValueType, CanConstructDestination, PropertyNames,
             WritablePropertyNames, UnmappedProperties, ConvertedProperties, CustomProperties,
             nestedProperties, DestinationName, Location, IsReverse, AllowNullCollections,
-            Constructor, ConstructionProblems, ConstructsWithFactory);
+            Constructor, ConstructionProblems, ConstructsWithFactory, ConditionedMembers,
+            RefusedConditions);
 
     /// <summary>
     /// The same map with a constructor argument's nested value settled, produced by the resolve
@@ -249,5 +278,6 @@ internal sealed class MapModel
             IsSourceValueType, IsDestinationValueType, CanConstructDestination, PropertyNames,
             WritablePropertyNames, UnmappedProperties, ConvertedProperties, CustomProperties,
             NestedProperties, DestinationName, Location, IsReverse, AllowNullCollections,
-            constructor, ConstructionProblems, ConstructsWithFactory);
+            constructor, ConstructionProblems, ConstructsWithFactory, ConditionedMembers,
+            RefusedConditions);
 }

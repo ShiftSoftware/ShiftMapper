@@ -48,6 +48,21 @@ public sealed class MapCustomizations
     private readonly Dictionary<CustomizationKey, LambdaExpression> _values = new();
 
     /// <summary>
+    /// The <c>Condition</c> predicates, kept apart from <see cref="_values"/> because they are a
+    /// different kind of thing.
+    ///
+    /// A <c>MapFrom</c> is an <see cref="Expression"/> because it has to reach a PROJECTION, where
+    /// it is spliced into a tree EF reads. A condition never reaches one — a member initializer
+    /// cannot leave a binding out per row — so it is an ordinary delegate, needs no compiling,
+    /// no compile cache and no sharing decision. Storing it here rather than in <c>_values</c> is
+    /// what keeps <see cref="Compose{TSource, TDestination}(Expression{Func{TSource, TDestination}}, NestedBinding[])"/> from ever seeing something it would try to bind.
+    ///
+    /// Written only from the mapper's CONSTRUCTOR, like <see cref="_values"/>, so a plain
+    /// dictionary is right.
+    /// </summary>
+    private readonly Dictionary<CustomizationKey, Delegate> _conditions = new();
+
+    /// <summary>
     /// Compiled copies of the trees, kept for the life of the PROCESS and keyed by the mapper's
     /// TYPE rather than by the instance that registered them.
     ///
@@ -123,6 +138,7 @@ public sealed class MapCustomizations
         CustomizationKey key = new(source, destination, member);
 
         _values.Remove(key);
+        _conditions.Remove(key);
         _instanceCompiled?.TryRemove(key, out _);
 
         // Nothing is normally in the shared cache to remove — an Ignore runs during construction
@@ -165,6 +181,70 @@ public sealed class MapCustomizations
     /// </exception>
     public Func<TSource, TDestination> Construct<TSource, TDestination>() =>
         Value<TSource, TDestination, TDestination>(ConstructorMember);
+
+    /// <summary>
+    /// Records the predicate a <c>Condition</c> call supplied. Internal for the same reason as
+    /// <see cref="Register"/>: the only supported way here is through
+    /// <see cref="MemberOptions{TSource, TDestination, TProperty}.Condition"/>.
+    /// </summary>
+    internal void RegisterCondition(Type source, Type destination, string member, Delegate predicate) =>
+        _conditions[new CustomizationKey(source, destination, member)] = predicate;
+
+    /// <summary>
+    /// Asks one member's <c>Condition</c> whether the value about to be assigned should be.
+    ///
+    /// The generated code calls it like this, and the shape is deliberate:
+    ///
+    /// <code>
+    /// {
+    ///     var value = source.Name;
+    ///     if (Customizations.Condition("Name", source, destination, destination.Name, value))
+    ///         destination.Name = value;
+    /// }
+    /// </code>
+    ///
+    /// <para><b>WHY THE CURRENT VALUE IS PASSED</b> when the v1 predicate never sees it: it is a
+    /// TYPE WITNESS. The generator does not know the destination member's declared type — the
+    /// models it caches hold property NAMES and conversion templates, not types — so it cannot
+    /// write <c>Condition&lt;Stock, StockDto, string&gt;(…)</c>. Passing
+    /// <c>destination.Name</c> alongside the candidate lets the compiler infer
+    /// <typeparamref name="TProperty"/>, and best-common-type lands on the member's DECLARED type
+    /// every time: a <c>long</c> member fed an <c>int</c> infers <c>long</c>, an
+    /// <c>IReadOnlyList&lt;string&gt;</c> member fed a <c>List&lt;string&gt;</c> infers the
+    /// interface. That matters because the delegate below is cast to the type the
+    /// <c>ForMember</c> selector registered, which is the declared one.</para>
+    ///
+    /// <para>It is also the free upgrade path to AutoMapper's four-argument form, which passes the
+    /// destination member's current value to the predicate. Nothing needs to change here to add
+    /// it.</para>
+    ///
+    /// <para>Returns TRUE when no condition was registered, so a member the generator emitted a
+    /// guard for behaves as an ordinary assignment if the store and the generated code ever
+    /// disagree — the safe direction, since the alternative is a member that silently stops
+    /// being mapped.</para>
+    /// </summary>
+    /// <param name="member">The destination member being assigned.</param>
+    /// <param name="source">The object being mapped from.</param>
+    /// <param name="destination">The object being written to, as it stands.</param>
+    /// <param name="current">
+    /// The member's value right now. Used only to infer <typeparamref name="TProperty"/> — see
+    /// the remarks.
+    /// </param>
+    /// <param name="candidate">The value that will be assigned if this returns true.</param>
+    public bool Condition<TSource, TDestination, TProperty>(
+        string member,
+        TSource source,
+        TDestination destination,
+        TProperty current,
+        TProperty candidate)
+    {
+        _ = current;
+
+        if (!_conditions.TryGetValue(new CustomizationKey(typeof(TSource), typeof(TDestination), member), out Delegate? predicate))
+            return true;
+
+        return ((Func<TSource, TDestination, TProperty, bool>)predicate)(source, destination, candidate);
+    }
 
     /// <summary>
     /// Whether a property was customized. The generator already knows the answer at compile time
@@ -317,7 +397,21 @@ public sealed class MapCustomizations
     public Expression<Func<TSource, TDestination>> Compose<TSource, TDestination>(
         Expression<Func<TSource, TDestination>> conventions,
         params NestedBinding[] nested) =>
-        Compose(conventions, Array.Empty<ConstructorArgument>(), nested);
+        Compose(conventions, Array.Empty<ConstructorArgument>(), Array.Empty<ConvertedCustomization>(), nested);
+
+    /// <summary>
+    /// <see cref="Compose{TSource, TDestination}(Expression{Func{TSource, TDestination}}, NestedBinding[])"/>
+    /// for a map whose <c>MapFromSource</c> expressions return the SOURCE member's type and have
+    /// to be converted on the way into the member.
+    /// </summary>
+    /// <param name="conventions">The generated projection.</param>
+    /// <param name="conversions">The conversion to apply to each such customization.</param>
+    /// <param name="nested">Nested object properties to graft in.</param>
+    public Expression<Func<TSource, TDestination>> Compose<TSource, TDestination>(
+        Expression<Func<TSource, TDestination>> conventions,
+        ConvertedCustomization[] conversions,
+        params NestedBinding[] nested) =>
+        Compose(conventions, Array.Empty<ConstructorArgument>(), conversions, nested);
 
     /// <summary>
     /// <see cref="Compose{TSource, TDestination}(Expression{Func{TSource, TDestination}}, NestedBinding[])"/>
@@ -354,6 +448,23 @@ public sealed class MapCustomizations
     public Expression<Func<TSource, TDestination>> Compose<TSource, TDestination>(
         Expression<Func<TSource, TDestination>> conventions,
         ConstructorArgument[] constructorArguments,
+        params NestedBinding[] nested) =>
+        Compose(conventions, constructorArguments, Array.Empty<ConvertedCustomization>(), nested);
+
+    /// <summary>
+    /// The one that does the work; every other overload funnels into it.
+    /// </summary>
+    /// <param name="conventions">The generated projection.</param>
+    /// <param name="constructorArguments">Argument positions to fill; see the overload above.</param>
+    /// <param name="conversions">
+    /// The conversion to apply to a customization whose expression returns the SOURCE member's
+    /// type rather than the destination's — what <c>MapFromSource</c> produces.
+    /// </param>
+    /// <param name="nested">Nested object properties to graft in as member bindings.</param>
+    public Expression<Func<TSource, TDestination>> Compose<TSource, TDestination>(
+        Expression<Func<TSource, TDestination>> conventions,
+        ConstructorArgument[] constructorArguments,
+        ConvertedCustomization[] conversions,
         params NestedBinding[] nested)
     {
         if (conventions is null)
@@ -361,6 +472,9 @@ public sealed class MapCustomizations
 
         if (constructorArguments is null)
             throw new ArgumentNullException(nameof(constructorArguments));
+
+        if (conversions is null)
+            throw new ArgumentNullException(nameof(conversions));
 
         // The ConstructUsing factory lives in the same dictionary under a name no property can
         // have. It is not a member to bind, so it is filtered out here rather than tripping over
@@ -389,7 +503,7 @@ public sealed class MapCustomizations
         ParameterExpression parameter = conventions.Parameters[0];
 
         if (constructorArguments.Length > 0)
-            construction = FillArguments(construction, constructorArguments, applicable, parameter);
+            construction = FillArguments(construction, constructorArguments, applicable, conversions, parameter);
 
         // A customization that filled a constructor argument has already been used, and binding it
         // again would assign an init-only property the constructor just set.
@@ -421,7 +535,13 @@ public sealed class MapCustomizations
             Expression body = new ParameterReplacer(entry.Value.Parameters[0], parameter)
                 .Visit(entry.Value.Body)!;
 
-            bindings.Add(Expression.Bind(member, body));
+            // A MapFromSource expression returns the SOURCE member's type. The generator worked
+            // out at compile time how that becomes the destination's, and wrote it down as a
+            // one-parameter lambda in the generated file; inlining the spliced body into that
+            // lambda's parameter is the same splice again, one level out.
+            body = Converted(body, ConversionFor(conversions, entry.Key.Member));
+
+            bindings.Add(Expression.Bind(member, Fit(body, MemberType(member), entry.Key.Member, typeof(TDestination))));
         }
 
         foreach (NestedBinding child in nested)
@@ -454,6 +574,7 @@ public sealed class MapCustomizations
         NewExpression construction,
         ConstructorArgument[] arguments,
         List<KeyValuePair<CustomizationKey, LambdaExpression>> applicable,
+        ConvertedCustomization[] conversions,
         ParameterExpression parameter)
     {
         var filled = construction.Arguments.ToArray();
@@ -490,6 +611,11 @@ public sealed class MapCustomizations
                 }
 
                 value = new ParameterReplacer(tree.Parameters[0], parameter).Visit(tree.Body)!;
+
+                // The same conversion a member binding gets. The Convert below cannot stand in for
+                // it: there is no coercion operator from decimal to string, and asking for one
+                // throws rather than converting.
+                value = Converted(value, ConversionFor(conversions, argument.Member));
             }
 
             // The tree's own type may be narrower than the parameter's — a MapFrom returning an
@@ -604,6 +730,108 @@ public sealed class MapCustomizations
     /// The nested map to graft in, or null when the value is a <c>MapFrom</c> to be looked up.
     /// </param>
     public sealed record ConstructorArgument(int Index, string Member, NestedBinding? Nested = null);
+
+    /// <summary>
+    /// One customization whose expression returns the SOURCE member's type, and the conversion the
+    /// GENERATOR worked out at compile time for getting it to the destination member's type —
+    /// what <c>opt.MapFromSource</c> produces.
+    ///
+    /// It arrives as a LAMBDA rather than as text because the generated file is C#: the compiler
+    /// builds the tree for <c>v =&gt; v.ToString()</c> in the generated file exactly as it builds
+    /// the tree for the developer's expression in theirs, and
+    /// <see cref="Compose{TSource, TDestination}(Expression{Func{TSource, TDestination}}, ConstructorArgument[], ConvertedCustomization[], NestedBinding[])"/>
+    /// splices one into the other. Nothing has to parse anything, and nothing has to re-resolve a
+    /// name in a file it did not come from — which is the same reason <c>MapFrom</c> keeps the
+    /// developer's tree instead of copying their code as text.
+    /// </summary>
+    /// <param name="Member">The destination member whose customization this converts.</param>
+    /// <param name="Conversion">
+    /// A one-parameter lambda from the expression's own type to the member's — the QUERY
+    /// spelling, since a projection is the only thing this is used to build.
+    /// </param>
+    public sealed record ConvertedCustomization(string Member, LambdaExpression Conversion);
+
+    /// <summary>
+    /// The conversion the generator wrote for one member, or null when the expression already
+    /// returns the destination member's own type and there is nothing to convert.
+    /// </summary>
+    private static LambdaExpression? ConversionFor(ConvertedCustomization[] conversions, string member)
+    {
+        foreach (ConvertedCustomization conversion in conversions)
+        {
+            if (string.Equals(conversion.Member, member, StringComparison.Ordinal))
+                return conversion.Conversion;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Puts a spliced customization THROUGH the generator's conversion lambda, by inlining it into
+    /// that lambda's parameter.
+    ///
+    /// INLINED rather than invoked, and that is the whole point.
+    /// <c>Expression.Invoke(conversion, body)</c> type-checks just as well and hands EF a delegate
+    /// it cannot see inside, which is the difference between one SELECT and a client evaluation.
+    ///
+    /// It is safe to inline because every template <c>ConversionResolver</c> writes mentions its
+    /// input exactly ONCE — a rule that class states about itself. A template naming it twice
+    /// would read the source property twice per row.
+    /// </summary>
+    private static Expression Converted(Expression value, LambdaExpression? conversion)
+    {
+        if (conversion is null)
+            return value;
+
+        ParameterExpression parameter = conversion.Parameters[0];
+
+        // The generator writes the lambda against the type the expression returns, so these agree
+        // in everything it emits. A widening still has to be spelled out: an inlined operand of
+        // the wrong type is an invalid tree rather than a coerced one.
+        Expression operand = value.Type == parameter.Type
+            ? value
+            : Expression.Convert(value, parameter.Type);
+
+        return new ParameterReplacer(parameter, operand).Visit(conversion.Body)!;
+    }
+
+    /// <summary>The type a member holds — what <c>Expression.Bind</c> insists the value match.</summary>
+    private static Type MemberType(MemberInfo member) =>
+        member is PropertyInfo property ? property.PropertyType : ((FieldInfo)member).FieldType;
+
+    /// <summary>
+    /// Widens a value to the member's own type where C# would have done it silently.
+    ///
+    /// <see cref="Expression.Bind(System.Reflection.MemberInfo, Expression)"/> is stricter than an assignment: it takes a value of the
+    /// member's exact type, or a reference assignable to it, and nothing else — so an
+    /// <c>int</c> tree filling a <c>long</c> member is "Argument types do not match" rather than
+    /// the widening C# would have written. That case is real: a conversion the resolver calls
+    /// DIRECT emits no lambda at all, because in generated C# the compiler would have done it.
+    ///
+    /// The test is REFERENCE assignability rather than <see cref="Type.IsAssignableFrom"/> alone,
+    /// and the difference is not pedantry: <c>Expression.Bind</c> accepts an <c>int</c> onto an
+    /// <c>object</c> member and then produces a tree that fails to compile with
+    /// <c>InvalidProgramException</c>. A value type reaching a reference-typed member has to
+    /// carry an explicit boxing conversion.
+    /// </summary>
+    private static Expression Fit(Expression value, Type target, string member, Type destination)
+    {
+        if (value.Type == target || (!value.Type.IsValueType && target.IsAssignableFrom(value.Type)))
+            return value;
+
+        try
+        {
+            return Expression.Convert(value, target);
+        }
+        catch (InvalidOperationException)
+        {
+            throw new InvalidOperationException(
+                $"ShiftMapper: the custom mapping for '{destination.Name}.{member}' produces a " +
+                $"{value.Type.Name}, which cannot fill a {target.Name}, and no conversion was " +
+                "generated for it. Rebuild — this normally means the generated mapper is out of " +
+                "date with the CreateMap calls in your constructor.");
+        }
+    }
 
     /// <summary>
     /// Reads the property name out of a selector such as <c>d =&gt; d.Country</c>.

@@ -34,7 +34,7 @@ Every step heading below carries the same marker: ✅ done, ⬜ pending.
 
 - [x] **Step 5** — Collections and null policy at the top level
 - [x] **Step 6** — Destinations that are not `new T { }`
-- [ ] **Step 7** — Per-member power tools
+- [x] **Step 7** — Per-member power tools
 - [ ] **Step 8** — Map-level hooks
 - [ ] **Step 9** — Flattening and naming conventions
 - [ ] **Step 10** — Inheritance, polymorphism, open generics
@@ -53,7 +53,7 @@ Every step heading below carries the same marker: ✅ done, ⬜ pending.
 - [ ] **Step 17** — Docs and sample
 - [ ] **Step 18** — Benchmarks
 
-Phase 1 is complete, and Steps 5 and 6 of Phase 2 with it. Next on ShiftFramework's critical
+Phase 1 is complete, and Steps 5, 6 and 7 of Phase 2 with it. Next on ShiftFramework's critical
 path is **Step 8**, then 8 → 10 → 11 → 12 → 13 → 14 → 15 (the summary at the foot of this file).
 
 ---
@@ -75,7 +75,7 @@ path is **Step 8**, then 8 → 10 → 11 → 12 → 13 → 14 → 15 (the summar
 - Nested objects and collections of objects, composed to any depth from the maps you
   declared, in memory AND inside one EF projection.
 - Cycle detection as a build error (SM0012).
-- Fifteen build-time diagnostics, SM0001–SM0015.
+- Seventeen build-time diagnostics, SM0001–SM0017.
 - Generated surface per map: `TDestination Map<TDestination>(TSource)`,
   `TDestination Map(TSource, TDestination)`,
   `IQueryable<TDestination> ProjectTo<TDestination>(IQueryable<TSource>)`, plus
@@ -100,10 +100,13 @@ path is **Step 8**, then 8 → 10 → 11 → 12 → 13 → 14 → 15 (the summar
 - **(Step 6)** Destinations built through a CONSTRUCTOR — positional records, primary
   constructors, `required` members — in memory and in a projection; plus `ConstructUsing` for
   what convention cannot reach.
+- **(Step 7)** `MapFromSource`, which puts a customized member back through the conversion table;
+  `Condition`, which turns the update overload from a PUT into a PATCH; and a per-member delegate
+  cache that takes the customization lookup off the per-object path.
 
 ### What is missing, in one paragraph
 
-There is no `Condition`, `NullSubstitute`, `BeforeMap`/`AfterMap`,
+There is no `NullSubstitute`, `BeforeMap`/`AfterMap`,
 `ConvertUsing`, flattening, inheritance or open generics. And — the item this plan is
 mostly about — there is no GLOBAL configuration layer at all: every rule has to be
 restated on every map, in every application, so a framework cannot contribute a rule that
@@ -471,7 +474,7 @@ customized, and `GET /api/invoices/{id}/receipt` returns the in-memory and proje
 by side with a `totalsAgree` flag. `InvoiceLabelDto` is built by a `ConstructUsing` reading the
 injected numbering service, and `?project=true` shows what the refusal reads like.
 
-### ⬜ Step 7 — Per-member power tools
+### ✅ Step 7 — Per-member power tools
 
 Everything here is another method on `MemberOptions`, which is the shape `ForMember` was
 built for. Each needs a query form as well as an in-memory form.
@@ -490,6 +493,123 @@ built for. Each needs a query form as well as an in-memory form.
 The important design point: **a member option that cannot be translated must be a build-time
 diagnostic on any map that is also projected**, not a runtime surprise. The generator already
 knows which maps get a `ProjectTo`, so it can say so.
+
+**What landed — and it is not the table above.** Four agents researched the eight rows against the
+codebase and against the real compiler, and most of the table did not survive contact. Three rows
+turned out to add no capability, two to be strictly weaker than a neighbour, and the one thing the
+step most needed was not on the list at all. What shipped:
+
+**1. `opt.MapFromSource<TValue>(Expression<Func<TSource, TValue>>)` — the row that was missing.**
+
+`MapFrom`'s expression must return `TProperty`, the DESTINATION member's type, fixed by the
+`ForMember` selector. So `opt.MapFrom(s => s.Lines.Count)` onto a `string` does not compile, and
+the developer converts by hand — which hand-writes the conversion this library exists to write,
+takes the member out of `ConversionResolver`'s hands so SM0002/SM0008/SM0009/SM0010 stop being
+reported for it, and loses the invariant-culture rule.
+
+**That had already bitten this repository.** Step 6's own sample line read
+`.MapFrom(s => s.Lines.Sum(...).ToString("0.00"))` — no format provider, so the receipt total
+left a German server as `"1596,00"`, in a library whose `ValueConverter` documents in bold that
+text never depends on the machine, and which gets it right two maps up by convention.
+
+`MapFromSource` hands the value over and the table writes the conversion, in BOTH backends: the
+query spelling travels into the projection as a one-parameter lambda the generated file writes
+down, which `Compose` SPLICES onto the developer's tree rather than invoking (an `Invoke` would
+hand EF a delegate it cannot see inside).
+
+**A second NAME, not an overload, and that is the load-bearing decision.** An overload compiles
+clean and then crashes. `opt.MapFrom(s => s.Rank)` onto a `long` member works today because the
+implicit `int`→`long` conversion happens INSIDE the tree; a generic overload is the better match
+and captures it, and the generated `Value<..., long>` cast then throws `InvalidCastException` on
+the first mapped object. Thirteen of this repository's thirty-three `MapFrom` calls move that way,
+and `int?`→`int` re-binds so that `Map` throws while `ProjectTo` succeeds — the exact
+"silently works in memory and throws in a query" this plan's opening forbids. A distinct name
+cannot re-bind anything.
+
+**2. `opt.Condition((s, d, value) => ...)` — the row the table was right about.**
+
+The most valuable of the eight, and the argument is concrete: `Map(source, destination)` is
+unconditionally a PUT. Every mapped member is assigned every time, so a PATCH whose body omits a
+field arrives with `""` and `0` and overwrites real data — including, in the checked-in generated
+file, `Parse<int>("")` writing `0` over a tracked entity's primary key.
+
+Think of it as a RUNTIME `Ignore`: `Ignore` decides once at build time that a member is not
+mapped, `Condition` decides per object, and a declined member is LEFT ALONE rather than set to
+`default`. Everything else about it is unchanged — name match, generated conversion, diagnostics.
+
+Three things it needed that were not obvious:
+
+- **A third create shape.** A conditioned member cannot be in an object initializer, so the create
+  method builds the object without it and then assigns it behind the guard. "Left untouched" on a
+  create therefore means the property's OWN initializer value, which is what AutoMapper does too.
+- **A type witness.** The generator does not know a member's declared type — the models it caches
+  hold names and conversion templates, not types — so it cannot write
+  `Condition<Src, Dest, string>(...)`. Passing `destination.Member` alongside the candidate lets the
+  compiler infer it, and best-common-type lands on the DECLARED type every time: a `long` member
+  fed an `int` infers `long`, an `IReadOnlyList<T>` fed a `List<T>` infers the interface. That is
+  the type the predicate was registered under, so the cast inside is exact. It is also the free
+  upgrade path to AutoMapper's four-argument form.
+- **Braces.** Two conditioned members each declare a local called `value`; without a scope that is
+  CS0128.
+
+**SM0016 (Error)** for a member whose value is settled during construction — `init`-only,
+`required` in an object initializer, a constructor argument. The generator still emits the member
+UNCONDITIONED, because an analyzer error does not stop the generated file being compiled in the
+same pass and a project with analyzers off must not get a CS error in a file it cannot edit.
+Note the qualifier on `required`: on a `ConstructUsing` map the generator writes no `new` at all,
+so the same member IS conditionable there.
+
+**SM0017 (Warning)** because the map loses its projection. A `MemberInit` cannot leave a binding
+out per row, so this is genuinely binary: the whole projection goes. A WARNING where SM0015 is a
+note, and the severity is the argument — `ConstructUsing`'s projection THROWS, loudly; a
+condition's would not, because `Compose` never sees one, so the projection would bind
+unconditionally and quietly return different data from `Map`, per row, in a list endpoint.
+
+**3. A per-member delegate cache, which replaced two rows of the table.**
+
+`MapFrom("Product.Name")` and `UseValue(constant)` were both really asking for one thing: let the
+generator SEE the value at compile time so the per-object `Customizations.Value` lookup disappears.
+Measured, that lookup is ~96 ns per customized member per mapped object, and per element of a
+nested collection.
+
+But **0 of the 13 `MapFrom` bodies in this repository would fold** — they are arithmetic, `Sum`s,
+concatenation, service reads. And hoisting the lookup into a lazily-initialised field, exactly as
+Step 2 did for the projections, measured 96 ns → 7.7 ns: **92% of the win, on 100% of the
+`MapFrom`s**, with no literal renderer, no path predicate, no null-guard policy, no `Compose`
+contract change and no new failure mode. The field is per INSTANCE, not static, because `Value`
+returns a delegate compiled for THIS mapper when the expression captured its services.
+
+**Deliberately not shipped.** `MapFrom(string path)` and `UseValue` add no capability —
+`opt.MapFrom(s => s.Product.Brand.Name)` and `opt.MapFrom(s => "USD")` already work in both
+backends and produce identical SQL (measured), and a string path is not type-safe, not renameable
+and cannot be navigated. `PreCondition` is strictly weaker than `Condition`. `Order` is a modifier
+for a destination-aware `MapFrom` that does not exist, and the generator could infer it anyway by
+topologically sorting destination reads. `ConvertUsing`'s object form is worse than a static method
+called from a `MapFrom`: same tree, plus a `ConstantExpression` EF compares by reference, so a
+non-singleton converter costs a query recompile per request — the EXPRESSION form is what Step 12
+needs and is where it belongs. `MapFrom((s, d) => ...)` is real and unbuilt: it wants `Condition`'s
+"do not assign when blank" semantics for its own motivating example, and its ordering contract is
+most of what `Order` was for.
+
+**One correction to this step's own text.** "The generator already knows which maps get a
+`ProjectTo`, so it can say so" is false. `AppendProjectionMember` runs for EVERY map; the generator
+knows it EMITTED a projection, not that anyone calls one, and the analyzer is scoped to the mapper
+class and never sees a call site. The workable answer is the SM0015 precedent: report
+unconditionally, choose the SEVERITY by consequence, and emit a projection member that throws with
+a written explanation rather than none at all — a missing member is a CS0103 the moment another
+map nests this one.
+
+**A finding the sample surfaced, worth recording.** Converting a COMPUTED `decimal` to text
+diverges between the backends, and not because of anything ShiftMapper does: EF writes
+`CAST([Quantity] AS decimal(18,2)) * [UnitPrice]`, so SQL multiplies scale 2 by scale 2 and gets 4
+where C# gets 2 — `"1596.0000"` against `"1596.00"`. The old `ToString("0.00")` hid it by pinning
+both sides to two places. Money stays a `decimal` in the sample now, and `LineCount` (`int` to
+text, which cannot drift) carries the `MapFromSource` demonstration.
+
+**In the sample.** `InvoiceReceiptDto.LineCount` is `MapFromSource`, and
+`GET /api/invoices/{id}/receipt` returns both backends side by side with an `agree` flag.
+`BrandPatch` and `PATCH /api/brands/{id}` are `Condition`: send `{ "country": "Ireland" }` and
+watch the name, ISO code and founded year survive the blanks that would have overwritten them.
 
 ### ⬜ Step 8 — Map-level hooks
 
@@ -822,12 +942,13 @@ mapper that cannot show its numbers has given up its main argument.
 | Phase | Steps | State | Blocking? |
 |---|---|---|---|
 | 1 — Trust | 1 Tests, 2 Runtime cost, 3 Packaging, 4 `IShiftMapper` | ✅ done | Everything depended on 1 and 4 |
-| 2 — Gaps | ~~5 Collections~~, ~~6 Constructors/records~~, 7 Member options, 8 Map hooks, 9 Flattening, 10 Inheritance/generics | ⬜ 5, 6 done | 8 and 10 block Phase 3 |
+| 2 — Gaps | ~~5 Collections~~, ~~6 Constructors/records~~, ~~7 Member options~~, 8 Map hooks, 9 Flattening, 10 Inheritance/generics | ⬜ 5, 6, 7 done | 8 and 10 block Phase 3 |
 | 3 — General layer | 11 Profiles, 12 Global conversions, 13 Compile-time contract, 14 Member conventions, 15 ShiftFramework port | ⬜ pending | The goal |
 | 4 — Finish | 16 Diagnostics, 17 Docs, 18 Benchmarks | ⬜ pending | Can run alongside 2 and 3 |
 
 The shortest path to ShiftFramework being able to adopt this is
 **1 → 4 → 8 → 10 → 11 → 12 → 13 → 14 → 15**; with 1 and 4 done, it starts at **8**. Steps 5, 6, 7
 and 9 are needed for ShiftMapper to be a good general-purpose mapper, but they are not on
-ShiftFramework's critical path — 5 and 6 are done because they are the two of those four that
-every application hits on its first day: a list endpoint, and a DTO that is a record.
+ShiftFramework's critical path — 5, 6 and 7 are done because they are the three of those four
+that every application hits on its first day: a list endpoint, a DTO that is a record, and a PATCH.
+Step 7 also left `Condition` in place, which Step 8's `ForAllMembers` needs.

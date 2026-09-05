@@ -140,7 +140,18 @@ public static class InvoiceEndpoints
             {
                 inMemory,
                 projected,
-                totalsAgree = inMemory.Total == projected!.Total,
+
+                // Both the required-and-customized member (Total) and the converted one
+                // (LineCount) have to survive Compose's placeholder substitution. If either
+                // stopped working these would differ and nothing else would look wrong.
+                //
+                // WATCH THE TWO TOTALS RENDER DIFFERENTLY — 1428.00 against 1428.0000 — and note
+                // that `agree` is still true, because they are the same decimal at different
+                // SCALES. EF writes CAST([Quantity] AS decimal(18,2)) * [UnitPrice], so SQL
+                // multiplies scale 2 by scale 2 and gets 4 where C# gets 2. It costs nothing here
+                // and it is exactly why Total is a decimal rather than text: convert it, and the
+                // scale it happens to have becomes the string. See InvoiceReceiptDto.Total.
+                agree = inMemory.Total == projected!.Total && inMemory.LineCount == projected.LineCount,
             });
         })
         .WithName("GetInvoiceReceipt");

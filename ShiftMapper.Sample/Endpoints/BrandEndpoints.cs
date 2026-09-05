@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using ShiftMapper.Sample.Data;
 using ShiftMapper.Sample.Dtos;
 using ShiftMapper.Sample.Entities;
@@ -112,5 +112,43 @@ public static class BrandEndpoints
             });
         })
         .WithName("GetBrandById");
+
+        // PATCH /api/brands/{id}
+        //
+        // CONDITION, and the endpoint that could not be written before it.
+        //
+        // mapper.Map(patch, brand) assigns every mapped member, every time. JSON has no way to say
+        // "absent", so a body carrying only a country arrives with Name = "" and FoundedYear = 0 —
+        // and without a Condition the generated update writes both over the tracked entity.
+        //
+        // AppMapper guards each member on the incoming value, so an absent field is left exactly
+        // as it was. Nothing else about the map changed: every member still matches by name and
+        // still goes through the conversion ShiftMapper picked for it.
+        //
+        // Send { "country": "Ireland" } and watch the name, ISO code and founded year survive.
+        group.MapPatch("/{id:int}", async (int id, BrandPatch patch, AppDbContext db, AppMapper mapper) =>
+        {
+            Brand? brand = await db.Brands.FirstOrDefaultAsync(b => b.Id == id);
+
+            if (brand is null)
+                return Results.NotFound();
+
+            var before = new { brand.Name, brand.Country, brand.ISOCode, brand.FoundedYear };
+
+            // The same update overload every other endpoint uses. The guards are in the map.
+            mapper.Map(patch, brand);
+
+            await db.SaveChangesAsync();
+
+            return Results.Ok(new
+            {
+                before,
+                after = new { brand.Name, brand.Country, brand.ISOCode, brand.FoundedYear },
+
+                // What a PUT would have done to the fields the caller did not send.
+                sent = new { patch.Name, patch.Country, patch.ISOCode, patch.FoundedYear },
+            });
+        })
+        .WithName("PatchBrand");
     }
 }

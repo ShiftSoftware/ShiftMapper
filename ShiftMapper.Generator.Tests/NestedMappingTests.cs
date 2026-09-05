@@ -190,7 +190,7 @@ public class NestedMappingTests
         run.Compiles()
            // The child's projection is the composed one, so the MapFrom is already inside it.
            .Emits("new global::ShiftMapper.MapCustomizations.NestedBinding(\"Lines\", \"Lines\", ShiftMapperProjection_Line_To_LineDto, \"ToList\", false)")
-           .Emits("Customizations.Value<global::Line, global::LineDto, decimal>(\"LineTotal\")(source)");
+           .Emits("(_ShiftMapperValue_Line_To_LineDto_LineTotal ??= Customizations.Value<global::Line, global::LineDto, decimal>(\"LineTotal\"))(source)");
     }
 
     /// <summary>

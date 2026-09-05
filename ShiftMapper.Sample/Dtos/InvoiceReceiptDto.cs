@@ -1,4 +1,4 @@
-namespace ShiftMapper.Sample.Dtos;
+﻿namespace ShiftMapper.Sample.Dtos;
 
 /// <summary>
 /// A receipt with <c>required</c> members — the other half of what constructor support unblocked.
@@ -11,12 +11,12 @@ namespace ShiftMapper.Sample.Dtos;
 ///
 /// <code>
 /// warning SM0014: no Map method was generated to create 'InvoiceReceiptDto' because its
-///                 required member 'Total' (string) is not mapped
+///                 required member 'LineCount' (string) is not mapped
 /// </code>
 ///
-/// Try it: delete the <c>ForMember</c> for <see cref="Total"/> in AppMapper and the create half
-/// of this map disappears with that message, rather than the build failing with a CS9035 inside
-/// a generated file you cannot open.
+/// Try it: delete either <c>ForMember</c> in AppMapper and the create half of this map disappears
+/// with that message, rather than the build failing with a CS9035 inside a generated file you
+/// cannot open.
 ///
 /// <para><b>THE INTERESTING ONE IS <see cref="Total"/></b>, which is required AND filled by a
 /// <c>ForMember</c>. A customized member is normally left OUT of the generated projection — the
@@ -30,7 +30,7 @@ namespace ShiftMapper.Sample.Dtos;
 ///
 /// and Compose drops that binding on its way to adding the real one. Both halves of the map end
 /// up with the same value, which is what <c>GET /api/invoices/{id}/receipt</c> checks by
-/// returning them side by side.
+/// returning them side by side with an <c>agree</c> flag.
 /// </summary>
 public class InvoiceReceiptDto
 {
@@ -41,8 +41,54 @@ public class InvoiceReceiptDto
     /// <summary>
     /// Required, and worked out rather than stored — see the remarks above for why that
     /// combination is the one worth having in the sample.
+    ///
+    /// <para><b>AND A DECIMAL RATHER THAN TEXT, which is a decision worth recording.</b> It was a
+    /// <c>string</c>, filled by a <c>MapFromSource</c> that handed the decimal sum to the
+    /// conversion table. That is correct code and the two backends still disagreed:</para>
+    ///
+    /// <code>
+    /// in memory : "1596.00"
+    /// projected : "1596.0000"
+    /// </code>
+    ///
+    /// Not a mapping bug — an arithmetic one. EF writes
+    /// <c>CAST([Quantity] AS decimal(18,2)) * [UnitPrice]</c>, so SQL Server multiplies
+    /// <c>decimal(18,2)</c> by <c>decimal(18,2)</c> and gets a scale of FOUR, where C#'s decimal
+    /// multiply gives two. Converting either result to text then preserves the scale it happens to
+    /// have. Any <c>decimal</c>-to-<c>string</c> conversion over a COMPUTED decimal has the same
+    /// exposure; a plain column does not, which is why
+    /// <see cref="ProductSummaryDto.Price"/> is stable.
+    ///
+    /// The old code hid this by formatting: <c>ToString("0.00")</c> pinned both sides to two
+    /// places. It also had no format provider, so it read the machine's culture and sent
+    /// <c>"1596,00"</c> from a German server. Both were wrong, differently.
+    ///
+    /// The answer is not to convert a computed money value to text at all. Money stays a decimal,
+    /// and the client formats it. <see cref="LineCount"/> carries the <c>MapFromSource</c>
+    /// demonstration instead, on a conversion that cannot drift.
     /// </summary>
-    public required string Total { get; init; }
+    public required decimal Total { get; init; }
+
+    /// <summary>
+    /// How many lines the invoice has, as TEXT — and the sample's demonstration of
+    /// <c>MapFromSource</c>.
+    ///
+    /// <c>Invoice.Lines.Count</c> is an <c>int</c> and this is a <c>string</c>, so plain
+    /// <c>MapFrom</c> cannot express it: its expression must return the DESTINATION member's type.
+    /// <c>MapFromSource</c> hands the int over and lets the conversion table write the rest:
+    ///
+    /// <code>
+    /// // in memory
+    /// LineCount = ValueConverter.ToInvariantString(Customizations.Value&lt;…, int&gt;("LineCount")(source))
+    ///
+    /// // in the projection, spliced on by Compose rather than invoked
+    /// new("LineCount", (Expression&lt;Func&lt;int, string&gt;&gt;)(v =&gt; v.ToString()))
+    /// </code>
+    ///
+    /// An integer is written out the same way whether that happens in C# or in SQL, so the two
+    /// backends agree exactly — which is what the endpoint's <c>agree</c> flag checks.
+    /// </summary>
+    public required string LineCount { get; init; }
 
     /// <summary>
     /// Not required and not init-only, which is what keeps an update overload worth generating

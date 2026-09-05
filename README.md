@@ -168,6 +168,50 @@ ShiftMapper answer alike.
 Both backends are generated from the same analysis, so `Map` and `ProjectTo` agree on what a
 map means.
 
+### Per-member options
+
+`ForMember` takes more than `Ignore` and `MapFrom`. Each option changes one part of the single
+line the generator writes — where the value comes from, or whether it is assigned at all:
+
+```csharp
+CreateMap<Invoice, InvoiceReceiptDto>()
+    // the expression returns the SOURCE member's type; ShiftMapper converts it
+    .ForMember(d => d.LineCount, opt => opt.MapFromSource(s => s.Lines.Count));
+
+CreateMap<BrandPatch, Brand>()
+    // assign only when the predicate says so; otherwise leave the member alone
+    .ForMember(d => d.Name, opt => opt.Condition((s, d, value) => !string.IsNullOrWhiteSpace(value)));
+```
+
+**`MapFromSource`** exists because `MapFrom`'s expression must return the DESTINATION member's
+type. So `opt.MapFrom(s => s.Lines.Count)` onto a `string` does not compile, and the workaround is
+to convert by hand — which hand-writes the conversion this library exists to write, takes the
+member out of the conversion table so SM0002/SM0008/SM0009/SM0010 stop being reported for it, and
+loses the invariant-culture guarantee (`ToString()` with no format provider reads the machine's
+culture). `MapFromSource` hands the value over instead. **It projects**: the conversion travels
+into the projection as a small lambda spliced onto your expression, so EF still sees one
+expression.
+
+It is a second NAME rather than an overload on purpose. An overload would silently re-bind
+existing calls — `opt.MapFrom(s => s.Rank)` onto a `long` member compiles today through the
+implicit conversion inside the tree, and a generic overload is the better match — producing a
+delegate the generated cast then refuses at run time.
+
+**`Condition`** is a runtime `Ignore`. `Ignore` decides once at build time that a member is not
+mapped; `Condition` decides per object, and when it says no the member is **left alone** — not
+set to `default`. That is what turns `Map(source, destination)` from a PUT into a PATCH: without
+it, a caller who sent one field blanks the rest, because an absent JSON field arrives as `""` or
+`0`.
+
+- On a **create**, "left alone" means the property keeps its own initializer value — the map
+  builds the object, then assigns the conditioned members behind their guards.
+- A member whose value is settled during construction cannot be conditioned: `init`-only,
+  `required` in an object initializer, or a constructor argument. That is **SM0014**'s
+  sibling **SM0016**, an error naming the member.
+- **The map loses its projection** (**SM0017**). A projection is one member initializer handed to
+  the database; there is no way to leave a binding out per row. Put conditions on write maps, not
+  on the read maps your list endpoints project.
+
 ### Records, primary constructors and `required` members
 
 A destination does not have to be `new T { }`. ShiftMapper picks a constructor and matches its
@@ -280,8 +324,8 @@ and think. Each is reported as SM0002 rather than skipped in silence.
 
 ## Diagnostics
 
-Fifteen rules, `SM0001` to `SM0015`. Two stop the build; the rest describe something that will
-not be mapped, or will be mapped in a way worth knowing about.
+Seventeen rules, `SM0001` to `SM0017`. Three stop the build; the rest describe something that
+will not be mapped, or will be mapped in a way worth knowing about.
 
 | Id | Default | What it means |
 |---|---|---|
@@ -300,6 +344,8 @@ not be mapped, or will be mapped in a way worth knowing about.
 | SM0013 | Warning | A constructor parameter cannot be filled (names the parameter) |
 | SM0014 | Warning | A `required` member is not mapped, so the destination cannot be built |
 | SM0015 | Info | The map uses `ConstructUsing`, so `ProjectTo` cannot use it |
+| SM0016 | **Error** | A member whose value is settled at construction cannot carry a `Condition` |
+| SM0017 | Warning | The map carries a `Condition`, so `ProjectTo` cannot use it |
 
 `SM0011` is an error because a null nested object in a response looks exactly like a null in the
 database. Two ways forward, both one line: declare the map, or `opt.Ignore()` the property.
@@ -343,10 +389,10 @@ dotnet_diagnostic.SM0001.severity = none
 
 ## Status
 
-What works today is listed above. What does not exist yet — `Condition` / `NullSubstitute` /
-`BeforeMap` / `AfterMap`, flattening, inheritance, open generics, and the global configuration
-layer a library needs — is laid out in order in [PLAN.md](PLAN.md), which is the roadmap this
-repository is built from.
+What works today is listed above. What does not exist yet — `NullSubstitute`, `BeforeMap` /
+`AfterMap`, flattening, inheritance, open generics, and the global configuration layer a library
+needs — is laid out in order in [PLAN.md](PLAN.md), which is the roadmap this repository is built
+from.
 
 ## License
 

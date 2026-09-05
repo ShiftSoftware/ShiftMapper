@@ -247,18 +247,18 @@ Accept: text/plain
 #     empty, it stops the destination being built at all — and the build says which one:
 #
 #         warning SM0014: no Map method was generated to create 'InvoiceReceiptDto' because its
-#                         required member 'Total' (string) is not mapped
+#                         required member 'LineCount' (string) is not mapped
 #
-#     Try it: delete the ForMember for Total in AppMapper and watch the create half of that map
+#     Try it: delete either ForMember in AppMapper and watch the create half of that map
 #     disappear with that message, instead of the build failing with a CS9035 inside a generated
 #     file you cannot open.
 #
-#     "totalsAgree" is the interesting field. Total is required AND customized, and a customized
+#     "agree" is the interesting field. LineCount is required AND customized, and a customized
 #     member is normally ABSENT from the generated projection — the expression lives in
 #     AppMapper.cs and Compose splices it in at run time. A required one cannot be absent from a
-#     template that is itself compiled, so the generator writes `Total = default!` and Compose
+#     template that is itself compiled, so the generator writes `LineCount = default!` and Compose
 #     replaces it. If that ever stopped working these two objects would differ and nothing else
-#     would look wrong.
+#     would look wrong. Request 1i is the same endpoint read for the OTHER thing it demonstrates.
 GET {{HostAddress}}/api/invoices/1/receipt
 Accept: application/json
 
@@ -291,6 +291,80 @@ Accept: application/json
 #     ShiftMapper can match by name, plus ForMember for the arguments convention cannot work out.
 GET {{HostAddress}}/api/invoices/1/label?project=true
 Accept: text/plain
+
+### 1i. MAPFROMSOURCE — letting the conversion table write the conversion.
+#
+#     "lineCount" is TEXT and Invoice.Lines.Count is an int. Plain MapFrom cannot express that:
+#     its expression must return the DESTINATION member's type, so before this the only way was
+#
+#         .ForMember(d => d.Total, opt => opt.MapFrom(s => s.Lines.Sum(...).ToString("0.00")))
+#
+#     which is what the receipt's Total used to be. One call, and three losses: it hand-writes the
+#     conversion this library exists to write, it takes the member out of the conversion table's
+#     hands so SM0002/8/9/10 stop being reported for it, and ToString with no format provider
+#     reads the machine's culture — so the total left a German server as "1596,00", in a library
+#     whose ValueConverter exists to make exactly that impossible.
+#
+#     MapFromSource hands the value over instead:
+#
+#         LineCount = ValueConverter.ToInvariantString(...Value<..., int>("LineCount")(source))
+#
+#     and the projection gets the conversion as a lambda Compose splices onto the expression
+#     rather than invoking, so EF still sees one expression. "agree" checks both halves match.
+#
+#     WATCH THE TWO TOTALS RENDER DIFFERENTLY: 1428.00 against 1428.0000, with agree still true.
+#     Same decimal, different SCALE — EF writes CAST([Quantity] AS decimal(18,2)) * [UnitPrice],
+#     so SQL multiplies scale 2 by scale 2 and gets 4 where C# gets 2. That is why Total is a
+#     decimal and LineCount carries the demonstration: convert a computed decimal to text and the
+#     scale it happens to have becomes the string.
+GET {{HostAddress}}/api/invoices/2/receipt
+Accept: application/json
+
+### 1j. CONDITION — the request that could not be written before it.
+#
+#     mapper.Map(patch, brand) assigns every mapped member, every time. JSON has no way to say
+#     "absent", so this body arrives with Name = "", ISOCode = "" and FoundedYear = 0 — and
+#     without a Condition the generated update writes all three over the tracked entity.
+#
+#     AppMapper guards each member on the incoming value:
+#
+#         .ForMember(d => d.Name, opt => opt.Condition((s, d, value) => !string.IsNullOrWhiteSpace(value)))
+#
+#     which generates, in the update overload:
+#
+#         {
+#             var value = source.Name;
+#             if (Customizations.Condition("Name", source, destination, destination.Name, value))
+#                 destination.Name = value;
+#         }
+#
+#     Think of it as a runtime opt.Ignore(): Ignore decides once at build time, Condition decides
+#     per object. Nothing else about the member changed — it still matches by name, still goes
+#     through the same conversion, still reports the same diagnostics.
+#
+#     The response returns "before", "after" and "sent" so the three fields that survived are
+#     visible next to the blanks that would have overwritten them.
+#
+#     THE TRADE, which the build states rather than leaving you to find:
+#
+#         warning SM0017: the map from 'BrandPatch' to 'Brand' assigns 'Name', 'Country',
+#                         'ISOCode', 'FoundedYear' behind a Condition, so ProjectTo cannot use
+#                         it; Map is unaffected
+#
+#     A projection is one member initializer handed to the database, and there is no way to leave
+#     a binding out per row. That is why a Condition belongs on a WRITE map like this one and not
+#     on the read maps the list endpoints project.
+PATCH {{HostAddress}}/api/brands/1
+Content-Type: application/json
+
+{
+  "country": "Ireland"
+}
+
+### 1j2. Read brand 1 back — the name, ISO code and founded year are the ones 1j did not send,
+#     and they are untouched.
+GET {{HostAddress}}/api/brands/1
+Accept: application/json
 
 ### 2. Invoices — THE MAP AS A DATABASE QUERY.
 #     db.Invoices.ProjectTo<InvoiceDto>(mapper), and again not one Include, yet the response

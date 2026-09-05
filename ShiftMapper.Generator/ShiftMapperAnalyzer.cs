@@ -238,6 +238,31 @@ public sealed class ShiftMapperAnalyzer : DiagnosticAnalyzer
                     map.DestinationName);
             }
 
+            // SM0016 — a Condition on a member there is no assignment to guard. Named per member,
+            // because which one it is IS the message.
+            foreach (ConditionRefusal refusal in map.RefusedConditions)
+            {
+                report.Report(
+                    DiagnosticDescriptors.MemberCannotBeConditioned,
+                    location,
+                    map.DestinationName,
+                    refusal.Member,
+                    refusal.Describe());
+            }
+
+            // SM0017 — the same sentence SM0015 says, one severity louder. Reported once for the
+            // map rather than once per conditioned member: it is the map's projection that is
+            // gone, and one member is enough to take it.
+            if (map.ConditionedMembers.Length > 0)
+            {
+                report.Report(
+                    DiagnosticDescriptors.ConditionIsNotProjectable,
+                    location,
+                    map.SourceName,
+                    map.DestinationName,
+                    string.Join("', '", map.ConditionedMembers));
+            }
+
             // NOTHING BELOW IS SAID ABOUT A MAP THAT PRODUCED NO CODE. When the destination
             // cannot be built AND has nothing an update overload could assign, no method exists
             // for a property to be unmapped IN — and the reason is already on the line above, as

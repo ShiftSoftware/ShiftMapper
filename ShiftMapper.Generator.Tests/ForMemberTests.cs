@@ -1,4 +1,4 @@
-using ShiftMapper.Generator.Tests.Infrastructure;
+﻿using ShiftMapper.Generator.Tests.Infrastructure;
 using Xunit;
 
 namespace ShiftMapper.Generator.Tests;
@@ -36,7 +36,7 @@ public class ForMemberTests
         Assert.Empty(run.Ids());
 
         run.Compiles()
-           .Emits("LineTotal = Customizations.Value<global::Source, global::Destination, decimal>(\"LineTotal\")(source),")
+           .Emits("LineTotal = (_ShiftMapperValue_Source_To_Destination_LineTotal ??= Customizations.Value<global::Source, global::Destination, decimal>(\"LineTotal\"))(source),")
            // The expression itself is nowhere in the generated file. That is the design.
            .DoesNotEmit("s.Quantity * s.UnitPrice");
     }
@@ -92,7 +92,7 @@ public class ForMemberTests
 
         run.None("SM0001");
         run.Compiles()
-           .Emits("Label = Customizations.Value<global::Source, global::Destination, string>(\"Label\")(source),");
+           .Emits("Label = (_ShiftMapperValue_Source_To_Destination_Label ??= Customizations.Value<global::Source, global::Destination, string>(\"Label\"))(source),");
     }
 
     /// <summary>
@@ -119,7 +119,7 @@ public class ForMemberTests
 
         run.Compiles()
            .DoesNotEmit("Country = source.Country,")
-           .Emits("Country = Customizations.Value<global::Source, global::Destination, string>(\"Country\")(source),");
+           .Emits("Country = (_ShiftMapperValue_Source_To_Destination_Country ??= Customizations.Value<global::Source, global::Destination, string>(\"Country\"))(source),");
     }
 
     // -----------------------------------------------------------------
@@ -174,7 +174,7 @@ public class ForMemberTests
 
         Assert.Empty(run.Ids());
         run.Compiles()
-           .Emits("Name = Customizations.Value<global::Source, global::Destination, string>(\"Name\")(source),");
+           .Emits("Name = (_ShiftMapperValue_Source_To_Destination_Name ??= Customizations.Value<global::Source, global::Destination, string>(\"Name\"))(source),");
     }
 
     /// <summary>
@@ -200,7 +200,7 @@ public class ForMemberTests
             """);
 
         run.Compiles()
-           .Emits("Name = Customizations.Value<global::Source, global::Destination, string>(\"Name\")(source),");
+           .Emits("Name = (_ShiftMapperValue_Source_To_Destination_Name ??= Customizations.Value<global::Source, global::Destination, string>(\"Name\"))(source),");
     }
 
     /// <summary>
@@ -226,7 +226,7 @@ public class ForMemberTests
             """);
 
         run.Compiles()
-           .Emits("Label = Customizations.Value<global::Source, global::Destination, string>(\"Label\")(source),")
+           .Emits("Label = (_ShiftMapperValue_Source_To_Destination_Label ??= Customizations.Value<global::Source, global::Destination, string>(\"Label\"))(source),")
            .DoesNotEmit("destination.Label =");
     }
 

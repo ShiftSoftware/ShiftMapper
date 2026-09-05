@@ -21,3 +21,5 @@ SM0012 | ShiftMapper | Error | Nested object maps form a circular graph
 SM0013 | ShiftMapper | Warning | Destination cannot be created because a constructor parameter cannot be filled
 SM0014 | ShiftMapper | Warning | Destination cannot be created because a required member is not mapped
 SM0015 | ShiftMapper | Info | Map cannot be projected because it builds its destination with ConstructUsing
+SM0016 | ShiftMapper | Error | Member cannot be given a Condition because its value is settled when the object is created
+SM0017 | ShiftMapper | Warning | Map cannot be projected because a member carries a Condition

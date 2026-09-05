@@ -1,4 +1,4 @@
-using Microsoft.CodeAnalysis;
+﻿using Microsoft.CodeAnalysis;
 using ShiftMapper.Generator.Tests.Infrastructure;
 using Xunit;
 
@@ -210,7 +210,7 @@ public class ConstructorTests
 
         Assert.Empty(run.Ids());
         run.Compiles()
-           .Emits("Customizations.Value<global::Source, global::Destination, string>(\"Name\")(source));")
+           .Emits("(_ShiftMapperValue_Source_To_Destination_Name ??= Customizations.Value<global::Source, global::Destination, string>(\"Name\"))(source));")
            // AND NOT AGAIN in an initializer. Setting it twice would run the developer's
            // expression twice per object and assign an init-only property the constructor just set.
            .DoesNotEmit("Name = Customizations.Value");
@@ -563,7 +563,7 @@ public class ConstructorTests
         // it by name, and a missing member would be a CS0103 in a generated file instead of a
         // sentence naming the map that cannot be projected.
         run.Compiles()
-           .Emits("Not projectable: this map builds its destination with ConstructUsing.")
+           .Emits("Not projectable: builds its destination with ConstructUsing.")
            .Emits("builds its destination with ConstructUsing, which runs in C# and has no SQL.");
     }
 

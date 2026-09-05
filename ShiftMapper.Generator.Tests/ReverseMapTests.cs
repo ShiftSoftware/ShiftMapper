@@ -213,7 +213,7 @@ public class ReverseMapTests
 
         run.Compiles()
            // Forward: Note comes from the expression, looked up by the pair it was registered for.
-           .Emits("Customizations.Value<global::Source, global::Destination, string>(\"Note\")(source)")
+           .Emits("(_ShiftMapperValue_Source_To_Destination_Note ??= Customizations.Value<global::Source, global::Destination, string>(\"Note\"))(source)")
            // Back: the customization did not travel, so Note is matched by name like anything else.
            .DoesNotEmit("Customizations.Value<global::Destination, global::Source");
     }

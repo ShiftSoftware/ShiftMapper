@@ -58,6 +58,20 @@ public partial class TestMapper : ShiftMapperBase
         CreateMap<Stock, StockRequiredDto>()
             .ForMember(d => d.Summary, opt => opt.MapFrom(s => s.Name + ", " + s.City));
 
+        // MAPFROMSOURCE. Lines.Count is an int and LineCount is text, so MapFrom could not say
+        // this at all — its expression has to return the destination member's type. The
+        // conversion is the table's, so it projects, and both backends agree.
+        CreateMap<Invoice, InvoiceCountDto>()
+            .ForMember(d => d.LineCount, opt => opt.MapFromSource(s => s.Lines.Count));
+
+        // CONDITION — a partial update. Every member is guarded on the incoming value, so an
+        // absent one leaves the destination alone rather than blanking it. This map is IN-MEMORY
+        // ONLY as a result (SM0017), which is the trade.
+        CreateMap<ProfileUpdate, Profile>()
+            .ForMember(d => d.Name, opt => opt.Condition((s, d, value) => !string.IsNullOrWhiteSpace(value)))
+            .ForMember(d => d.City, opt => opt.Condition((s, d, value) => !string.IsNullOrWhiteSpace(value)))
+            .ForMember(d => d.Age, opt => opt.Condition((s, d, value) => value > 0));
+
         // ConstructUsing, reading the injected service. In memory only — SM0015 — and the
         // members it cannot set afterwards are the factory expression's to fill.
         CreateMap<Catalog, CatalogSummaryDto>()

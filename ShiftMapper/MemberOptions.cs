@@ -171,4 +171,122 @@ public sealed class MemberOptions<TSource, TDestination, TProperty>
 
         _customizations?.Register(typeof(TSource), typeof(TDestination), _member, value);
     }
+
+    /// <summary>
+    /// <see cref="MapFrom"/> for an expression that returns the SOURCE member's type, letting
+    /// ShiftMapper convert it the way it converts a property matched by name.
+    ///
+    /// <code>
+    /// // InvoiceReceiptDto.Total is a string; the sum is a decimal.
+    /// CreateMap&lt;Invoice, InvoiceReceiptDto&gt;()
+    ///     .ForMember(d =&gt; d.Total, opt =&gt; opt.MapFromSource(s =&gt; s.Lines.Sum(l =&gt; l.Quantity * l.UnitPrice)));
+    /// </code>
+    ///
+    /// <para><b>WHY THIS EXISTS AT ALL.</b> <see cref="MapFrom"/>'s expression must return
+    /// <typeparamref name="TProperty"/> — the DESTINATION member's type, fixed by the
+    /// <c>ForMember</c> selector. So the line above does not compile with <c>MapFrom</c>, and the
+    /// only way out was to convert by hand:</para>
+    ///
+    /// <code>opt.MapFrom(s =&gt; s.Lines.Sum(l =&gt; l.Quantity * l.UnitPrice).ToString("0.00"))</code>
+    ///
+    /// which is one call, and three losses. It hand-writes the conversion this library exists to
+    /// write. It takes the member out of the conversion table's hands, so SM0002,
+    /// SM0008, SM0009 and SM0010 stop being reported for it. And it loses the in-memory/query
+    /// split: <c>ToString("0.00")</c> has no format provider, so it reads the machine's culture
+    /// and the total travels as <c>"1596,00"</c> from a German server — in a library whose
+    /// <see cref="ValueConverter"/> exists to make exactly that impossible.
+    ///
+    /// This overload gives the value back to the conversion table. The generated code is the same
+    /// code a name-matched property of that type would have got, and it carries the same
+    /// diagnostics.
+    ///
+    /// <para><b>WHY A SECOND NAME AND NOT AN OVERLOAD.</b> An overload would have re-bound
+    /// existing calls. <c>opt.MapFrom(s =&gt; s.Rank)</c> onto a <c>long</c> member compiles today
+    /// through the implicit <c>int</c>-to-<c>long</c> conversion INSIDE the tree, so the tree is
+    /// already a <c>Func&lt;TSource, long&gt;</c>; a generic overload is the better match and would
+    /// have captured it, producing a <c>Func&lt;TSource, int&gt;</c> that the generated cast then
+    /// refuses at run time. Thirteen calls in this repository alone move that way. A distinct name
+    /// cannot re-bind anything, and it says at the call site which of the two things is meant.
+    /// </para>
+    ///
+    /// <para><b>IT PROJECTS.</b> The conversion is worked out at COMPILE time and travels into the
+    /// projection as a small lambda the generated file writes down, which is spliced onto your
+    /// expression rather than invoked from it — so EF still sees one expression it can read all
+    /// the way down. A pair the conversion table refuses is SM0002 at build time, as it would be
+    /// for a property.</para>
+    /// </summary>
+    /// <typeparam name="TValue">
+    /// The expression's own type, inferred. It is what the conversion is worked out FROM.
+    /// </typeparam>
+    /// <param name="value">
+    /// How to work the value out from the source, in the source's own terms. The same three
+    /// projection cases described on <see cref="MapFrom"/> apply here unchanged.
+    /// </param>
+    /// <exception cref="ArgumentNullException"><paramref name="value"/> is null.</exception>
+    public void MapFromSource<TValue>(Expression<Func<TSource, TValue>> value)
+    {
+        if (value is null)
+            throw new ArgumentNullException(nameof(value));
+
+        _customizations?.Register(typeof(TSource), typeof(TDestination), _member, value);
+    }
+
+    /// <summary>
+    /// Assigns the property only when your predicate says so. When it says no, the property is
+    /// LEFT ALONE — not set to <c>default</c>.
+    ///
+    /// <code>
+    /// // A PATCH: ignore whatever the client left blank.
+    /// CreateMap&lt;StockDto, Stock&gt;()
+    ///     .ForMember(d =&gt; d.Name, opt =&gt; opt.Condition((s, d, value) =&gt; !string.IsNullOrWhiteSpace(value)));
+    /// </code>
+    ///
+    /// <para><b>THINK OF IT AS A RUNTIME <see cref="Ignore"/>.</b> <c>Ignore</c> decides once, at
+    /// build time, that a property is not mapped. <c>Condition</c> decides per object, while the
+    /// map runs. Everything else about the property is unchanged: it still matches by name, it
+    /// still goes through the same generated conversion, and it still reports the same
+    /// diagnostics. Only the assignment is guarded.</para>
+    ///
+    /// <para><b>WHAT IT IS FOR.</b> <c>Map(source, destination)</c> is a PUT: it assigns every
+    /// mapped member, every time. That is right for a full replace and wrong for a partial
+    /// update, where an absent field arrives as <c>""</c> or <c>0</c> and overwrites something
+    /// real. This is how that overload becomes a PATCH without hand-writing the copy.</para>
+    ///
+    /// <para><b>ON A CREATE, "left alone" means the object's own initializer.</b>
+    /// <c>Map(source)</c> builds the destination and then assigns the conditioned members, so a
+    /// declined one keeps whatever its property initializer gave it — <c>string.Empty</c> for
+    /// <c>public string Name { get; set; } = string.Empty;</c>, an empty list for
+    /// <c>= new();</c>. The <c>destination</c> your predicate is handed is therefore
+    /// PARTIALLY BUILT on a create: every unconditioned member is already set, and the
+    /// conditioned ones are assigned in declaration order.</para>
+    ///
+    /// <para><b>WHAT CANNOT BE CONDITIONED</b>, reported as SM0016 at build time rather than
+    /// discovered: an <c>init</c>-only member, a <c>required</c> one, and a constructor parameter.
+    /// All three have their value settled while the object is being created, so there is nothing
+    /// to leave untouched — and C# has no syntax for conditionally omitting one.</para>
+    ///
+    /// <para><b>IT IS IN-MEMORY ONLY, and the build says so (SM0017).</b> A projection is one
+    /// member initializer handed to the database; there is no destination object to read and no
+    /// way to leave a binding out per row. A map carrying a <c>Condition</c> therefore has no
+    /// projection, and asking for one throws a message naming the map rather than quietly
+    /// returning different data from <c>Map</c>. That divergence — silent, per row, in a list
+    /// endpoint — is the reason this is a warning where <c>ConstructUsing</c>'s SM0015 is a
+    /// note.</para>
+    ///
+    /// <para>THE VALUE IS COMPUTED BEFORE THE PREDICATE RUNS, and handed to it. For a nested
+    /// member that means the whole child object is mapped and then thrown away when the predicate
+    /// declines; if that matters, guard the cheap thing instead.</para>
+    /// </summary>
+    /// <param name="predicate">
+    /// Given the source, the destination as it stands, and the value about to be assigned.
+    /// Return true to assign it.
+    /// </param>
+    /// <exception cref="ArgumentNullException"><paramref name="predicate"/> is null.</exception>
+    public void Condition(Func<TSource, TDestination, TProperty, bool> predicate)
+    {
+        if (predicate is null)
+            throw new ArgumentNullException(nameof(predicate));
+
+        _customizations?.RegisterCondition(typeof(TSource), typeof(TDestination), _member, predicate);
+    }
 }

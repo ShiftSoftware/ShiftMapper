@@ -374,6 +374,52 @@ internal static class DiagnosticDescriptors
                      "ShiftMapper picks the constructor itself, so ForMember on the members the " +
                      "arguments stand for is usually the projectable way to say the same thing.");
 
+    /// <summary>
+    /// SM0016 — a <c>Condition</c> on a member whose value is settled while the object is being
+    /// CREATED, so there is no assignment to guard.
+    ///
+    /// An ERROR, and the severity is the argument. Both ways to ignore it diverge silently: emit
+    /// the assignment anyway and the condition never fires on a create; omit it and the member is
+    /// never mapped. That is the shape of SM0011 and SM0012 — a configuration that cannot mean
+    /// what it says — rather than of a property left unmapped.
+    ///
+    /// The generator still emits the member UNCONDITIONED, so the generated file compiles while
+    /// the build fails. A project with analyzers turned off then gets the member mapped rather
+    /// than a CS error in a file it cannot edit.
+    /// </summary>
+    public static readonly DiagnosticDescriptor MemberCannotBeConditioned = new(
+        id: "SM0016",
+        title: "Member cannot be given a Condition",
+        messageFormat: "ShiftMapper: '{0}.{1}' cannot be given a Condition because {2}, so there is nothing to leave untouched",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true,
+        description: "A Condition guards an ASSIGNMENT, and an init-only member, a required member " +
+                     "in an object initializer, and a constructor argument are all settled while the " +
+                     "object is being built. Drop the Condition, or give the member an ordinary " +
+                     "public setter.");
+
+    /// <summary>
+    /// SM0017 — the map carries a <c>Condition</c>, so it cannot be projected.
+    ///
+    /// The same shape as SM0015, one severity louder, and the difference is what the two failures
+    /// look like. A <c>ConstructUsing</c> map's projection THROWS the moment it is asked for. A
+    /// conditioned one would not: <c>Compose</c> never sees a condition, so the projection would
+    /// bind the member unconditionally and quietly hand back different data from <c>Map</c> —
+    /// per row, in a list endpoint, with no exception anywhere. Silent divergence is the one
+    /// outcome this library's whole design is against, so it is a warning rather than a note.
+    /// </summary>
+    public static readonly DiagnosticDescriptor ConditionIsNotProjectable = new(
+        id: "SM0017",
+        title: "Map cannot be projected because a member carries a Condition",
+        messageFormat: "ShiftMapper: the map from '{0}' to '{1}' assigns '{2}' behind a Condition, so ProjectTo cannot use it; Map is unaffected",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "A projection is one member initializer handed to the database, and there is no " +
+                     "way to leave one binding out per row. Asking for the projection throws a " +
+                     "message naming this map rather than returning data that disagrees with Map.");
+
     /// <summary>SM0005 — the whole mapper produced nothing.</summary>
     public static readonly DiagnosticDescriptor MapperSkipped = new(
         id: "SM0005",
@@ -409,6 +455,8 @@ internal static class DiagnosticDescriptors
         CircularNesting,
         ConstructorParameterNotFilled,
         RequiredMemberNotFilled,
-        ConstructUsingIsNotProjectable);
+        ConstructUsingIsNotProjectable,
+        MemberCannotBeConditioned,
+        ConditionIsNotProjectable);
 }
 
