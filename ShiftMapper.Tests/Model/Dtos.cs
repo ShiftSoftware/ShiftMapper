@@ -117,6 +117,15 @@ public class WidgetDto : AuditDto
 }
 
 /// <summary>
+/// The third level of the IncludeBase family. Its map names only <c>Widget — WidgetDto</c>, and
+/// inherits AuditDto's Tag expression THROUGH it: IncludeBase is transitive.
+/// </summary>
+public class PremiumWidgetDto : WidgetDto
+{
+    public int Rank { get; set; }
+}
+
+/// <summary>
 /// The polymorphic family. A <c>Shape</c> that is really a <c>Circle</c> maps to a
 /// <c>CircleDto</c> — which is what <c>Include</c> buys, and what is silently lost without it.
 /// </summary>
@@ -129,6 +138,16 @@ public class ShapeDto
 public class CircleDto : ShapeDto
 {
     public int Radius { get; set; }
+}
+
+/// <summary>
+/// The third level. A Cone IS a Circle, so a dispatch that tested <c>is Circle</c> first would
+/// answer a Cone with a CircleDto and drop the Height in silence — which is why the generator
+/// sorts its type tests deepest-first rather than emitting them in declaration order.
+/// </summary>
+public class ConeDto : CircleDto
+{
+    public int Height { get; set; }
 }
 
 /// <summary>

@@ -451,4 +451,134 @@ public class InheritanceTests
            .Emits("global::Box<global::Brand>")
            .DoesNotEmit("global::Box<global::Point>");
     }
+
+    // -----------------------------------------------------------------
+    // MULTI-LEVEL FAMILIES.
+    // -----------------------------------------------------------------
+
+    private const string ThreeLevels =
+        """
+        public class Shape  { public string Name { get; set; } = ""; }
+        public class Round  : Shape { public int Radius { get; set; } }
+        public class Circle : Round { public string Colour { get; set; } = ""; }
+
+        public class ShapeDto  { public string Name { get; set; } = ""; }
+        public class RoundDto  : ShapeDto { public int Radius { get; set; } }
+        public class CircleDto : RoundDto { public string Colour { get; set; } = ""; }
+        """;
+
+    /// <summary>
+    /// CHAINED: each level includes only its immediate child, and the chain composes on its own.
+    /// The base map hands a <c>Round</c>-or-deeper value to <c>MapToRoundDto</c>, which does its
+    /// OWN dispatch — so a <c>Circle</c> arrives at <c>CircleDto</c> without anything extra.
+    /// </summary>
+    [Fact]
+    public void A_chain_of_Includes_dispatches_all_the_way_down()
+    {
+        GeneratorRun run = Run(ThreeLevels,
+            """
+            CreateMap<Shape, ShapeDto>().Include<Round, RoundDto>();
+            CreateMap<Round, RoundDto>().Include<Circle, CircleDto>();
+            CreateMap<Circle, CircleDto>();
+            """);
+
+        run.Compiles()
+           .Emits("if (source is global::Round derived0)")
+           .Emits("return MapToRoundDto(derived0);")
+           .Emits("if (source is global::Circle derived0)")
+           .Emits("return MapToCircleDto(derived0);");
+    }
+
+    /// <summary>
+    /// FLAT, and THE TEST THAT MATTERS: one map naming both a child and a grandchild.
+    ///
+    /// Type tests are checked in the order they are written, so emitting these in DECLARATION
+    /// order would let <c>is Round</c> catch a <c>Circle</c> and answer with a <c>RoundDto</c> —
+    /// dropping <c>Colour</c> in silence, which is the exact failure Include exists to prevent.
+    /// Deepest first makes the answer independent of the order the calls were written in.
+    /// </summary>
+    [Fact]
+    public void A_grandchild_is_tested_before_the_child_it_derives_from()
+    {
+        GeneratorRun run = Run(ThreeLevels,
+            """
+            CreateMap<Shape, ShapeDto>().Include<Round, RoundDto>().Include<Circle, CircleDto>();
+            CreateMap<Round, RoundDto>();
+            CreateMap<Circle, CircleDto>();
+            """);
+
+        run.Compiles();
+
+        int circle = run.Generated.IndexOf("is global::Circle derived", StringComparison.Ordinal);
+        int round = run.Generated.IndexOf("is global::Round derived", StringComparison.Ordinal);
+
+        Assert.True(circle >= 0 && round >= 0, "both type tests should be emitted");
+        Assert.True(circle < round, "the grandchild must be tested before the child it derives from");
+    }
+
+    /// <summary>And the same ordering in the UPDATE overload, which dispatches separately.</summary>
+    [Fact]
+    public void The_update_overload_orders_its_tests_the_same_way()
+    {
+        GeneratorRun run = Run(ThreeLevels,
+            """
+            CreateMap<Shape, ShapeDto>().Include<Round, RoundDto>().Include<Circle, CircleDto>();
+            CreateMap<Round, RoundDto>();
+            CreateMap<Circle, CircleDto>();
+            """);
+
+        int circle = run.Generated.IndexOf("is global::Circle source", StringComparison.Ordinal);
+        int round = run.Generated.IndexOf("is global::Round source", StringComparison.Ordinal);
+
+        Assert.True(circle >= 0 && round >= 0, "both update tests should be emitted");
+        Assert.True(circle < round, "the grandchild must be tested first here too");
+    }
+
+    /// <summary>
+    /// Writing the Includes in the already-correct order gives the SAME file. Sorting a list that
+    /// is sorted is a no-op, and the point is that the developer never has to know which it was.
+    /// </summary>
+    [Fact]
+    public void Declaration_order_does_not_change_the_generated_code()
+    {
+        string deepestFirst = """
+            CreateMap<Shape, ShapeDto>().Include<Circle, CircleDto>().Include<Round, RoundDto>();
+            CreateMap<Round, RoundDto>();
+            CreateMap<Circle, CircleDto>();
+            """;
+
+        string shallowestFirst = """
+            CreateMap<Shape, ShapeDto>().Include<Round, RoundDto>().Include<Circle, CircleDto>();
+            CreateMap<Round, RoundDto>();
+            CreateMap<Circle, CircleDto>();
+            """;
+
+        Assert.Equal(
+            Run(ThreeLevels, deepestFirst).Generated,
+            Run(ThreeLevels, shallowestFirst).Generated);
+    }
+
+    /// <summary>
+    /// INCLUDEBASE IS TRANSITIVE: a grandchild inherits from the grandparent through the parent,
+    /// without naming it. Merging is nearest-first, so the NEAREST base that says anything about a
+    /// member wins — a middle map can override its own parent and still pass everything else down.
+    /// </summary>
+    [Fact]
+    public void IncludeBase_reaches_through_a_middle_map()
+    {
+        GeneratorRun run = Run(ThreeLevels,
+            """
+            CreateMap<Shape, ShapeDto>()
+                .ForMember(d => d.Name, opt => opt.MapFrom(s => "shape:" + s.Name));
+
+            CreateMap<Round, RoundDto>().IncludeBase<Shape, ShapeDto>();
+
+            CreateMap<Circle, CircleDto>().IncludeBase<Round, RoundDto>();
+            """);
+
+        // The grandchild resolves the grandparent's expression, under the GRANDPARENT's pair —
+        // which is why the runtime store has to keep a lineage rather than a single key.
+        run.Compiles()
+           .Emits("Customizations.Value<global::Shape, global::ShapeDto, string>(\"Name\")");
+    }
 }

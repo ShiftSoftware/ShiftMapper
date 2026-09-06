@@ -572,14 +572,29 @@ public partial class AppMapper : ShiftMapperBase
         // A projection has ONE element type, fixed when the query is written, and no provider can
         // return a different shape per row. GET /api/catalog/projected asks anyway, to show what
         // the refusal reads like; GET /api/catalog/physical is the alternative it names.
+        //
+        // NOTE THE ORDER OF THE INCLUDES: BundleItem is declared LAST and derives from
+        // PhysicalItem, declared first. Type tests are checked in the order they are WRITTEN, so
+        // emitting these in declaration order would let `is PhysicalItem` catch a bundle and answer
+        // it with a PhysicalItemDto — the ItemCount silently gone, which is precisely the failure
+        // Include exists to prevent. The generator sorts its tests DEEPEST-FIRST, so this order and
+        // any other generate the same file. Same rule C# enforces for catch clauses; sorting is
+        // kinder than an error, because these calls can be spread across parts of the class.
         CreateMap<CatalogItem, CatalogItemDto>()
             .ForMember(d => d.Sku, opt => opt.MapFrom(s => s.Sku.ToUpper()))
             .ForMember(d => d.Kind, opt => opt.Ignore())
             .Include<PhysicalItem, PhysicalItemDto>()
-            .Include<DigitalItem, DigitalItemDto>();
+            .Include<DigitalItem, DigitalItemDto>()
+            .Include<BundleItem, BundleItemDto>();
 
         CreateMap<PhysicalItem, PhysicalItemDto>().IncludeBase<CatalogItem, CatalogItemDto>();
         CreateMap<DigitalItem, DigitalItemDto>().IncludeBase<CatalogItem, CatalogItemDto>();
+
+        // AND INCLUDEBASE IS TRANSITIVE. This names its PARENT and nothing else, and still gets the
+        // Sku expression and the Kind Ignore written two levels up on CatalogItem. Bases merge
+        // nearest-first all the way to the top, so a middle map can override one member and pass
+        // the rest down untouched.
+        CreateMap<BundleItem, BundleItemDto>().IncludeBase<PhysicalItem, PhysicalItemDto>();
 
         // AS — an interface has nothing to construct, so this map is SM0004 and no map at all
         // until As names the type that stands in for it. What comes out is a REDIRECTION rather

@@ -72,10 +72,20 @@ public partial class TestMapper : ShiftMapperBase
 
         CreateMap<Widget, WidgetDto>().IncludeBase<AuditEntity, AuditDto>();
 
+        // TRANSITIVE. This names Widget, never AuditEntity, and still inherits the Tag expression
+        // and the Secret Ignore — bases merge nearest-first, all the way up.
+        CreateMap<PremiumWidget, PremiumWidgetDto>().IncludeBase<Widget, WidgetDto>();
+
         // INCLUDE. A Shape that is really a Circle maps to a CircleDto rather than losing
         // everything a circle knows. In-memory only (SM0024): a projection has one element type.
-        CreateMap<Shape, ShapeDto>().Include<Circle, CircleDto>();
+        //
+        // NOTE THE ORDER: Circle is declared BEFORE Cone, and Cone derives from Circle. Written
+        // out in that order the type tests would read `is Circle` first, so a Cone would be
+        // answered with a CircleDto and its Height dropped in silence. The generator sorts them
+        // deepest-first, so this order and the other one generate the same file.
+        CreateMap<Shape, ShapeDto>().Include<Circle, CircleDto>().Include<Cone, ConeDto>();
         CreateMap<Circle, CircleDto>();
+        CreateMap<Cone, ConeDto>();
 
         // AS. An interface has nothing to construct, so this names the type that stands in — and
         // unlike Include it PROJECTS, because the concrete type is fixed at compile time.

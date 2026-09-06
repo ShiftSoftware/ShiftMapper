@@ -45,6 +45,13 @@ public static class SeedData
             new DigitalItem { Id = 4, Sku = "apl-lgc", Name = "Logic Pro", SizeMb = 6_400 }
         );
 
+        // THE THIRD LEVEL. A bundle is a PhysicalItem, so it is the row that proves the dispatch
+        // tests the grandchild before the child — without that it would come back as a plain
+        // PhysicalItemDto with its ItemCount silently gone.
+        modelBuilder.Entity<BundleItem>().HasData(
+            new BundleItem { Id = 5, Sku = "apl-bndl", Name = "iPhone + AirPods Bundle", WeightKg = 0.24m, ItemCount = 2 }
+        );
+
         modelBuilder.Entity<Stock>().HasData(
             new Stock { Id = 1, Name = "Central Warehouse", City = "Erbil", Code = "ERB-WH", BayNumbers = [1, 2, 3, 4] },
             new Stock { Id = 2, Name = "Baghdad Retail Store", City = "Baghdad", Code = "BGD-RS", BayNumbers = [1, 2] },

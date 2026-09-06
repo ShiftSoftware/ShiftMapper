@@ -1,4 +1,4 @@
-using ShiftMapper.Tests.Model;
+﻿using ShiftMapper.Tests.Model;
 using Xunit;
 
 namespace ShiftMapper.Tests;
@@ -132,7 +132,7 @@ public class InheritanceTests
             () => _fixture.Mapper.ProjectTo<ShapeDto>(Array.Empty<Shape>().AsQueryable()));
 
         Assert.Contains("dispatches on the source's runtime type", error.Message);
-        Assert.Contains("OfType<Circle>()", error.Message);
+        Assert.Contains("OfType<Cone>()", error.Message);
     }
 
     // -----------------------------------------------------------------
@@ -219,5 +219,115 @@ public class InheritanceTests
         Assert.Equal(1, projected.Total);
         Assert.Equal("Sprocket", projected.Items[0].Name);
         Assert.Equal("audit:t1", projected.Items[0].Tag);
+    }
+
+    // -----------------------------------------------------------------
+    // MULTI-LEVEL FAMILIES.
+    // -----------------------------------------------------------------
+
+    /// <summary>
+    /// THE ORDERING TEST, and the one that would have failed before the generator sorted its type
+    /// tests.
+    ///
+    /// <c>Cone</c> derives from <c>Circle</c>, and the mapper declares
+    /// <c>.Include&lt;Circle, CircleDto&gt;().Include&lt;Cone, ConeDto&gt;()</c> — the child first.
+    /// Written out in that order, <c>is Circle</c> would catch a Cone and answer with a CircleDto,
+    /// losing the Height in silence. That is the exact failure Include was added to prevent, so
+    /// getting it wrong here would have been the feature defeating itself.
+    /// </summary>
+    [Fact]
+    public void A_grandchild_maps_through_its_own_pair_not_its_parents()
+    {
+        Shape shape = new Cone { Name = "c1", Radius = 5, Height = 9 };
+
+        ShapeDto dto = _fixture.Mapper.Map<ShapeDto>(shape);
+
+        ConeDto cone = Assert.IsType<ConeDto>(dto);
+        Assert.Equal(9, cone.Height);
+        Assert.Equal(5, cone.Radius);
+        Assert.Equal("c1", cone.Name);
+    }
+
+    /// <summary>And the middle level still maps as itself — sorting did not shadow it.</summary>
+    [Fact]
+    public void The_middle_level_still_maps_as_itself()
+    {
+        Shape shape = new Circle { Name = "c", Radius = 3 };
+
+        ShapeDto dto = _fixture.Mapper.Map<ShapeDto>(shape);
+
+        Assert.IsType<CircleDto>(dto, exactMatch: true);
+        Assert.Equal(3, ((CircleDto)dto).Radius);
+    }
+
+    /// <summary>All three levels in one list, each element answered by its own pair.</summary>
+    [Fact]
+    public void A_mixed_collection_dispatches_every_level_correctly()
+    {
+        Shape[] shapes =
+        [
+            new Cone { Name = "cone", Radius = 1, Height = 2 },
+            new Circle { Name = "circle", Radius = 3 },
+            new Shape { Name = "shape" },
+        ];
+
+        List<ShapeDto> dtos = _fixture.Mapper.Map<List<ShapeDto>>(shapes);
+
+        Assert.IsType<ConeDto>(dtos[0]);
+        Assert.IsType<CircleDto>(dtos[1], exactMatch: true);
+        Assert.IsType<ShapeDto>(dtos[2], exactMatch: true);
+    }
+
+    /// <summary>
+    /// The UPDATE overload dispatches by the same rule. It has its own set of type tests, so it
+    /// could have been sorted correctly in one place and not the other.
+    /// </summary>
+    [Fact]
+    public void The_update_overload_reaches_the_grandchild_too()
+    {
+        Shape shape = new Cone { Name = "c1", Radius = 5, Height = 9 };
+        ShapeDto destination = new ConeDto { Name = "old", Radius = 0, Height = 0 };
+
+        _fixture.Mapper.Map(shape, destination);
+
+        Assert.Equal(9, ((ConeDto)destination).Height);
+        Assert.Equal("c1", destination.Name);
+    }
+
+    /// <summary>
+    /// INCLUDEBASE IS TRANSITIVE. <c>PremiumWidget</c>'s map names only <c>Widget</c>, and inherits
+    /// the Tag expression and the Secret Ignore from <c>AuditEntity</c> THROUGH it.
+    ///
+    /// This is the runtime half of the lineage: the expression is stored under
+    /// <c>AuditEntity → AuditDto</c>, two levels up from the pair asking for it.
+    /// </summary>
+    [Fact]
+    public void IncludeBase_inherits_through_a_middle_map()
+    {
+        PremiumWidgetDto dto = _fixture.Mapper.Map<PremiumWidgetDto>(
+            new PremiumWidget { Name = "Sprocket", Tag = "t1", Secret = "hidden", Rank = 3 });
+
+        Assert.Equal("audit:t1", dto.Tag);
+        Assert.Equal("untouched", dto.Secret);
+        Assert.Equal("Sprocket", dto.Name);
+        Assert.Equal(3, dto.Rank);
+    }
+
+    /// <summary>And through the projection, which walks the same lineage two levels up.</summary>
+    [Fact]
+    public void A_transitively_inherited_MapFrom_reaches_the_projection()
+    {
+        PremiumWidget[] widgets =
+        [
+            new PremiumWidget { Name = "Sprocket", Tag = "t1", Secret = "hidden", Rank = 3 },
+        ];
+
+        PremiumWidgetDto projected = _fixture.Mapper
+            .ProjectTo<PremiumWidgetDto>(widgets.AsQueryable())
+            .Single();
+
+        Assert.Equal("audit:t1", projected.Tag);
+        Assert.Equal("untouched", projected.Secret);
+        Assert.Equal(3, projected.Rank);
     }
 }

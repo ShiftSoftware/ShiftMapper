@@ -16,7 +16,8 @@ internal sealed class DerivedPair
         string sourceName,
         string destinationName,
         bool derivesFromSource,
-        bool derivesFromDestination)
+        bool derivesFromDestination,
+        int depth)
     {
         SourceType = sourceType;
         DestinationType = destinationType;
@@ -24,6 +25,7 @@ internal sealed class DerivedPair
         DestinationName = destinationName;
         DerivesFromSource = derivesFromSource;
         DerivesFromDestination = derivesFromDestination;
+        Depth = depth;
     }
 
     /// <summary>Fully qualified derived source, e.g. <c>global::App.Circle</c>.</summary>
@@ -52,6 +54,25 @@ internal sealed class DerivedPair
     /// would not compile.
     /// </summary>
     public bool DerivesFromDestination { get; }
+
+    /// <summary>
+    /// How many inheritance steps the derived SOURCE is below the map's source — 1 for a direct
+    /// child, 2 for a grandchild.
+    ///
+    /// <para>It exists to ORDER the emitted type tests, and that ordering is a correctness matter
+    /// rather than a tidiness one. Type tests are checked in the order they are written, so on a
+    /// map that includes both a child and a grandchild, emitting them in declaration order lets
+    /// <c>is Round</c> catch a <c>Circle</c> and return a <c>RoundDto</c> — silently dropping
+    /// everything <c>Circle</c> added, which is the exact failure <c>Include</c> exists to prevent.
+    /// Sorting deepest-first makes the answer the same whichever order the developer wrote the
+    /// calls in.</para>
+    ///
+    /// <para>It is the same rule C# itself enforces for <c>catch</c> clauses and switch type
+    /// patterns. C# can make it an error because it sees all the arms at once; here the arms come
+    /// from separate <c>Include</c> calls that may be in different parts of the class, so sorting
+    /// is both cheaper and kinder than a diagnostic telling someone to reorder their code.</para>
+    /// </summary>
+    public int Depth { get; }
 
     /// <summary>The key the derived pair's own map is looked up by.</summary>
     public string Key => SourceType + "->" + DestinationType;

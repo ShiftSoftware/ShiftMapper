@@ -368,8 +368,18 @@ What is inherited is the **configuration, not the members**. The members were ne
 `PhysicalItem` already *is* a `CatalogItem`, so `Sku` already matched by name. What could not be
 shared was everything said *about* it, which had to be repeated on every map in the family. Own
 configuration always wins per member, so a derived map can disagree about one member without
-restating the rest; bases are merged nearest-first, transitively, and across every part of a
-partial mapper. An `IncludeBase` naming a pair with no `CreateMap` is **SM0022**.
+restating the rest; bases are merged nearest-first and across every part of a partial mapper. An
+`IncludeBase` naming a pair with no `CreateMap` is **SM0022**.
+
+**It is transitive**, so a deeper family names only its parent at each step:
+
+```csharp
+CreateMap<BundleItem, BundleItemDto>().IncludeBase<PhysicalItem, PhysicalItemDto>();
+```
+
+That map never mentions `CatalogItem` and still gets its `Sku` expression and its `Kind` ignore
+from two levels up. Nearest-first is what makes a middle map able to override one member and pass
+everything else down untouched.
 
 **And it projects.** Worth stating because it very nearly did not: everything you write is stored
 against the pair you wrote it for, so that `Sku` expression lives under
@@ -396,6 +406,15 @@ element:
 if (source is PhysicalItem derived0) return MapToPhysicalItemDto(derived0);
 if (source is DigitalItem  derived1) return MapToDigitalItemDto(derived1);
 ```
+
+**Deeper families work, in either arrangement.** Chained — each map including only its immediate
+child — composes on its own, because the derived map does its own dispatch. Listing a child and a
+grandchild on the SAME map works too, and the order you write them in does not matter: type tests
+are checked in the order they are written, so `is PhysicalItem` would otherwise catch a
+`BundleItem` and answer with a `PhysicalItemDto`, dropping in silence exactly what `Include` was
+added to keep. **The tests are emitted deepest-first.** It is the rule C# enforces for `catch`
+clauses, except that sorting is kinder than an error: these calls can be spread across parts of a
+class, so there is no single place a developer could read to get the order right.
 
 **It costs the projection, and the build says so (SM0024).** A projection has one element type,
 fixed when the query is written; SQL returns rows of one shape, and there is no per-row type test a

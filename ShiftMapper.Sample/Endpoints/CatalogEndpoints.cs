@@ -123,6 +123,42 @@ public static class CatalogEndpoints
         })
         .WithName("GetPhysicalCatalogItems");
 
+        // GET /api/catalog/bundles?sql=true
+        //
+        // THE SAME ALTERNATIVE, ONE LEVEL DEEPER — and the strongest test the lineage gets.
+        //
+        //     db.CatalogItems.OfType<BundleItem>().ProjectTo<BundleItemDto>(mapper)
+        //
+        // BundleItem is the third level: BundleItem -> PhysicalItem -> CatalogItem. Its map says
+        // only this, naming its PARENT and nothing else:
+        //
+        //     CreateMap<BundleItem, BundleItemDto>().IncludeBase<PhysicalItem, PhysicalItemDto>();
+        //
+        // The Sku expression lives on CatalogItem -> CatalogItemDto, TWO pairs above the one being
+        // projected. Nothing about it is stored under BundleItem -> BundleItemDto, so this SELECT
+        // only carries UPPER([c].[Sku]) because the projection walks the lineage the whole way up,
+        // exactly as Map does. Compare the sku here with the one in /api/catalog, which came from
+        // the in-memory path: they agree, which is the only acceptable answer.
+        //
+        // ?sql=true is also the clearest proof that OfType is not a filter in memory:
+        //
+        //     WHERE [c].[Discriminator] = N'BundleItem'
+        //
+        // One row, one query, and the discriminator picked the LEAF of the hierarchy.
+        group.MapGet("/bundles", (AppDbContext db, AppMapper mapper, bool sql = false) =>
+        {
+            IQueryable<BundleItemDto> query = db.CatalogItems
+                .AsNoTracking()
+                .OfType<BundleItem>()
+                .OrderBy(item => item.Id)
+                .ProjectTo<BundleItemDto>(mapper);
+
+            return sql
+                ? Results.Text(query.ToQueryString(), "text/plain")
+                : Results.Ok(query.ToList());
+        })
+        .WithName("GetBundleCatalogItems");
+
         // GET /api/catalog/labels?sql=true
         //
         // AS, and the contrast with Include that makes both worth having.

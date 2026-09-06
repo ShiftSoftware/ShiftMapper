@@ -82,6 +82,12 @@ public class Widget : AuditEntity
     public string Name { get; set; } = string.Empty;
 }
 
+/// <summary>The third level of the IncludeBase family — it names Widget, never AuditEntity.</summary>
+public class PremiumWidget : Widget
+{
+    public int Rank { get; set; }
+}
+
 /// <summary>The base of the polymorphic family.</summary>
 public class Shape
 {
@@ -92,6 +98,12 @@ public class Shape
 public class Circle : Shape
 {
     public int Radius { get; set; }
+}
+
+/// <summary>The THIRD level, which is what makes the dispatch ORDER observable.</summary>
+public class Cone : Circle
+{
+    public int Height { get; set; }
 }
 
 /// <summary>The open generic wrapper's source side.</summary>

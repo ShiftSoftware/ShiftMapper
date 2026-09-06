@@ -941,7 +941,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                                 derived[0].Name,
                                 derived[1].Name,
                                 DerivesFromOrEquals(derived[0], currentSource),
-                                DerivesFromOrEquals(derived[1], currentDestination));
+                                DerivesFromOrEquals(derived[1], currentDestination),
+                                DerivationDepth(derived[0], currentSource));
 
                             if (!current.IncludedDerived.Any(existing => existing.Key == pair.Key))
                                 current.IncludedDerived.Add(pair);
@@ -1023,6 +1024,37 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// Whether one type IS another or derives from it — what <c>Include</c> and <c>As</c> need to
     /// check, and the reason both can be refused at build time rather than at the first call.
     /// </summary>
+    /// <summary>
+    /// How many base-type steps separate <paramref name="type"/> from
+    /// <paramref name="candidateBase"/> — 1 for a direct child, 2 for a grandchild, 0 when they are
+    /// the same type or unrelated.
+    ///
+    /// <para>Worked out here, while the symbols are in hand, because <see cref="DerivedPair"/> may
+    /// hold none: an <c>int</c> survives the compiler's caching between keystrokes, an
+    /// <c>INamedTypeSymbol</c> must not be asked to.</para>
+    ///
+    /// <para>Interfaces answer 1 rather than a real distance. Interface hierarchies are a lattice,
+    /// not a chain, so "how far" has no single answer — and a map's destination reached through
+    /// <c>Include</c> has to be a class anyway, since the generated method returns it by value.</para>
+    /// </summary>
+    private static int DerivationDepth(INamedTypeSymbol type, INamedTypeSymbol candidateBase)
+    {
+        if (candidateBase.TypeKind == TypeKind.Interface)
+            return 1;
+
+        int depth = 0;
+
+        for (INamedTypeSymbol? current = type.BaseType; current is not null; current = current.BaseType)
+        {
+            depth++;
+
+            if (SymbolEqualityComparer.Default.Equals(current, candidateBase))
+                return depth;
+        }
+
+        return 0;
+    }
+
     private static bool DerivesFromOrEquals(INamedTypeSymbol type, INamedTypeSymbol candidateBase)
     {
         if (SymbolEqualityComparer.Default.Equals(type, candidateBase))
@@ -4395,6 +4427,11 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// already failing on SM0023, and a call to a method that was never written would bury that
     /// under a CS error in a file the developer cannot edit. Same for a pair whose types do not
     /// actually derive: the test could never be true, and the return would not compile.
+    ///
+    /// <para>DEEPEST FIRST, which is a correctness matter — see <see cref="DerivedPair.Depth"/>.
+    /// Emitting in declaration order would let a map that includes both a child and a grandchild
+    /// answer a grandchild with the CHILD's map, dropping in silence exactly what
+    /// <c>Include</c> was added to keep.</para>
     /// </summary>
     private static void AppendDerivedDispatch(
         StringBuilder sb,
@@ -4404,7 +4441,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     {
         int index = 0;
 
-        foreach (DerivedPair derived in map.IncludedDerived)
+        foreach (DerivedPair derived in DeepestFirst(map))
         {
             if (!derived.DerivesFromSource || !derived.DerivesFromDestination)
                 continue;
@@ -4420,12 +4457,22 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         }
     }
 
+    /// <summary>
+    /// The included pairs in the order their type tests must be WRITTEN: deepest first, and
+    /// declaration order among equals so the generated file stays stable between builds.
+    ///
+    /// <para><see cref="Enumerable.OrderByDescending{TSource,TKey}(IEnumerable{TSource},Func{TSource,TKey})"/>
+    /// is a stable sort, which is what keeps that second half true.</para>
+    /// </summary>
+    private static IEnumerable<DerivedPair> DeepestFirst(MapModel map) =>
+        map.IncludedDerived.OrderByDescending(pair => pair.Depth);
+
     /// <inheritdoc cref="AppendDerivedDispatch"/>
     private static void AppendDerivedUpdateDispatch(StringBuilder sb, string indent, MapModel map)
     {
         int index = 0;
 
-        foreach (DerivedPair derived in map.IncludedDerived)
+        foreach (DerivedPair derived in DeepestFirst(map))
         {
             if (!derived.DerivesFromSource || !derived.DerivesFromDestination)
                 continue;
@@ -4751,8 +4798,13 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                     ? "builds its destination with ConstructUsing"
                     : $"assigns {string.Join(", ", map.ConditionedMembers)} behind a Condition";
 
-            string fix = !map.IncludedDerived.IsEmpty
-                ? $"Use Map instead, or project the derived type directly: OfType<{map.IncludedDerived[0].SourceName}>().ProjectTo<{map.IncludedDerived[0].DestinationName}>(mapper)."
+            // The example names the pair the dispatch would TEST FIRST, so the hint and the
+            // generated code agree — and so the whole file stays independent of the order the
+            // Include calls happened to be written in.
+            DerivedPair? example = DeepestFirst(map).FirstOrDefault();
+
+            string fix = example is not null
+                ? $"Use Map instead, or project the derived type directly: OfType<{example.SourceName}>().ProjectTo<{example.DestinationName}>(mapper)."
                 : map.HasHooks
                 ? "Use Map instead, or move what the hook does into a ForMember, which projects."
                 : map.ConstructsWithFactory

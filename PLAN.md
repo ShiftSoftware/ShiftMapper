@@ -830,6 +830,19 @@ endpoint.
   method (`if (source is Circle derived0) return MapToCircleDto(derived0);`), a paired test in the
   update overload, and dispatches per ELEMENT in the collection overloads — a mixed list is the
   normal case for a TPH table.
+- **MULTI-LEVEL FAMILIES WORK BOTH WAYS ROUND, and the second needed a fix.** Chaining — each map
+  including only its immediate child — composes for free, because the derived map runs its own
+  dispatch. Listing a child AND a grandchild on the same map did not: type tests are checked in
+  the order they are written, so `is PhysicalItem` caught a `BundleItem` and answered with a
+  `PhysicalItemDto`, dropping `ItemCount` in silence — the feature defeating its own purpose, and
+  reachable by nothing worse than writing two `Include` calls in the obvious order.
+
+  Fixed by sorting the emitted tests DEEPEST-FIRST (`DerivedPair.Depth`, worked out while the
+  symbols are in hand so the cached model still holds only strings). Declaration order now cannot
+  change the generated file at all — which also took the SM0024 message's `OfType<>` example,
+  since it named `IncludedDerived[0]`. The same rule C# enforces for `catch` clauses; sorting beats
+  a diagnostic here because the calls may be spread across parts of a partial class, so there is no
+  one place to read to get the order right.
 - **`Include` costs the projection (SM0024), `As` does not.** That asymmetry is the whole design and
   is worth stating as a rule: a projection has ONE element type, fixed when the query is written, so
   a PER-ROW decision has nowhere to live — but `As` decides nothing per row, because the concrete
@@ -859,6 +872,8 @@ digital rows, so `/api/catalog` dispatches per row, `/api/catalog/projected` sho
 `/api/catalog/physical?sql=true` shows `WHERE [Discriminator] = N'PhysicalItem'` next to the
 INHERITED `UPPER([c].[Sku])` reaching SQL, `/api/catalog/labels?sql=true` shows `As` producing that
 same `SELECT`, and `/api/catalog/paged` and `/paged-brands` are two closed maps from one line.
+`BundleItem` is the THIRD level: declared last among the `Include`s and dispatched first, and its
+map names only `PhysicalItem` while inheriting `CatalogItem`'s configuration through it.
 
 ---
 

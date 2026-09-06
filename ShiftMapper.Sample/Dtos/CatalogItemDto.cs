@@ -104,6 +104,46 @@ public class DigitalItemDto : CatalogItemDto
 }
 
 /// <summary>
+/// THE THIRD LEVEL, and the two things that only appear once a hierarchy is deeper than one step.
+///
+/// <para><b>1. `Include` ORDER DOES NOT MATTER, and it easily could have.</b> The base map lists
+/// its descendants like this — the grandchild LAST:</para>
+///
+/// <code>
+/// CreateMap&lt;CatalogItem, CatalogItemDto&gt;()
+///     .Include&lt;PhysicalItem, PhysicalItemDto&gt;()
+///     .Include&lt;DigitalItem,  DigitalItemDto&gt;()
+///     .Include&lt;BundleItem,   BundleItemDto&gt;();
+/// </code>
+///
+/// A <c>BundleItem</c> IS a <c>PhysicalItem</c>. Type tests are checked in the order they are
+/// written, so emitting these in declaration order would let <c>is PhysicalItem</c> catch a bundle
+/// and answer it with a <c>PhysicalItemDto</c> — dropping <c>ItemCount</c> in silence, which is
+/// the exact failure <c>Include</c> was added to prevent. So the generator sorts its tests
+/// DEEPEST-FIRST, and <c>is BundleItem</c> is written before <c>is PhysicalItem</c> whichever order
+/// you wrote the calls in. It is the rule C# enforces for <c>catch</c> clauses, except sorting is
+/// kinder than an error telling you to reorder code that may be spread over several files.
+///
+/// <para><b>2. `IncludeBase` IS TRANSITIVE.</b> This map names its PARENT and nothing else:</para>
+///
+/// <code>
+/// CreateMap&lt;BundleItem, BundleItemDto&gt;().IncludeBase&lt;PhysicalItem, PhysicalItemDto&gt;();
+/// </code>
+///
+/// and still gets the upper-cased <c>Sku</c> and the ignored <c>Kind</c>, which were written two
+/// levels up on <c>CatalogItem → CatalogItemDto</c>. Bases merge NEAREST-FIRST all the way up, so
+/// a middle map can override one member and pass everything else down untouched.
+///
+/// <para>Both are visible in <c>GET /api/catalog</c>: the bundle comes back as a
+/// <c>BundleItemDto</c> carrying its <c>itemCount</c>, with an upper-cased SKU nobody mentioned
+/// nearer than the grandparent.</para>
+/// </summary>
+public class BundleItemDto : PhysicalItemDto
+{
+    public string ItemCount { get; set; } = string.Empty;
+}
+
+/// <summary>
 /// An INTERFACE destination. There is nothing to construct, so it is SM0004 and no map at all
 /// until <c>As</c> names the type that stands in for it.
 ///

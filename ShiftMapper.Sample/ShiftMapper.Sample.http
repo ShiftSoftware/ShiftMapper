@@ -587,6 +587,40 @@ Accept: application/json
 GET {{HostAddress}}/api/catalog
 Accept: application/json
 
+### 1p1b. MULTI-LEVEL — the same request, read for the THIRD row type.
+#
+#      The catalogue is three levels deep: BundleItem derives from PhysicalItem, which derives
+#      from CatalogItem. Two things only show up at this depth, and both are in the response to
+#      request 1p above.
+#
+#      FIRST, "kinds" ends with BundleItemDto, and the last item carries "itemCount". Look at how
+#      the Includes are DECLARED in AppMapper — the grandchild is LAST:
+#
+#          CreateMap<CatalogItem, CatalogItemDto>()
+#              .Include<PhysicalItem, PhysicalItemDto>()
+#              .Include<DigitalItem,  DigitalItemDto>()
+#              .Include<BundleItem,   BundleItemDto>();
+#
+#      A BundleItem IS a PhysicalItem. Type tests are checked IN THE ORDER THEY ARE WRITTEN, so
+#      emitted in declaration order `is PhysicalItem` would catch the bundle and answer it with a
+#      PhysicalItemDto — itemCount silently gone. Which is exactly the failure Include exists to
+#      prevent, reachable by nothing worse than writing two calls in the obvious order.
+#
+#      So the generator sorts the tests DEEPEST-FIRST, and the generated file is the same whichever
+#      order you wrote them in. It is the rule C# enforces for catch clauses — except sorting is
+#      kinder than an error here, because these calls can be spread across parts of the class and
+#      there is no one place to read to get the order right.
+#
+#      SECOND, that bundle's "sku" is "APL-BNDL", upper-cased. Its map says only this:
+#
+#          CreateMap<BundleItem, BundleItemDto>().IncludeBase<PhysicalItem, PhysicalItemDto>();
+#
+#      It never mentions CatalogItem, where the Sku expression and the Kind Ignore were written.
+#      INCLUDEBASE IS TRANSITIVE, merging nearest-first all the way up — which is what lets a
+#      middle map override one member and pass everything else down untouched.
+GET {{HostAddress}}/api/catalog
+Accept: application/json
+
 ### 1p2. THE REFUSAL, and it is deliberate. The map above dispatches on the runtime type, so it
 #      has no projection — which the build already said, as a warning, when you compiled:
 #
@@ -635,6 +669,40 @@ Accept: application/json
 #      Map would upper-case the SKU and ProjectTo would not — two answers that each look
 #      perfectly right on their own, which is the class of bug that survives review.
 GET {{HostAddress}}/api/catalog/physical?sql=true
+
+### 1p4b. THE SAME PROJECTION, ONE LEVEL DEEPER — and the strongest test the lineage gets.
+#
+#          db.CatalogItems.OfType<BundleItem>().ProjectTo<BundleItemDto>(mapper)
+#
+#      BundleItem is the third level: BundleItem → PhysicalItem → CatalogItem. Its map names
+#      its PARENT and nothing else:
+#
+#          CreateMap<BundleItem, BundleItemDto>().IncludeBase<PhysicalItem, PhysicalItemDto>();
+#
+#      The Sku expression lives on CatalogItem → CatalogItemDto — TWO pairs above the one being
+#      projected. Nothing about it is stored under BundleItem → BundleItemDto.
+#
+#      Compare the "sku" you get here with the bundle's "sku" in request 1p, which came from the
+#      IN-MEMORY path. Both are "APL-BNDL". That agreement is the whole point: the two backends
+#      resolve inherited configuration by walking the same lineage, so neither can drift from the
+#      other as a family gets deeper.
+GET {{HostAddress}}/api/catalog/bundles
+Accept: application/json
+
+### 1p4c. THE SQL — one row, one query, and the leaf of the hierarchy:
+#
+#        SELECT COALESCE(CONVERT(varchar(11), [c].[ItemCount]), '') AS [ItemCount],
+#               COALESCE(CONVERT(varchar(100), [c].[WeightKg]), '') AS [WeightKg],
+#               [c].[Id], [c].[Name], UPPER([c].[Sku]) AS [Sku]
+#        FROM [CatalogItems] AS [c]
+#        WHERE [c].[Discriminator] = N'BundleItem'
+#        ORDER BY [c].[Id]
+#
+#      WHERE [Discriminator] = N'BundleItem' is OfType, and it is a WHERE clause rather than a
+#      filter in memory — the database returns one row, not five.
+#
+#      UPPER([c].[Sku]) travelled two levels of IncludeBase to get into this statement.
+GET {{HostAddress}}/api/catalog/bundles?sql=true
 
 ### 1p5. AS — an interface destination, and the contrast with Include that makes both worth
 #      having.

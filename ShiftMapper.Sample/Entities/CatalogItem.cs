@@ -1,4 +1,4 @@
-namespace ShiftMapper.Sample.Entities;
+﻿namespace ShiftMapper.Sample.Entities;
 
 /// <summary>
 /// A catalogue item, and the base of a TABLE-PER-HIERARCHY family — one table, a Discriminator
@@ -30,4 +30,13 @@ public class PhysicalItem : CatalogItem
 public class DigitalItem : CatalogItem
 {
     public int SizeMb { get; set; }
+}
+
+/// <summary>
+/// A THIRD level — a bundle is a physical item, which is a catalogue item. Two things that only
+/// show up once a hierarchy is deeper than one step both live here; see <see cref="Dtos.BundleItemDto"/>.
+/// </summary>
+public class BundleItem : PhysicalItem
+{
+    public int ItemCount { get; set; }
 }
