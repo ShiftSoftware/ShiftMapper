@@ -224,6 +224,11 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         NamingConventions classDefaultNaming = ReadClassDefaultNaming(
             semanticModel.Compilation, classSymbol, baseClass, mapOptions, cancellationToken);
 
+        // THE GLOBAL CONVERSIONS, read once for the whole mapper. Symbols live in here, which is
+        // safe precisely because it does not outlive this method — see ConversionTable.
+        ConversionTable conversions = ReadConversions(
+            semanticModel.Compilation, classSymbol, baseClass, profileBase, cancellationToken);
+
         var maps = ImmutableArray.CreateBuilder<MapModel>();
         var seen = new HashSet<string>();
 
@@ -277,6 +282,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                          classDefaultFlattening,
                          classDefaultNaming,
                          Lookup,
+                         conversions,
                          cancellationToken))
             {
                 if (seen.Add(map.Key))
@@ -333,6 +339,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                              classDefaultFlattening,
                              classDefaultNaming,
                              Lookup,
+                             conversions,
                              cancellationToken))
                 {
                     if (seen.Add(map.Key))
@@ -413,7 +420,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                         flattening: classDefaultFlattening ?? true,
                         naming: classDefaultNaming,
                         refinements: Refinements.Empty,
-                        unresolvedBases: ImmutableArray<string>.Empty);
+                        unresolvedBases: ImmutableArray<string>.Empty,
+                        conversions: conversions);
 
                     if (seen.Add(closed.Key))
                         maps.Add(closed);
@@ -641,6 +649,69 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// Refinements are stored RAW here: no inheritance is applied while building the table, so a
     /// base that itself inherits is followed by the caller instead, where a loop can be seen.
     /// </summary>
+    /// <summary>
+    /// Every <c>CreateConversion&lt;A, B&gt;</c> the mapper declares, across its own parts and its
+    /// profiles.
+    ///
+    /// <para>Only the TYPE ARGUMENTS and whether a <c>query:</c> argument was written are read.
+    /// The expressions themselves are never looked at — they stay in the developer's file and
+    /// arrive at run time, exactly as a <c>MapFrom</c> tree does, which is why a conversion can
+    /// call anything C# can call without the generator having to understand it.</para>
+    /// </summary>
+    private static ConversionTable ReadConversions(
+        Compilation compilation,
+        INamedTypeSymbol classSymbol,
+        INamedTypeSymbol baseClass,
+        INamedTypeSymbol? profileBase,
+        CancellationToken cancellationToken)
+    {
+        var table = new ConversionTable();
+
+        foreach (ClassDeclarationSyntax part in
+                 AllDeclarationParts(compilation, classSymbol, profileBase, cancellationToken))
+        {
+            SemanticModel model = compilation.GetSemanticModel(part.SyntaxTree);
+
+            foreach (InvocationExpressionSyntax invocation in
+                     part.DescendantNodes().OfType<InvocationExpressionSyntax>())
+            {
+                GenericNameSyntax? name = invocation.Expression switch
+                {
+                    MemberAccessExpressionSyntax { Name: GenericNameSyntax generic } => generic,
+                    GenericNameSyntax generic => generic,
+                    _ => null,
+                };
+
+                if (name is null
+                    || name.Identifier.ValueText != "CreateConversion"
+                    || name.TypeArgumentList.Arguments.Count != 2
+                    || !IsDeclaredOn(model, invocation, baseClass, cancellationToken))
+                {
+                    continue;
+                }
+
+                if (model.GetSymbolInfo(name.TypeArgumentList.Arguments[0], cancellationToken).Symbol
+                        is not ITypeSymbol source
+                    || model.GetSymbolInfo(name.TypeArgumentList.Arguments[1], cancellationToken).Symbol
+                        is not ITypeSymbol destination)
+                {
+                    continue;
+                }
+
+                // The QUERY FORM, read from the call rather than from the symbol: it is optional,
+                // and whether one was written is the whole difference between a pair that projects
+                // and one that does not. Two positional arguments, or a named `query:`, either way.
+                bool hasQuery = invocation.ArgumentList.Arguments.Count > 1
+                    || invocation.ArgumentList.Arguments.Any(
+                        argument => argument.NameColon?.Name.Identifier.ValueText == "query");
+
+                table.Add(source, destination, hasQuery);
+            }
+        }
+
+        return table;
+    }
+
     /// <summary>
     /// The profile classes one declaration adds, following <c>AddProfile&lt;T&gt;()</c> calls.
     ///
@@ -1786,6 +1857,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         bool? classDefaultFlattening,
         NamingConventions classDefaultNaming,
         Func<Dictionary<string, Refinements>> lookup,
+        ConversionTable conversions,
         CancellationToken cancellationToken)
     {
         TypeSyntax sourceSyntax = createMap.TypeArgumentList.Arguments[0];
@@ -1848,7 +1920,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             flattening: flattening,
             naming: naming,
             refinements: Inherit(chain.Forward, lookup, out ImmutableArray<string> unresolvedForward),
-            unresolvedBases: unresolvedForward);
+            unresolvedBases: unresolvedForward,
+            conversions: conversions);
 
         if (chain.ReverseMapName is null)
             yield break;
@@ -1895,7 +1968,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             flattening: reverseFlattening ?? flattening,
             naming: reverseNaming.IsEmpty ? naming : reverseNaming,
             refinements: Inherit(chain.Reverse, lookup, out ImmutableArray<string> unresolvedReverse),
-            unresolvedBases: unresolvedReverse);
+            unresolvedBases: unresolvedReverse,
+            conversions: conversions);
     }
 
     /// <summary>The configure lambda passed to a call, or null when it was left off.</summary>
@@ -2159,8 +2233,14 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         bool flattening,
         NamingConventions naming,
         Refinements refinements,
-        ImmutableArray<string> unresolvedBases)
+        ImmutableArray<string> unresolvedBases,
+        ConversionTable? conversions = null)
     {
+        // ONE MAP'S WORTH of global-conversion usage. Cleared here so the refusals collected below
+        // describe THIS map rather than everything the mapper has resolved so far.
+        ConversionTable globals = conversions ?? ConversionTable.Empty;
+
+        globals.ClearUsage();
         // ONE PLACE where "what the developer asked for" becomes "what the generated code does".
         // A runtime older than the OrEmpty builders cannot be asked to invent an empty
         // collection, so a map compiled against one is analysed as though it had asked for the
@@ -2170,7 +2250,15 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
         PropertyAnalysis analysis = FindMatchingProperties(
             compilation, sourceType, destinationType, caseSensitive, allowNullCollections,
-            flattening, naming, refinements);
+            flattening, naming, refinements, globals);
+
+        // WHICH GLOBAL CONVERSIONS THIS MAP USED that cannot be written in SQL. Read from the
+        // table's usage log rather than carried out of the analysis: a conversion can be reached
+        // from a plain member, a flattened path, a collection element, a dictionary value or a
+        // constructor argument, and every one of those goes through the same lookup.
+        ImmutableArray<string> projectionRefusals = globals.IsEmpty
+            ? ImmutableArray<string>.Empty
+            : globals.UsedWithoutQueryForm.ToImmutableArray();
 
         return new MapModel(
             sourceType: sourceType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
@@ -2205,7 +2293,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             unresolvedBases: unresolvedBases,
             includedDerived: refinements.IncludedDerived,
             asConcrete: refinements.AsConcrete,
-            asConcreteRejected: refinements.AsConcreteRejected);
+            asConcreteRejected: refinements.AsConcreteRejected,
+            projectionRefusals: projectionRefusals);
     }
 
     /// <summary>The result of comparing one source type against one destination type.</summary>
@@ -2324,7 +2413,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         bool allowNullCollections,
         bool flattening,
         NamingConventions naming,
-        Refinements refinements)
+        Refinements refinements,
+        ConversionTable globals)
     {
         // An `As` map has no members of its own either, and for a cleaner reason than
         // ConvertUsing's: it does not map, it REDIRECTS. Everything is the concrete map's, so
@@ -2436,7 +2526,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             ? ConstructionOutcome.Factory
             : PlanConstruction(
                 compilation, sourceType, destinationType, sourceProperties, byIgnoreCase,
-                ignored, customized, allowNullCollections, flattening, naming, flattened);
+                ignored, customized, allowNullCollections, flattening, naming, flattened, globals);
 
         // Members the constructor already fills. Skipped below entirely: not assigned a second
         // time, and not reported as unmapped either, because they ARE mapped.
@@ -2585,7 +2675,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                             leafType,
                             destinationProperty.Type,
                             $"{sourceType.Name}.{path} -> {destinationType.Name}.{destinationProperty.Name}",
-                            allowNullCollections);
+                            allowNullCollections,
+                            globals);
 
                         if (walked is null)
                         {
@@ -2649,7 +2740,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                 sourceProperty.Type,
                 destinationProperty.Type,
                 $"{sourceType.Name}.{sourceProperty.Name} -> {destinationType.Name}.{destinationProperty.Name}",
-                allowNullCollections);
+                allowNullCollections,
+                globals);
 
             if (conversion is null)
             {
@@ -3026,7 +3118,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         bool allowNullCollections,
         bool flattening,
         NamingConventions naming,
-        ImmutableArray<FlattenedMember>.Builder flattened)
+        ImmutableArray<FlattenedMember>.Builder flattened,
+        ConversionTable globals)
     {
         // Every struct has a parameterless constructor, including a positional record struct, so
         // the object-initializer path always applies and its members are settable.
@@ -3090,7 +3183,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                 ConstructorArgument? argument = FillParameter(
                     compilation, sourceType, destinationType, sourceProperties, byIgnoreCase,
                     ignored, customized, allowNullCollections, flattening, naming, flattenedHere,
-                    parameter);
+                    parameter, globals);
 
                 if (argument is null)
                 {
@@ -3141,7 +3234,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         bool flattening,
         NamingConventions naming,
         List<FlattenedMember> flattened,
-        IParameterSymbol parameter)
+        IParameterSymbol parameter,
+        ConversionTable globals)
     {
         string parameterType = parameter.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
 
@@ -3179,7 +3273,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             ValueConversion? walkedConversion = ConversionResolver.Resolve(
                 compilation, walkedLeaf, parameter.Type,
                 $"{sourceType.Name}.{walkedPath} -> {destinationType.Name}.{parameter.Name}",
-                allowNullCollections);
+                allowNullCollections,
+                globals);
 
             if (walkedConversion is null)
                 return null;
@@ -5039,7 +5134,10 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         // instead of a sentence explaining which map cannot be projected and why.
         if (!map.IsProjectable)
         {
-            string cause = !map.IncludedDerived.IsEmpty
+            string cause = !map.ProjectionRefusals.IsEmpty
+                ? $"converts {string.Join(", ", map.ProjectionRefusals)} with a conversion that " +
+                  "has no query form"
+                : !map.IncludedDerived.IsEmpty
                 ? "dispatches on the source's runtime type through Include"
                 : map.HasHooks
                 ? $"runs {HookNames(map)} over its destination"
@@ -5052,7 +5150,9 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             // Include calls happened to be written in.
             DerivedPair? example = DeepestFirst(map).FirstOrDefault();
 
-            string fix = example is not null
+            string fix = !map.ProjectionRefusals.IsEmpty
+                ? "Use Map instead, or give CreateConversion a query expression for that pair."
+                : example is not null
                 ? $"Use Map instead, or project the derived type directly: OfType<{example.SourceName}>().ProjectTo<{example.DestinationName}>(mapper)."
                 : map.HasHooks
                 ? "Use Map instead, or move what the hook does into a ForMember, which projects."

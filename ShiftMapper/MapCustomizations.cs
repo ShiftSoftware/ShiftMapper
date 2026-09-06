@@ -123,6 +123,192 @@ public sealed class MapCustomizations
     internal MapCustomizations(Type owner) => _owner = owner;
 
     /// <summary>
+    /// GLOBAL TYPE-PAIR CONVERSIONS — what <c>CreateConversion</c> registers.
+    ///
+    /// <para>Keyed by the PAIR rather than by a member, which is the whole point: a rule written
+    /// once for <c>string → List&lt;FileDTO&gt;</c> answers for every member of those types in
+    /// every map, including ones declared in code that has never heard of it.</para>
+    ///
+    /// <para>Two forms, because the two backends are not the same place. The MEMORY form is a
+    /// delegate the generated map methods call. The QUERY form is an expression tree spliced into
+    /// the projection — and it is optional, because the usual in-memory form calls a helper no
+    /// database can run. A pair with no query form makes any map that uses it unprojectable, which
+    /// the BUILD says (SM0030) rather than the query engine discovering it.</para>
+    ///
+    /// Written from constructors, like everything else here, so a plain dictionary is right.
+    /// </summary>
+    private readonly Dictionary<(Type Source, Type Destination), TypeConversion> _typeConversions = new();
+
+    /// <summary>Resolved <see cref="Conversion{TSource, TDestination}"/> answers, including the
+    /// assignability walk, so a pair costs that search once per mapper instance.</summary>
+    private Dictionary<(Type Source, Type Destination), Delegate>? _resolvedConversions;
+
+    /// <summary>One registered type-pair conversion.</summary>
+    private readonly struct TypeConversion
+    {
+        public TypeConversion(Delegate memory, LambdaExpression? query)
+        {
+            Memory = memory;
+            Query = query;
+        }
+
+        /// <summary>The delegate the in-memory maps call.</summary>
+        public Delegate Memory { get; }
+
+        /// <summary>The tree spliced into a projection, or null when there is none.</summary>
+        public LambdaExpression? Query { get; }
+    }
+
+    /// <summary>
+    /// Records a global conversion. Internal because the only supported way here is
+    /// <c>CreateConversion</c> on a mapper or a profile.
+    /// </summary>
+    internal void RegisterConversion(Type source, Type destination, Delegate memory, LambdaExpression? query)
+    {
+        _typeConversions[(source, destination)] = new TypeConversion(memory, query);
+        _resolvedConversions = null;
+    }
+
+    /// <summary>
+    /// The delegate that converts <typeparamref name="TSource"/> to
+    /// <typeparamref name="TDestination"/>, as the generated map methods call it.
+    ///
+    /// <para><b>EXACT PAIR FIRST, THEN ASSIGNABILITY.</b> A conversion registered for a BASE type
+    /// answers for everything that derives from it — which is what lets a framework write one
+    /// rule for <c>ShiftEntityBase</c> and have it fire for entities it has never seen. The
+    /// delegate really is typed to the base, and handing it back as a
+    /// <c>Func&lt;TSource, TDestination&gt;</c> is exactly what <c>Func</c>'s contravariance in its
+    /// argument is for.</para>
+    ///
+    /// <para>Public because the generated code calls it; the generator resolves the same pair by
+    /// the same rule at compile time, so the two cannot disagree about which registration wins.</para>
+    /// </summary>
+    public Func<TSource, TDestination> Conversion<TSource, TDestination>()
+    {
+        (Type, Type) key = (typeof(TSource), typeof(TDestination));
+
+        _resolvedConversions ??= new Dictionary<(Type, Type), Delegate>();
+
+        if (_resolvedConversions.TryGetValue(key, out Delegate? cached))
+            return (Func<TSource, TDestination>)cached;
+
+        if (Registered(typeof(TSource), typeof(TDestination)) is not { } found)
+        {
+            throw new InvalidOperationException(
+                $"ShiftMapper: no conversion is registered from '{typeof(TSource).Name}' to " +
+                $"'{typeof(TDestination).Name}'. It was declared with CreateConversion when this " +
+                "mapper was compiled, so the declaration has been removed or moved to a profile " +
+                "this mapper no longer adds.");
+        }
+
+        var typed = (Func<TSource, TDestination>)found.Memory;
+
+        _resolvedConversions[key] = typed;
+
+        return typed;
+    }
+
+    /// <summary>
+    /// The registration that answers for a pair — exact match, else the nearest registered
+    /// SOURCE type this one is assignable to.
+    ///
+    /// <para>Nearest by inheritance distance so that a rule for a derived type beats one for its
+    /// base, which is the only ordering that lets a general rule be narrowed. Destination is
+    /// matched exactly: a conversion's whole identity is what it produces.</para>
+    /// </summary>
+    private TypeConversion? Registered(Type source, Type destination)
+    {
+        if (_typeConversions.TryGetValue((source, destination), out TypeConversion exact))
+            return exact;
+
+        TypeConversion? best = null;
+        int bestDistance = int.MaxValue;
+
+        foreach (KeyValuePair<(Type Source, Type Destination), TypeConversion> entry in _typeConversions)
+        {
+            if (entry.Key.Destination != destination
+                || !entry.Key.Source.IsAssignableFrom(source))
+            {
+                continue;
+            }
+
+            int distance = 0;
+
+            for (Type? walk = source; walk is not null && walk != entry.Key.Source; walk = walk.BaseType)
+                distance++;
+
+            // An interface is not on the base chain at all, so the walk above runs out; it counts
+            // as further away than any class, which keeps a class rule winning over an interface.
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                best = entry.Value;
+            }
+        }
+
+        return best;
+    }
+
+    /// <summary>
+    /// A MARKER the generated projection carries where a global conversion belongs — never a
+    /// method that runs.
+    ///
+    /// <para>The generated projection is C# text, and the conversion it needs is an expression tree
+    /// registered at RUN time. So the generator writes this call into the tree and
+    /// <see cref="Compose{TSource, TDestination}(Expression{Func{TSource, TDestination}}, ConstructorArgument[], ConvertedCustomization[], NestedBinding[])"/>
+    /// replaces it with the registered tree, INLINED around its own argument.</para>
+    ///
+    /// <para>Inlined rather than invoked for the reason stated on <c>Converted</c>: a delegate call
+    /// is opaque to EF, and the difference is one SELECT against loading the table.</para>
+    /// </summary>
+    public static TDestination Splice<TSource, TDestination>(TSource value) =>
+        throw new InvalidOperationException(
+            "ShiftMapper: MapCustomizations.Splice is a marker for the projection composer and is " +
+            "never called. Reaching it means a generated projection was used without being composed.");
+
+    /// <summary>
+    /// Replaces every <see cref="Splice{TSource, TDestination}"/> marker in a generated projection
+    /// with the query form of the conversion registered for that pair.
+    /// </summary>
+    private sealed class SpliceRewriter : ExpressionVisitor
+    {
+        private readonly MapCustomizations _owner;
+
+        public SpliceRewriter(MapCustomizations owner) => _owner = owner;
+
+        protected override Expression VisitMethodCall(MethodCallExpression node)
+        {
+            if (!node.Method.IsGenericMethod
+                || node.Method.GetGenericMethodDefinition() != SpliceDefinition)
+            {
+                return base.VisitMethodCall(node);
+            }
+
+            Type[] arguments = node.Method.GetGenericArguments();
+
+            // The ARGUMENT is visited first, so a conversion nested inside another one is already
+            // rewritten by the time this one wraps it.
+            Expression value = Visit(node.Arguments[0])!;
+
+            TypeConversion? found = _owner.Registered(arguments[0], arguments[1]);
+
+            if (found?.Query is not { } query)
+            {
+                throw new InvalidOperationException(
+                    $"ShiftMapper: the conversion from '{arguments[0].Name}' to " +
+                    $"'{arguments[1].Name}' has no query form, so it cannot be used in a " +
+                    "projection. Give CreateConversion a query argument, or use Map instead.");
+            }
+
+            return Converted(value, query);
+        }
+    }
+
+    /// <summary>The open generic <see cref="Splice{TSource, TDestination}"/>, found once.</summary>
+    private static readonly System.Reflection.MethodInfo SpliceDefinition =
+        typeof(MapCustomizations).GetMethod(nameof(Splice))!.GetGenericMethodDefinition();
+
+    /// <summary>
     /// Folds a PROFILE's registrations into this store.
     ///
     /// <para>A profile builds its own <see cref="MapCustomizations"/> while its constructor runs —
@@ -153,6 +339,15 @@ public sealed class MapCustomizations
             if (!_conditions.ContainsKey(entry.Key))
                 _conditions[entry.Key] = entry.Value;
         }
+
+        foreach (KeyValuePair<(Type Source, Type Destination), TypeConversion> entry
+                 in profile._typeConversions)
+        {
+            if (!_typeConversions.ContainsKey(entry.Key))
+                _typeConversions[entry.Key] = entry.Value;
+        }
+
+        _resolvedConversions = null;
 
         foreach (KeyValuePair<(Type Source, Type Destination), List<(Type Source, Type Destination)>> entry
                  in profile._inherited)
@@ -751,6 +946,14 @@ public sealed class MapCustomizations
 
         if (conversions is null)
             throw new ArgumentNullException(nameof(conversions));
+
+        // GLOBAL CONVERSIONS FIRST, and before the early return below: a map may use one and have
+        // no customizations of its own, and the markers still have to become real expressions.
+        if (_typeConversions.Count > 0)
+        {
+            conventions = (Expression<Func<TSource, TDestination>>)
+                new SpliceRewriter(this).Visit(conventions)!;
+        }
 
         // The ConstructUsing factory lives in the same dictionary under a name no property can
         // have. It is not a member to bind, so it is filtered out here rather than tripping over

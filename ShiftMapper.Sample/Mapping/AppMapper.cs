@@ -523,6 +523,14 @@ public partial class AppMapper : ShiftMapperBase
         // is registered in Program.cs.
         AddProfile<CatalogProfile>();
         AddProfile<InvoiceLabelProfile>();
+
+        // GLOBAL TYPE-PAIR CONVERSIONS — the rules in Mapping/ConversionProfile.cs apply to every
+        // map in this mapper, including the two below, which configure nothing at all. Read them
+        // together: neither map mentions dates or hashing, and both get them.
+        AddProfile<ConversionProfile>();
+
+        CreateMap<Invoice, InvoiceStampDto>();
+        CreateMap<Product, ProductFingerprintDto>();
     }
 
     /// <summary>Proof that constructor injection works on this class.</summary>

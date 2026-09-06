@@ -36,6 +36,8 @@ public static class HomeEndpoints
                 "GET  /api/catalog/labels    (AS: an interface destination that still projects; ?sql=true)",
                 "GET  /api/catalog/paged     (OPEN GENERIC: one CreateMap, closed per pair)",
                 "GET  /api/catalog/paged-brands (the same one line, closed over an unrelated pair)",
+                "GET  /api/invoices/stamps   (GLOBAL CONVERSION: one rule, in the SQL; ?sql=true)",
+                "GET  /api/products/fingerprints (the same, with no query form; ?project=true refuses)",
             }
         }))
         .WithName("Home")

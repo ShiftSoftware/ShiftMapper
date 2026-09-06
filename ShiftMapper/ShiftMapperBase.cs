@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq.Expressions;
 
 namespace ShiftMapper;
 
@@ -152,6 +153,57 @@ public abstract class ShiftMapperBase
     /// <para>A pair declared BOTH here and in a profile keeps the version written here, and the
     /// build reports the clash (SM0027) rather than leaving you to find out which won.</para>
     /// </summary>
+    /// <summary>
+    /// Registers a conversion for a TYPE PAIR, applied to every member of those types in every
+    /// map — including maps written in code that has never heard of it.
+    ///
+    /// <code>
+    /// CreateConversion&lt;string, List&lt;FileDTO&gt;&gt;(
+    ///     memory: json =&gt; FileHelpers.Parse(json),
+    ///     query:  json =&gt; ShiftJson.Files(json));
+    /// </code>
+    ///
+    /// <para><b>THIS IS THE ONE THAT SCALES.</b> A <c>ForMember</c> is written per member per map;
+    /// this is written once and answers wherever the pair appears — directly, as the element type
+    /// of a collection, as the value type of a dictionary, or inside a nested map. It is consulted
+    /// by the same resolver that handles <c>int</c> to <c>string</c>, just before it would have
+    /// given up and reported SM0002, so it EXTENDS the built-in table rather than replacing it. A
+    /// <c>ForMember</c> on a particular member still wins over both.</para>
+    ///
+    /// <para><b>TWO FORMS, BECAUSE THERE ARE TWO BACKENDS.</b> <paramref name="memory"/> is a
+    /// delegate the <c>Map</c> methods call, and it may do anything C# can do.
+    /// <paramref name="query"/> is an expression tree spliced into the projection, so it must be
+    /// something a database can run — which usually means writing the same conversion a second
+    /// way, in the vocabulary EF understands.</para>
+    ///
+    /// <para><b>THE QUERY FORM IS OPTIONAL, AND OMITTING IT IS A DECISION.</b> It says the pair
+    /// cannot be projected. Any map that uses the pair then loses its projection, and the BUILD
+    /// says so (SM0030) naming the pair and the member — which is the whole reason to do this at
+    /// compile time rather than discover it when a query runs.</para>
+    ///
+    /// <para><b>ASSIGNABILITY, NOT IDENTITY.</b> A conversion registered for a base type answers
+    /// for everything that derives from it, so one rule covers an entity hierarchy. Where two
+    /// registrations could both answer, the nearest by inheritance wins, so a general rule can
+    /// always be narrowed for a particular type.</para>
+    ///
+    /// <para>Declare it in a mapper's constructor or, better, in a
+    /// <see cref="ShiftMapperProfile"/> that several mappers add.</para>
+    /// </summary>
+    /// <param name="memory">The conversion the in-memory maps run.</param>
+    /// <param name="query">
+    /// The same conversion as an expression tree, for projections. Omit it to declare that this
+    /// pair cannot be projected.
+    /// </param>
+    protected void CreateConversion<TSource, TDestination>(
+        Func<TSource, TDestination> memory,
+        Expression<Func<TSource, TDestination>>? query = null)
+    {
+        if (memory is null)
+            throw new ArgumentNullException(nameof(memory));
+
+        _customizations.RegisterConversion(typeof(TSource), typeof(TDestination), memory, query);
+    }
+
     protected void AddProfile<TProfile>() where TProfile : ShiftMapperProfile
     {
         (_profileTypes ??= new List<Type>()).Add(typeof(TProfile));

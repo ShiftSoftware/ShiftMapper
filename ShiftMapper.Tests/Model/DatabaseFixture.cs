@@ -34,6 +34,7 @@ public sealed class DatabaseFixture : IDisposable
         // that fallback works.
         services.AddTransient<NumberedProfile>();
         services.AddShiftMapper<ProfileMapper>();
+        services.AddShiftMapper<ConversionMapper>();
 
         // Registered exactly as an application would, so the tests exercise the real path:
         // constructor injection, plus the Services property AddShiftMapper fills in.
@@ -51,6 +52,9 @@ public sealed class DatabaseFixture : IDisposable
 
     /// <summary>The mapper carrying the profile that needs DI.</summary>
     public ProfileMapper ProfileMapper => _services.GetRequiredService<ProfileMapper>();
+
+    /// <summary>The mapper carrying the global type-pair conversions.</summary>
+    public ConversionMapper ConversionMapper => _services.GetRequiredService<ConversionMapper>();
 
     public IServiceProvider Services => _services;
 

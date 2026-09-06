@@ -42,7 +42,7 @@ Every step heading below carries the same marker: ✅ done, ⬜ pending.
 **Phase 3 — The general layer**
 
 - [x] **Step 11** — Profiles: maps declared outside the mapper class
-- [ ] **Step 12** — Global type-pair converters
+- [x] **Step 12** — Global type-pair converters
 - [ ] **Step 13** — The compile-time extension contract for referenced assemblies
 - [ ] **Step 14** — Declarative member conventions
 - [ ] **Step 15** — What ShiftFramework then builds (ShiftEntity repository, not this one)
@@ -53,8 +53,8 @@ Every step heading below carries the same marker: ✅ done, ⬜ pending.
 - [ ] **Step 17** — Docs and sample
 - [ ] **Step 18** — Benchmarks
 
-Phases 1 and 2 are complete, and Step 11 with them. Next on ShiftFramework's critical path is
-**Step 12**, then 12 → 13 → 14 → 15 (the summary at the foot of this file).
+Phases 1 and 2 are complete, and Steps 11 and 12 with them. Next on ShiftFramework's critical
+path is **Step 13**, then 13 → 14 → 15 (the summary at the foot of this file).
 
 ---
 
@@ -997,7 +997,7 @@ resolved and run.
   So this is a real but narrow extension route, and it is not the one ShiftFramework needs. That
   is Step 13, and this measurement is the argument for it.
 
-### ⬜ Step 12 — Global type-pair converters
+### ✅ Step 12 — Global type-pair converters
 
 The keystone. One registration, applied to every map, everywhere, in both backends.
 
@@ -1033,6 +1033,46 @@ Requirements:
   exact type identity.
 
 This one API covers the `ShiftFileDTO` case and the hash-id case outright.
+
+**What landed.**
+
+- **`CreateConversion<TSource, TDestination>(memory, query)`** on a mapper or a profile. The
+  generator reads only the TYPE ARGUMENTS and whether a `query:` argument was written; the
+  expressions stay in the developer's file and arrive at run time, exactly as a `MapFrom` tree does.
+  So a conversion may call anything C# can call without the generator having to understand it.
+- **It plugs into `ConversionResolver`**, which is why transitivity was free: collections,
+  dictionaries and nullable lifts already recurse through the same method, so a rule for
+  `Money → string` fills a `List<Money>` member and a `Dictionary<string, Money>` value without a
+  line of extra code. The one thing that was NOT free is that both shapes wrap the element
+  conversion in a `static` lambda, and `static` forbids capturing — so a `CapturesMapper` flag
+  drops the keyword exactly where a global conversion is involved, and nowhere else.
+- **A REGISTERED PAIR WINS OVER THE BUILT-IN TABLE**, a deliberate departure from this step's own
+  "extend rather than replace". The case that settles it is the hash ids: `long → string` already
+  converts, so under the other ordering the rule would be ignored in silence — and silently
+  ignoring an explicit declaration is the one behaviour this library is arranged never to have.
+  Pairs nobody registered are untouched, which is the sense in which the table is still extended.
+- **Assignability with nearest-wins**, and the SAME rule in the generator and the runtime store —
+  they each resolve the pair independently, so two rules would mean generated code finding a
+  different conversion from the one its diagnostics described. Value types match exactly only:
+  the generated code hands the delegate back as a `Func` over the member's own types, which works
+  by contravariance for references and not at all for a boxed value.
+- **The projection is a MARKER, not a call.** The generated projection carries
+  `MapCustomizations.Splice<A, B>(member)`, and `Compose` replaces it with the registered tree
+  inlined around its argument. Inlined rather than invoked for the reason the codebase already had
+  written down for `MapFromSource`: a delegate is opaque to EF. The sample's SQL shows `DATEPART`,
+  which is the proof.
+- **SM0030 for a pair with no query form**, collected from a USAGE LOG on the conversion table
+  rather than threaded out of the analysis — a conversion can be reached from a plain member, a
+  flattened path, a collection element, a dictionary value or a constructor argument, and recording
+  it where the lookup happens catches all of them by construction.
+
+**The bug the sample caught.** Every generator test passed while the sample silently did not report
+SM0030. `MapModel.WithNested` and `WithConstructor` rebuild the model to settle nested members, and
+a rebuild that forgets a field loses it — which no test noticed because none of their maps had
+anything to resolve. Fixed, and pinned by a test whose map has nested members on purpose. It is the
+argument for keeping the sample honest rather than treating it as a demo.
+
+---
 
 ### ⬜ Step 13 — The compile-time extension contract for referenced assemblies
 
@@ -1220,7 +1260,7 @@ mapper that cannot show its numbers has given up its main argument.
 |---|---|---|---|
 | 1 — Trust | 1 Tests, 2 Runtime cost, 3 Packaging, 4 `IShiftMapper` | ✅ done | Everything depended on 1 and 4 |
 | 2 — Gaps | ~~5 Collections~~, ~~6 Constructors/records~~, ~~7 Member options~~, ~~8 Map hooks~~, ~~9 Flattening~~, ~~10 Inheritance/generics~~ | ✅ done | Unblocked Phase 3 |
-| 3 — General layer | ~~11 Profiles~~, 12 Global conversions, 13 Compile-time contract, 14 Member conventions, 15 ShiftFramework port | ⬜ 11 done | The goal |
+| 3 — General layer | ~~11 Profiles~~, ~~12 Global conversions~~, 13 Compile-time contract, 14 Member conventions, 15 ShiftFramework port | ⬜ 11, 12 done | The goal |
 | 4 — Finish | 16 Diagnostics, 17 Docs, 18 Benchmarks | ⬜ pending | Can run alongside 2 and 3 |
 
 The shortest path to ShiftFramework being able to adopt this is

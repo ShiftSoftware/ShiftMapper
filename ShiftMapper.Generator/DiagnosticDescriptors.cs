@@ -653,6 +653,26 @@ internal static class DiagnosticDescriptors
         description: "A map takes its defaults from the mapper that added the profile. Override " +
                      "ConfigureDefaults on the mapper, or set the option on each CreateMap.");
 
+    /// <summary>
+    /// SM0030 — a map uses a global conversion that has no query form.
+    ///
+    /// A WARNING, on the same terms as SM0017 and SM0024 rather than the Info SM0015 gets: the
+    /// person who loses the projection is not the person who chose to. Whoever wrote the
+    /// CreateConversion made a decision about a type pair, possibly in a framework; whoever writes
+    /// a map that happens to touch that pair inherits the consequence without having asked for it,
+    /// and is the one who needs to be told.
+    /// </summary>
+    public static readonly DiagnosticDescriptor ConversionHasNoQueryForm = new(
+        id: "SM0030",
+        title: "Map cannot be projected because a conversion has no query form",
+        messageFormat: "ShiftMapper: {0}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "CreateConversion was given a memory form but no query form, which declares " +
+                     "that the pair cannot be translated to SQL. Supply a query expression, or use " +
+                     "Map rather than ProjectTo for maps that touch the pair.");
+
     /// <summary>SM0005 — the whole mapper produced nothing.</summary>
     public static readonly DiagnosticDescriptor MapperSkipped = new(
         id: "SM0005",
@@ -702,6 +722,7 @@ internal static class DiagnosticDescriptors
         OpenGenericNotClosed,
         ProfileMapDeclaredTwice,
         ProfileNotInSource,
-        ProfileDefaultsIgnored);
+        ProfileDefaultsIgnored,
+        ConversionHasNoQueryForm);
 }
 

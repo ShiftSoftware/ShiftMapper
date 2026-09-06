@@ -281,6 +281,17 @@ public sealed class ShiftMapperAnalyzer : DiagnosticAnalyzer
                     map.DestinationName);
             }
 
+            // SM0030 — a global conversion with no query form, and the projection it costs.
+            foreach (string pair in map.ProjectionRefusals)
+            {
+                report.Report(
+                    DiagnosticDescriptors.ConversionHasNoQueryForm,
+                    location,
+                    $"the map from '{map.SourceName}' to '{map.DestinationName}' converts " +
+                    $"{pair} with a conversion that has no query form, so ProjectTo cannot use it; " +
+                    "Map is unaffected");
+            }
+
             // SM0025 — an As that cannot stand in, either because the type does not fit or
             // because the pair it names is not mapped.
             string? asProblem =

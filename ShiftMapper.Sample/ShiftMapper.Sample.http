@@ -798,6 +798,73 @@ Accept: application/json
 GET {{HostAddress}}/api/invoices/1/label
 Accept: application/json
 
+### 1r. GLOBAL TYPE-PAIR CONVERSIONS — one rule, written once, for every map.
+#
+#      Everything before this configures a MEMBER of a MAP. A ForMember is written per member per
+#      map, so a rule that really belongs to a TYPE gets written as many times as the type is used
+#      — and forgotten once. This is written once:
+#
+#          CreateConversion<DateTime, string>(
+#              memory: issued => issued.Year + "/" + issued.Month + "/" + issued.Day,
+#              query:  issued => issued.Year + "/" + issued.Month + "/" + issued.Day);
+#
+#      InvoiceStampDto below configures NOTHING. Its map is one line, it says not a word about
+#      dates, and IssuedAt still comes back formatted — because the pair converts now, everywhere,
+#      including in maps written tomorrow by people who never saw the rule.
+#
+#      It plugs into the same resolver that already knows int -> string, so it also applies through
+#      collections, dictionaries and nested maps. And a registered pair BEATS the built-in table:
+#      long -> string already converts, so a rule for that pair — which is exactly what a hash-id
+#      rule is — would otherwise be ignored in silence.
+GET {{HostAddress}}/api/invoices/stamps
+Accept: application/json
+
+### 1r2. THE SQL, and the reason the query form is an EXPRESSION rather than a delegate:
+#
+#        SELECT [i].[Id], [i].[Number],
+#               CAST(DATEPART(year,  [i].[IssuedAt]) AS nvarchar(max)) + N'/' +
+#               CAST(DATEPART(month, [i].[IssuedAt]) AS nvarchar(max)) + N'/' +
+#               CAST(DATEPART(day,   [i].[IssuedAt]) AS nvarchar(max)) AS [IssuedAt]
+#        FROM [Invoices] AS [i]
+#
+#      THE FORMATTING IS IN THE STATEMENT. The generated projection carries a MARKER where the
+#      conversion belongs, and Compose replaces it with the registered tree INLINED around the
+#      member. Had it invoked a delegate instead, the answer would have been identical and the SQL
+#      would not — EF cannot see inside a delegate, so it would have loaded every invoice and
+#      formatted in C#.
+GET {{HostAddress}}/api/invoices/stamps?sql=true
+
+### 1r3. AND THE OTHER HALF: a conversion registered with NO QUERY FORM.
+#
+#          CreateConversion<Brand, string>(memory: brand => Fingerprint(brand));
+#
+#      The fingerprint is a hash computed character by character. There is nothing it could say
+#      about SQL, so omitting the query form is a DECLARATION rather than an oversight: this pair
+#      cannot be translated.
+#
+#      In memory it works like any other conversion — this request maps five products and each
+#      one's whole Brand becomes a hash string.
+GET {{HostAddress}}/api/products/fingerprints
+Accept: application/json
+
+### 1r4. ASK FOR THE PROJECTION ANYWAY, and it is refused — by a map that configures nothing and
+#      never mentioned the conversion.
+#
+#      THE BUILD ALREADY SAID SO, which is the entire reason to do this at compile time:
+#
+#        warning SM0030: the map from 'Product' to 'ProductFingerprintDto' converts 'Brand' to
+#                        'String' with a conversion that has no query form, so ProjectTo cannot
+#                        use it; Map is unaffected
+#
+#      A runtime-only conversion table converts just as well and cannot tell you which of your list
+#      endpoints has quietly stopped being one query. This is a warning on a line you can click.
+#
+#      It is a WARNING rather than the INFO that ConstructUsing gets, and the difference is who
+#      chose: whoever wrote the CreateConversion made a decision about a type pair, and whoever
+#      writes a map that happens to touch that pair inherits the consequence without asking for it.
+GET {{HostAddress}}/api/products/fingerprints?project=true
+Accept: application/json
+
 ### 2. Invoices — THE MAP AS A DATABASE QUERY.
 #     db.Invoices.ProjectTo<InvoiceDto>(mapper), and again not one Include, yet the response
 #     is four levels deep: invoice -> lines -> product -> brand and stock.

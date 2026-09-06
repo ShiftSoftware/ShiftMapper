@@ -35,3 +35,4 @@ SM0026 | ShiftMapper | Warning | Open generic map was not closed
 SM0027 | ShiftMapper | Warning | A map is declared both in a profile and outside it
 SM0028 | ShiftMapper | Warning | A profile in a referenced assembly cannot be read
 SM0029 | ShiftMapper | Warning | ConfigureDefaults on a profile has no effect
+SM0030 | ShiftMapper | Warning | Map cannot be projected because a conversion has no query form

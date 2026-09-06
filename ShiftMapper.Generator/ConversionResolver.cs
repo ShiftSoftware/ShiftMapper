@@ -126,7 +126,8 @@ internal static class ConversionResolver
         ITypeSymbol sourceType,
         ITypeSymbol destinationType,
         string mapping,
-        bool allowNullCollections = false)
+        bool allowNullCollections = false,
+        ConversionTable? globals = null)
     {
         // 1. THE TYPES WE WILL NOT REASON ABOUT AT ALL. `dynamic` has to go first: the
         //    compiler reports an implicit conversion to it from EVERYTHING, so leaving it in
@@ -135,6 +136,39 @@ internal static class ConversionResolver
         //    here for the ordinary reason — there is nothing sensible to emit.
         if (IsUnreasonable(sourceType) || IsUnreasonable(destinationType))
             return null;
+
+        // 1b. A GLOBAL CONVERSION THE DEVELOPER REGISTERED, ahead of everything below.
+        //
+        //     AHEAD, and that is a deliberate departure from "extend the built-in table rather
+        //     than replace it". The case that settles it is ShiftFramework's hash ids: `long` to
+        //     `string` ALREADY converts, so a rule registered for that pair would be silently
+        //     ignored under the other ordering — and silently ignoring an explicit declaration
+        //     is the one behaviour this library is arranged never to have. Registering a pair is a
+        //     specific statement about those two types; the built-in table is the general one, and
+        //     the specific wins.
+        //
+        //     Everything you did NOT register is untouched, which is the sense in which the table
+        //     is still extended rather than replaced.
+        if (globals is { IsEmpty: false }
+            && globals.Find(sourceType, destinationType) is { } registered)
+        {
+            string source = FullName(sourceType);
+            string destination = FullName(destinationType);
+
+            return new ValueConversion(
+                template: $"Customizations.Conversion<{source}, {destination}>()({{0}})",
+                risk: ConversionRisk.None,
+                note: null,
+                // A MARKER, not a call. The projection is an expression tree EF reads, and the
+                // conversion it needs is a tree registered at run time; Compose replaces this with
+                // that tree, inlined. See MapCustomizations.Splice.
+                queryTemplate: $"global::ShiftMapper.MapCustomizations.Splice<{source}, {destination}>({{0}})",
+                projectionRefusal: registered.HasQueryForm
+                    ? null
+                    : $"the conversion from '{sourceType.Name}' to '{destinationType.Name}' was " +
+                      "registered without a query form",
+                capturesMapper: true);
+        }
 
         // 2. COLLECTIONS OF SIMPLE VALUES, ahead of the identity test on purpose.
         //    A collection is copied into whatever shape the destination asks for, and that
@@ -149,13 +183,13 @@ internal static class ConversionResolver
         //    never be treated as one here) — returns null and carries on down the scalar path
         //    unchanged. `List<Product>` to `List<Product>` is still the plain assignment it
         //    always was, until nested mapping exists to do better.
-        if (ResolveCollection(compilation, sourceType, destinationType, mapping, allowNullCollections) is { } collection)
+        if (ResolveCollection(compilation, sourceType, destinationType, mapping, allowNullCollections, globals) is { } collection)
             return collection;
 
         //    2b. DICTIONARIES, on the same terms and for the same reason. A Dictionary is not an
         //    IEnumerable<T> of anything step 2 can build, so it lands here rather than there, and
         //    it too is COPIED even when both sides are already the same type.
-        if (ResolveDictionary(compilation, sourceType, destinationType, mapping, allowNullCollections) is { } dictionary)
+        if (ResolveDictionary(compilation, sourceType, destinationType, mapping, allowNullCollections, globals) is { } dictionary)
             return dictionary;
 
         // 3. THE SAME TYPE. Note this comparison ignores nullable reference ANNOTATIONS, so
@@ -232,7 +266,8 @@ internal static class ConversionResolver
         //    `unchecked((int)source.X.GetValueOrDefault())`.
         if (sourceIsNullableValue && !destinationIsNullableValue && destinationType.IsValueType)
         {
-            ValueConversion? inner = Resolve(compilation, sourceCore, destinationType, mapping);
+            ValueConversion? inner = Resolve(
+                compilation, sourceCore, destinationType, mapping, globals: globals);
             if (inner is null)
                 return null;
 
@@ -245,7 +280,9 @@ internal static class ConversionResolver
                 inner.Apply("{0}.GetValueOrDefault()"),
                 inner.Risk == ConversionRisk.Narrowing ? ConversionRisk.Narrowing : ConversionRisk.Lossy,
                 inner.Note is null ? NullNote : $"{NullNote}, and {inner.Note}",
-                queryTemplate: inner.ApplyQuery("{0}.GetValueOrDefault()"));
+                queryTemplate: inner.ApplyQuery("{0}.GetValueOrDefault()"),
+                projectionRefusal: inner.ProjectionRefusal,
+                capturesMapper: inner.CapturesMapper);
         }
 
         // 9. A CAST, between numbers and enums. Reference downcasts, unboxing and
@@ -505,7 +542,8 @@ internal static class ConversionResolver
         ITypeSymbol sourceType,
         ITypeSymbol destinationType,
         string mapping,
-        bool allowNullCollections)
+        bool allowNullCollections,
+        ConversionTable? globals = null)
     {
         if (sourceType.SpecialType == SpecialType.System_String
             || destinationType.SpecialType == SpecialType.System_String)
@@ -523,10 +561,22 @@ internal static class ConversionResolver
             return null;
 
         // Complex elements are the next feature, not this one.
-        if (!IsSimpleElement(sourceElement) || !IsSimpleElement(destinationElement))
-            return null;
+        // A REGISTERED PAIR COUNTS AS SIMPLE. IsSimpleElement asks "is this a value the resolver
+        // knows how to convert", and a global conversion is exactly a developer answering yes for
+        // two types it did not already know about. Without this a rule for Money → string would
+        // fill a member and not a List of them, which is not a distinction anyone declaring one
+        // would expect to have made.
+        bool registeredElement = globals is { IsEmpty: false }
+            && globals.Find(sourceElement, destinationElement) is not null;
 
-        ValueConversion? element = Resolve(compilation, sourceElement, destinationElement, mapping);
+        if (!registeredElement
+            && (!IsSimpleElement(sourceElement) || !IsSimpleElement(destinationElement)))
+        {
+            return null;
+        }
+
+        ValueConversion? element = Resolve(
+            compilation, sourceElement, destinationElement, mapping, globals: globals);
         if (element is null)
             return null;
 
@@ -560,10 +610,15 @@ internal static class ConversionResolver
         // why empty is the default.
         string builder = NullPolicySuffix(compilation, method, allowNullCollections);
 
+        // `static` is dropped exactly where the element conversion reaches the mapper's own
+        // Customizations, because static forbids capturing and the generated lambda would not
+        // compile. Everywhere else it stays, and keeps the cached-delegate optimisation.
+        string elementLambda = element.CapturesMapper ? "item" : "static item";
+
         string template = sameElement
             ? $"{ConverterType}.{builder}({{0}})"
             : $"{ConverterType}.{builder}<{FullName(sourceElement)}, {FullName(destinationElement)}>" +
-              $"({{0}}, static item => {element.Apply("item")})";
+              $"({{0}}, {elementLambda} => {element.Apply("item")})";
 
         // The query spelling is the same shape written with LINQ, because ValueConverter's
         // overloads are ShiftMapper's own methods and no database can run them.
@@ -621,7 +676,12 @@ internal static class ConversionResolver
               $"({emptySource}, item => {element.ApplyQuery("item")}))";
 
         return new ValueConversion(
-            template, CollectionRisk(method, element), CollectionNote(method, element), queryTemplate);
+            template, CollectionRisk(method, element), CollectionNote(method, element), queryTemplate,
+            // Both travel outward. A conversion that cannot be translated does not become
+            // translatable by being done once per element, and one that reaches the mapper still
+            // reaches it from inside a lambda.
+            projectionRefusal: element.ProjectionRefusal,
+            capturesMapper: element.CapturesMapper);
     }
 
     /// <summary>
@@ -715,7 +775,8 @@ internal static class ConversionResolver
         ITypeSymbol sourceType,
         ITypeSymbol destinationType,
         string mapping,
-        bool allowNullCollections)
+        bool allowNullCollections,
+        ConversionTable? globals = null)
     {
         if (!HasConverter(compilation, DictionaryConversionApi))
             return null;
@@ -729,17 +790,27 @@ internal static class ConversionResolver
         // Objects on either side belong to the nested-mapping path, which does not handle
         // dictionaries yet. Half converting one — a fresh dictionary holding the entity's own
         // Products — is the outcome IsSimpleElement exists to prevent.
-        if (!IsSimpleElement(sourceKey) || !IsSimpleElement(destinationKey)
-            || !IsSimpleElement(sourceValue) || !IsSimpleElement(destinationValue))
+        // Same rule as the collection builder: a registered pair is one the developer has told the
+        // resolver how to convert, so it counts as simple for the shape it appears in.
+        bool registeredKey = globals is { IsEmpty: false }
+            && globals.Find(sourceKey, destinationKey) is not null;
+
+        bool registeredValue = globals is { IsEmpty: false }
+            && globals.Find(sourceValue, destinationValue) is not null;
+
+        if ((!registeredKey && (!IsSimpleElement(sourceKey) || !IsSimpleElement(destinationKey)))
+            || (!registeredValue && (!IsSimpleElement(sourceValue) || !IsSimpleElement(destinationValue))))
         {
             return null;
         }
 
-        ValueConversion? key = Resolve(compilation, sourceKey, destinationKey, mapping);
+        ValueConversion? key = Resolve(
+            compilation, sourceKey, destinationKey, mapping, globals: globals);
         if (key is null)
             return null;
 
-        ValueConversion? value = Resolve(compilation, sourceValue, destinationValue, mapping);
+        ValueConversion? value = Resolve(
+            compilation, sourceValue, destinationValue, mapping, globals: globals);
         if (value is null)
             return null;
 
@@ -751,11 +822,14 @@ internal static class ConversionResolver
 
         string builder = NullPolicySuffix(compilation, "ToDictionary", allowNullCollections);
 
+        string keyLambda = key.CapturesMapper ? "key" : "static key";
+        string valueLambda = value.CapturesMapper ? "value" : "static value";
+
         string template = same
             ? $"{ConverterType}.{builder}({{0}})"
             : $"{ConverterType}.{builder}<{FullName(sourceKey)}, {FullName(sourceValue)}, " +
               $"{FullName(destinationKey)}, {FullName(destinationValue)}>" +
-              $"({{0}}, static key => {key.Apply("key")}, static value => {value.Apply("value")})";
+              $"({{0}}, {keyLambda} => {key.Apply("key")}, {valueLambda} => {value.Apply("value")})";
 
         bool assignable = compilation.ClassifyConversion(sourceType, destinationType) is
             { Exists: true, IsImplicit: true, IsBoxing: false, IsUserDefined: false };
@@ -779,7 +853,9 @@ internal static class ConversionResolver
               $"{emptySource}, item => {key.ApplyQuery("item.Key")}, item => {value.ApplyQuery("item.Value")})";
 
         return new ValueConversion(
-            template, DictionaryRisk(same, key, value), DictionaryNote(same, key, value), queryTemplate);
+            template, DictionaryRisk(same, key, value), DictionaryNote(same, key, value), queryTemplate,
+            projectionRefusal: key.ProjectionRefusal ?? value.ProjectionRefusal,
+            capturesMapper: key.CapturesMapper || value.CapturesMapper);
     }
 
     /// <summary>
@@ -1344,13 +1420,48 @@ internal sealed class ValueConversion
     /// <summary>Assign the value across unchanged — no conversion code at all.</summary>
     public static readonly ValueConversion Direct = new(template: null, ConversionRisk.None, note: null);
 
-    public ValueConversion(string? template, ConversionRisk risk, string? note, string? queryTemplate = null)
+    public ValueConversion(
+        string? template,
+        ConversionRisk risk,
+        string? note,
+        string? queryTemplate = null,
+        string? projectionRefusal = null,
+        bool capturesMapper = false)
     {
         Template = template;
         QueryTemplate = queryTemplate ?? template;
         Risk = risk;
         Note = note;
+        ProjectionRefusal = projectionRefusal;
+        CapturesMapper = capturesMapper;
     }
+
+    /// <summary>
+    /// Why this conversion cannot appear in a PROJECTION, or null when it can.
+    ///
+    /// <para>Only a global <c>CreateConversion</c> declared without a query form sets this, and it
+    /// is the developer's own decision rather than a limitation: they said the pair converts one
+    /// way in C# and gave no way to say it in SQL. What it costs is the projection of every map
+    /// that touches the pair, which the build states (SM0030) instead of leaving to be discovered
+    /// when a query runs.</para>
+    ///
+    /// <para>It travels OUTWARD through every wrapper — a nullable lift, a collection of them, a
+    /// dictionary value — because a conversion that cannot be translated does not become
+    /// translatable by being done many times.</para>
+    /// </summary>
+    public string? ProjectionRefusal { get; }
+
+    /// <summary>
+    /// Whether the template names the mapper's own <c>Customizations</c>, which only a global
+    /// conversion does.
+    ///
+    /// <para>It exists for one concrete reason: the collection and dictionary builders wrap the
+    /// element conversion in a <c>static</c> lambda, and <c>static</c> forbids capturing. A global
+    /// conversion reaches an INSTANCE member, so a <c>List&lt;string&gt;</c> whose elements convert
+    /// through one would emit a lambda that does not compile. Where this is set the emitter drops
+    /// the keyword — paying an allocation per map, only where one is unavoidable.</para>
+    /// </summary>
+    public bool CapturesMapper { get; }
 
     /// <summary>A conversion that needs code but has nothing extra to explain.</summary>
     public static ValueConversion Call(string template, ConversionRisk risk, string? queryTemplate = null) =>

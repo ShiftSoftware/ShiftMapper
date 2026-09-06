@@ -348,6 +348,61 @@ The rules, briefly:
   update overload**. It would return the object it was handed having done nothing, and a compile
   error at the call site is the better answer.
 
+### Global type-pair conversions
+
+Every other feature configures a MEMBER of a MAP. This configures a TYPE PAIR, once, for every map.
+
+```csharp
+public class ConversionProfile : ShiftMapperProfile
+{
+    public ConversionProfile()
+    {
+        CreateConversion<DateTime, string>(
+            memory: issued => issued.Year + "/" + issued.Month + "/" + issued.Day,
+            query:  issued => issued.Year + "/" + issued.Month + "/" + issued.Day);
+    }
+}
+```
+
+Every `DateTime` filling a `string` now converts — in every map, in maps written later, and in maps
+written by people who have never heard of the rule. It applies through collections, dictionaries and
+nested maps, because it plugs into the same resolver that already knows `int` to `string`, just
+before that resolver would have given up and reported SM0002.
+
+**A registered pair BEATS the built-in table.** `long` to `string` already converts, so under the
+other ordering a rule written for that pair — which is exactly what a hash-id rule is — would be
+ignored in silence. Pairs you did not register are untouched. A `ForMember` on a particular member
+still wins over both.
+
+**Assignability, not identity.** A rule registered for a base type answers for everything assignable
+to it, so one rule covers an entity hierarchy; where two could answer, the nearest by inheritance
+wins, so a general rule can always be narrowed.
+
+**Two forms, because there are two backends.** `memory` is a delegate the `Map` methods call and may
+do anything C# can do. `query` is an expression tree, and it is not invoked by the projection — it
+is INLINED into it, because a delegate call is opaque to EF. That is the difference between
+
+```sql
+SELECT CAST(DATEPART(year, [i].[IssuedAt]) AS nvarchar(max)) + N'/' + ...
+```
+
+and loading every row to format it in C#.
+
+**Omitting the query form is a declaration, not an oversight.** It says the pair cannot be
+translated, and every map that touches it loses its projection — which the build reports:
+
+```
+warning SM0030: the map from 'Product' to 'ProductFingerprintDto' converts 'Brand' to 'String'
+                with a conversion that has no query form, so ProjectTo cannot use it;
+                Map is unaffected
+```
+
+That warning is the reason to do this at compile time at all. A runtime conversion table converts
+just as well and cannot tell you which of your list endpoints has quietly stopped being one query.
+It is a Warning rather than the Info `ConstructUsing` gets, because the person who loses the
+projection is not the person who chose to: whoever wrote the `CreateConversion` made a decision
+about a type pair, and whoever writes a map that happens to touch it inherits the consequence.
+
 ### Profiles: maps written outside the mapper
 
 One constructor is a fine place for a dozen maps and a poor place for fifty.
@@ -596,7 +651,7 @@ and think. Each is reported as SM0002 rather than skipped in silence.
 
 ## Diagnostics
 
-Twenty-nine rules, `SM0001` to `SM0029`. Three stop the build; the rest describe something that
+Thirty rules, `SM0001` to `SM0030`. Three stop the build; the rest describe something that
 will not be mapped, or will be mapped in a way worth knowing about.
 
 | Id | Default | What it means |
@@ -630,6 +685,7 @@ will not be mapped, or will be mapped in a way worth knowing about.
 | SM0027 | Warning | A pair is declared both in a profile and outside it |
 | SM0028 | Warning | A profile in a referenced assembly cannot be read |
 | SM0029 | Warning | `ConfigureDefaults` on a profile has no effect |
+| SM0030 | Warning | A conversion has no query form, so `ProjectTo` cannot use the map |
 
 `SM0011` is an error because a null nested object in a response looks exactly like a null in the
 database. Two ways forward, both one line: declare the map, or `opt.Ignore()` the property.

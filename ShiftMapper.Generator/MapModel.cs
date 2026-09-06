@@ -47,8 +47,13 @@ internal sealed class MapModel
         ImmutableArray<string> unresolvedBases,
         ImmutableArray<DerivedPair> includedDerived,
         string? asConcrete,
-        string? asConcreteRejected)
+        string? asConcreteRejected,
+        ImmutableArray<string> projectionRefusals = default)
     {
+        ProjectionRefusals = projectionRefusals.IsDefault
+            ? ImmutableArray<string>.Empty
+            : projectionRefusals;
+
         AsConcreteRejected = asConcreteRejected;
         UnresolvedBases = unresolvedBases;
         IncludedDerived = includedDerived;
@@ -296,7 +301,18 @@ internal sealed class MapModel
         ConvertsWithExpression
         || AsConcrete is not null
         || (!ConstructsWithFactory && ConditionedMembers.Length == 0 && !HasHooks
-            && IncludedDerived.IsEmpty);
+            && IncludedDerived.IsEmpty && ProjectionRefusals.IsEmpty);
+
+    /// <summary>
+    /// The global conversions this map uses that were registered WITHOUT a query form, worded for
+    /// SM0030 — <c>'string' to 'List&lt;FileDTO&gt;'</c>.
+    ///
+    /// <para>Not a limitation but a declaration: whoever wrote the <c>CreateConversion</c> said how
+    /// the pair converts in C# and gave no way to say it in SQL. Every map that touches the pair
+    /// inherits that, which is why the reason is carried here rather than left for a query to
+    /// discover.</para>
+    /// </summary>
+    public ImmutableArray<string> ProjectionRefusals { get; }
 
     /// <summary>
     /// Whether the map is a REDIRECTION to another map rather than a mapping of its own — what
@@ -434,7 +450,10 @@ internal sealed class MapModel
             Constructor, ConstructionProblems, ConstructsWithFactory, ConditionedMembers,
             RefusedConditions, ConvertsWithExpression, HasBeforeMap, HasAfterMap, DeadConfiguration,
             FlattenedMembers, AmbiguousFlattening, UnresolvedBases, IncludedDerived, AsConcrete,
-            AsConcreteRejected);
+            // CARRIED, like every other field. The resolve pass rebuilds a model to settle its
+            // nested members; anything it forgets to copy is silently lost, which is what happened
+            // to this one the first time and is why the sample was the test that caught it.
+            AsConcreteRejected, ProjectionRefusals);
 
     /// <summary>
     /// The same map with a constructor argument's nested value settled, produced by the resolve
@@ -452,5 +471,8 @@ internal sealed class MapModel
             constructor, ConstructionProblems, ConstructsWithFactory, ConditionedMembers,
             RefusedConditions, ConvertsWithExpression, HasBeforeMap, HasAfterMap, DeadConfiguration,
             FlattenedMembers, AmbiguousFlattening, UnresolvedBases, IncludedDerived, AsConcrete,
-            AsConcreteRejected);
+            // CARRIED, like every other field. The resolve pass rebuilds a model to settle its
+            // nested members; anything it forgets to copy is silently lost, which is what happened
+            // to this one the first time and is why the sample was the test that caught it.
+            AsConcreteRejected, ProjectionRefusals);
 }

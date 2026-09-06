@@ -1,0 +1,439 @@
+﻿using ShiftMapper.Generator.Tests.Infrastructure;
+using Xunit;
+
+namespace ShiftMapper.Generator.Tests;
+
+/// <summary>
+/// GLOBAL TYPE-PAIR CONVERSIONS — one rule, written once, answering wherever the pair appears.
+///
+/// The question running through all of it is the one every step since 5 has come back to: does it
+/// reach BOTH backends? A conversion that only works in memory is a `foreach` with extra steps.
+/// </summary>
+public class GlobalConversionTests
+{
+    private const string Types =
+        """
+        using ShiftMapper;
+        using System;
+        using System.Collections.Generic;
+        using System.Linq.Expressions;
+
+        public class Money { public decimal Amount { get; set; } }
+
+        public class Brand
+        {
+            public Money Price { get; set; } = new();
+            public long Id { get; set; }
+        }
+
+        public class BrandDto
+        {
+            public string Price { get; set; } = "";
+            public string Id { get; set; } = "";
+        }
+        """;
+
+    private static GeneratorRun Run(string body) => GeneratorHarness.Run(Types + "\n" + body);
+
+    // -----------------------------------------------------------------
+    // THE CORE.
+    // -----------------------------------------------------------------
+
+    /// <summary>
+    /// A pair the built-in table refuses — <c>Money</c> to <c>string</c> — becomes mapped, in both
+    /// the create method and the projection.
+    /// </summary>
+    [Fact]
+    public void A_registered_pair_is_mapped_in_both_backends()
+    {
+        GeneratorRun run = Run(
+            """
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+                    CreateConversion<Money, string>(
+                        memory: m => m.Amount.ToString(),
+                        query: m => m.Amount.ToString());
+
+                    CreateMap<Brand, BrandDto>();
+                }
+            }
+            """);
+
+        run.Compiles()
+           // The in-memory form calls the registered delegate.
+           .Emits("Customizations.Conversion<global::Money, string>()")
+           // The projection carries a MARKER that Compose replaces with the registered tree.
+           .Emits("global::ShiftMapper.MapCustomizations.Splice<global::Money, string>");
+
+        // And the member is no longer unmappable.
+        run.None("SM0002");
+    }
+
+    /// <summary>
+    /// WITHOUT the registration the very same map reports SM0002, which is what makes the test
+    /// above mean anything.
+    /// </summary>
+    [Fact]
+    public void Without_the_registration_the_pair_is_unmappable()
+    {
+        GeneratorRun run = Run(
+            """
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper() => CreateMap<Brand, BrandDto>();
+            }
+            """);
+
+        Assert.Contains("SM0002", run.Ids());
+    }
+
+    /// <summary>
+    /// A REGISTERED PAIR BEATS THE BUILT-IN TABLE. <c>long</c> to <c>string</c> already converts,
+    /// and a rule written for it must win — otherwise ShiftFramework's hash ids would be ignored in
+    /// silence, which is the one behaviour this library is arranged never to have.
+    /// </summary>
+    [Fact]
+    public void A_registered_pair_wins_over_the_built_in_conversion()
+    {
+        GeneratorRun run = Run(
+            """
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+                    CreateConversion<Money, string>(m => m.Amount.ToString(), m => m.Amount.ToString());
+                    CreateConversion<long, string>(id => "H" + id, id => "H" + id);
+
+                    CreateMap<Brand, BrandDto>();
+                }
+            }
+            """);
+
+        run.Compiles()
+           .Emits("Customizations.Conversion<long, string>()")
+           // The built-in spelling for long -> string is gone from this member.
+           .DoesNotEmit("ToInvariantString(source.Id)");
+    }
+
+    /// <summary>
+    /// ASSIGNABILITY, NOT IDENTITY: a rule registered for a BASE type answers for everything that
+    /// derives from it. This is what lets a framework write one rule for an entity hierarchy it has
+    /// never seen the members of.
+    /// </summary>
+    [Fact]
+    public void A_conversion_registered_for_a_base_type_fires_for_a_derived_one()
+    {
+        GeneratorRun run = GeneratorHarness.Run(
+            """
+            using ShiftMapper;
+
+            public class EntityBase { public long Id { get; set; } }
+            public class Customer : EntityBase { }
+
+            public class Label { public string Text { get; set; } = ""; }
+
+            public class Order { public Customer Customer { get; set; } = new(); }
+            public class OrderDto { public Label Customer { get; set; } = new(); }
+
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+                    CreateConversion<EntityBase, Label>(
+                        e => new Label { Text = e.Id.ToString() },
+                        e => new Label { Text = e.Id.ToString() });
+
+                    CreateMap<Order, OrderDto>();
+                }
+            }
+            """);
+
+        // The lookup is emitted over the MEMBER's own types; the runtime resolves the base
+        // registration and hands it back through Func's contravariance.
+        run.Compiles().Emits("Customizations.Conversion<global::Customer, global::Label>()");
+    }
+
+    /// <summary>A <c>ForMember</c> on a particular member still wins over a global rule.</summary>
+    [Fact]
+    public void A_ForMember_still_wins_over_a_global_conversion()
+    {
+        GeneratorRun run = Run(
+            """
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+                    CreateConversion<Money, string>(m => m.Amount.ToString(), m => m.Amount.ToString());
+
+                    CreateMap<Brand, BrandDto>()
+                        .ForMember(d => d.Price, opt => opt.MapFrom(s => "fixed"));
+                }
+            }
+            """);
+
+        run.Compiles()
+           .Emits("Customizations.Value<global::Brand, global::BrandDto, string>(\"Price\")")
+           .DoesNotEmit("Customizations.Conversion<global::Money, string>()");
+    }
+
+    // -----------------------------------------------------------------
+    // TRANSITIVITY.
+    // -----------------------------------------------------------------
+
+    /// <summary>
+    /// It applies to the ELEMENT TYPE of a collection, which is most of the value: the rule is
+    /// written for a pair, not for a shape.
+    /// </summary>
+    [Fact]
+    public void A_conversion_applies_to_collection_elements()
+    {
+        GeneratorRun run = GeneratorHarness.Run(
+            """
+            using ShiftMapper;
+            using System.Collections.Generic;
+
+            public class Money { public decimal Amount { get; set; } }
+            public class Cart { public List<Money> Prices { get; set; } = new(); }
+            public class CartDto { public List<string> Prices { get; set; } = new(); }
+
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+                    CreateConversion<Money, string>(m => m.Amount.ToString(), m => m.Amount.ToString());
+                    CreateMap<Cart, CartDto>();
+                }
+            }
+            """);
+
+        run.Compiles().Emits("Customizations.Conversion<global::Money, string>()");
+
+        // THE LAMBDA CANNOT BE `static`. A global conversion reaches the mapper's own
+        // Customizations, and static forbids capturing — the generated file would not compile.
+        // The control is that the SAME emitter still writes `static` where nothing is captured.
+        run.DoesNotEmit("static item => (Customizations");
+    }
+
+    /// <summary>And to the VALUE type of a dictionary, by the same recursion.</summary>
+    [Fact]
+    public void A_conversion_applies_to_dictionary_values()
+    {
+        GeneratorRun run = GeneratorHarness.Run(
+            """
+            using ShiftMapper;
+            using System.Collections.Generic;
+
+            public class Money { public decimal Amount { get; set; } }
+            public class Feed { public Dictionary<string, Money> Prices { get; set; } = new(); }
+            public class FeedDto { public Dictionary<string, string> Prices { get; set; } = new(); }
+
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+                    CreateConversion<Money, string>(m => m.Amount.ToString(), m => m.Amount.ToString());
+                    CreateMap<Feed, FeedDto>();
+                }
+            }
+            """);
+
+        run.Compiles().Emits("Customizations.Conversion<global::Money, string>()");
+    }
+
+    // -----------------------------------------------------------------
+    // THE QUERY FORM, AND ITS ABSENCE.
+    // -----------------------------------------------------------------
+
+    /// <summary>
+    /// OMITTING THE QUERY FORM IS A DECLARATION, not an oversight: it says the pair cannot be
+    /// translated. Every map that touches it loses its projection, and the build says so — which is
+    /// the entire reason to do this at compile time.
+    /// </summary>
+    [Fact]
+    public void A_conversion_without_a_query_form_costs_the_projection()
+    {
+        GeneratorRun run = Run(
+            """
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+                    CreateConversion<Money, string>(m => m.Amount.ToString());
+                    CreateConversion<long, string>(id => id.ToString(), id => id.ToString());
+
+                    CreateMap<Brand, BrandDto>();
+                }
+            }
+            """);
+
+        run.Compiles();
+
+        string message = run.Single("SM0030").GetMessage();
+
+        Assert.Contains("'Money' to 'String'", message);
+        Assert.Contains("no query form", message);
+
+        // In memory it works exactly as before; only the projection is refused, and it THROWS
+        // rather than going missing — a missing projection member is CS0103 once nested.
+        run.Emits("Customizations.Conversion<global::Money, string>()")
+           .Emits("throw new global::System.InvalidOperationException");
+    }
+
+    /// <summary>Supplying the query form positionally counts, not only as a named argument.</summary>
+    [Fact]
+    public void A_positional_query_form_counts()
+    {
+        GeneratorRun run = Run(
+            """
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+                    CreateConversion<Money, string>(m => m.Amount.ToString(), m => m.Amount.ToString());
+                    CreateConversion<long, string>(id => id.ToString(), id => id.ToString());
+
+                    CreateMap<Brand, BrandDto>();
+                }
+            }
+            """);
+
+        run.Compiles();
+        run.None("SM0030");
+    }
+
+    // -----------------------------------------------------------------
+    // WHERE IT IS DECLARED.
+    // -----------------------------------------------------------------
+
+    /// <summary>
+    /// DECLARED IN A PROFILE, which is the shape that matters: a framework ships the profile, the
+    /// application adds it, and every map in the application picks the rule up.
+    /// </summary>
+    [Fact]
+    public void A_conversion_declared_in_a_profile_reaches_the_mappers_maps()
+    {
+        GeneratorRun run = Run(
+            """
+            public class ConversionProfile : ShiftMapperProfile
+            {
+                public ConversionProfile() =>
+                    CreateConversion<Money, string>(m => m.Amount.ToString(), m => m.Amount.ToString());
+            }
+
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+                    AddProfile<ConversionProfile>();
+                    CreateMap<Brand, BrandDto>();
+                }
+            }
+            """);
+
+        run.Compiles().Emits("Customizations.Conversion<global::Money, string>()");
+        run.None("SM0002");
+    }
+
+    /// <summary>
+    /// A memory-only conversion declared IN A PROFILE, which is the shape the sample uses and the
+    /// combination the two tests above miss between them: one declares memory-only on the mapper,
+    /// the other declares a full pair in a profile.
+    /// </summary>
+    [Fact]
+    public void A_memory_only_conversion_in_a_profile_still_costs_the_projection()
+    {
+        GeneratorRun run = Run(
+            """
+            public class ConversionProfile : ShiftMapperProfile
+            {
+                public ConversionProfile()
+                {
+                    CreateConversion<Money, string>(memory: m => m.Amount.ToString());
+                    CreateConversion<long, string>(id => id.ToString(), id => id.ToString());
+                }
+            }
+
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+                    AddProfile<ConversionProfile>();
+                    CreateMap<Brand, BrandDto>();
+                }
+            }
+            """);
+
+        run.Compiles();
+
+        Assert.Contains("no query form", run.Single("SM0030").GetMessage());
+    }
+
+    /// <summary>
+    /// THE REGRESSION THE SAMPLE CAUGHT. A map with NESTED members goes through the resolve pass,
+    /// which rebuilds the model to settle them — and a rebuild that forgets a field loses it in
+    /// silence. The refusal survived every test above because none of their maps had anything to
+    /// resolve.
+    /// </summary>
+    [Fact]
+    public void A_refusal_survives_the_nested_resolve_pass()
+    {
+        GeneratorRun run = GeneratorHarness.Run(
+            """
+            using ShiftMapper;
+
+            public class Money { public decimal Amount { get; set; } }
+            public class Stock { public string Code { get; set; } = ""; }
+            public class StockDto { public string Code { get; set; } = ""; }
+
+            public class Product
+            {
+                public Money Price { get; set; } = new();
+                public Stock Stock { get; set; } = new();
+            }
+
+            public class ProductDto
+            {
+                public string Price { get; set; } = "";
+                public StockDto Stock { get; set; } = new();
+            }
+
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+                    CreateConversion<Money, string>(memory: m => m.Amount.ToString());
+
+                    CreateMap<Stock, StockDto>();
+                    CreateMap<Product, ProductDto>();
+                }
+            }
+            """);
+
+        run.Compiles();
+
+        Assert.Contains("no query form", run.Single("SM0030").GetMessage());
+    }
+
+    /// <summary>A mapper that registers none is completely unaffected.</summary>
+    [Fact]
+    public void A_mapper_without_conversions_is_unchanged()
+    {
+        GeneratorRun run = GeneratorHarness.Run(
+            """
+            using ShiftMapper;
+
+            public class Brand { public long Id { get; set; } }
+            public class BrandDto { public string Id { get; set; } = ""; }
+
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper() => CreateMap<Brand, BrandDto>();
+            }
+            """);
+
+        run.Compiles().DoesNotEmit("Customizations.Conversion<");
+        run.None("SM0030");
+    }
+}

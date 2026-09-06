@@ -72,4 +72,7 @@ app.MapSupplierFeedEndpoints();
 // Inheritance, polymorphism and open generics, over a table-per-hierarchy table.
 app.MapCatalogEndpoints();
 
+// Global type-pair conversions — one rule, and the two halves of the query-form decision.
+app.MapConversionEndpoints();
+
 app.Run();
