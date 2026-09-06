@@ -33,6 +33,18 @@ public static class SeedData
             new Brand { Id = 8, Name = "Bose", Country = "United States", FoundedYear = 1964, ISOCode = "US", Tags = ["premium", "audio"], ExternalIds = [10_080L] }
         );
 
+        // THE TPH ROWS. Two of each kind, in one table, so /api/catalog has something to
+        // dispatch on and OfType<PhysicalItem>() has something to filter to.
+        modelBuilder.Entity<PhysicalItem>().HasData(
+            new PhysicalItem { Id = 1, Sku = "apl-ip15p", Name = "iPhone 15 Pro", WeightKg = 0.187m },
+            new PhysicalItem { Id = 2, Sku = "sny-ps5s", Name = "PlayStation 5 Slim", WeightKg = 3.2m }
+        );
+
+        modelBuilder.Entity<DigitalItem>().HasData(
+            new DigitalItem { Id = 3, Sku = "sny-gt7", Name = "Gran Turismo 7", SizeMb = 110_000 },
+            new DigitalItem { Id = 4, Sku = "apl-lgc", Name = "Logic Pro", SizeMb = 6_400 }
+        );
+
         modelBuilder.Entity<Stock>().HasData(
             new Stock { Id = 1, Name = "Central Warehouse", City = "Erbil", Code = "ERB-WH", BayNumbers = [1, 2, 3, 4] },
             new Stock { Id = 2, Name = "Baghdad Retail Store", City = "Baghdad", Code = "BGD-RS", BayNumbers = [1, 2] },

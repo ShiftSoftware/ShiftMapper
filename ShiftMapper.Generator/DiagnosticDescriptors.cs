@@ -508,6 +508,100 @@ internal static class DiagnosticDescriptors
                      "which was meant. Name it with ForMember, or rename one of the source " +
                      "properties so the split is unambiguous.");
 
+    /// <summary>
+    /// SM0022 — an <c>IncludeBase</c> naming a map this mapper does not declare.
+    ///
+    /// Worth reporting louder than it looks, because nothing else goes wrong: the derived map
+    /// keeps doing exactly what it did before, so a base map that was renamed or never written
+    /// takes its whole configuration with it in silence. Nothing is inherited, and every member
+    /// the base was going to speak for falls back to the conventions.
+    /// </summary>
+    public static readonly DiagnosticDescriptor UnresolvedBaseMap = new(
+        id: "SM0022",
+        title: "IncludeBase names a map that does not exist",
+        messageFormat: "ShiftMapper: the map from '{0}' to '{1}' includes a base map from '{2}', which this mapper does not declare, so nothing is inherited",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "IncludeBase takes over the ForMember configuration of a map between the base " +
+                     "types, so that map has to exist somewhere in this mapper. Add the CreateMap, " +
+                     "or correct the type arguments.");
+
+    /// <summary>
+    /// SM0023 — an <c>Include</c> that cannot dispatch: the types do not line up, or the derived
+    /// pair has no map of its own.
+    ///
+    /// The branch is simply not emitted, which is the quiet failure this exists to make loud —
+    /// the base map goes on mapping a derived value as though it were the base, and everything the
+    /// derived type knows is dropped without a word.
+    /// </summary>
+    public static readonly DiagnosticDescriptor DerivedPairCannotDispatch = new(
+        id: "SM0023",
+        title: "Include cannot dispatch to the derived pair",
+        messageFormat: "ShiftMapper: the map from '{0}' to '{1}' cannot dispatch to '{2}' to '{3}' because {4}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "Include needs the derived source to derive from this map's source, the derived " +
+                     "destination to derive from its destination, and the derived pair to have its " +
+                     "own CreateMap. Without all three there is nothing to dispatch to.");
+
+    /// <summary>
+    /// SM0024 — a map with <c>Include</c> cannot be projected.
+    ///
+    /// A projection has ONE element type, fixed when the query is written, and no per-row type
+    /// test a provider could translate. A warning rather than a note for the reason SM0017 and
+    /// SM0018 are: the failure would otherwise be silent — the projection would build every row
+    /// as the BASE destination and quietly disagree with <c>Map</c>.
+    /// </summary>
+    public static readonly DiagnosticDescriptor IncludeIsNotProjectable = new(
+        id: "SM0024",
+        title: "Map cannot be projected because it dispatches on the runtime type",
+        messageFormat: "ShiftMapper: the map from '{0}' to '{1}' dispatches on the source's runtime type through Include, so ProjectTo cannot use it; Map is unaffected",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "Project the derived type directly instead — OfType<TDerived>() then " +
+                     "ProjectTo<TDerivedDestination>() — which is one query and says which shape " +
+                     "you meant.");
+
+    /// <summary>
+    /// SM0025 — an <c>As</c> that cannot stand in: the concrete type is not assignable to the
+    /// destination, or has no map of its own.
+    ///
+    /// The first case is not merely wrong but unemittable — the generated method returns the
+    /// destination type — so the <c>As</c> is ignored entirely and the destination goes back to
+    /// being whatever it was, usually SM0004.
+    /// </summary>
+    public static readonly DiagnosticDescriptor ConcreteTypeCannotStandIn = new(
+        id: "SM0025",
+        title: "As names a type that cannot stand in for the destination",
+        messageFormat: "ShiftMapper: the map from '{0}' to '{1}' cannot be built as '{2}' because {3}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "As names the concrete type to build for an interface or abstract destination. " +
+                     "It has to be assignable to that destination and needs its own CreateMap, or " +
+                     "there is nothing to redirect to.");
+
+    /// <summary>
+    /// SM0026 — an open generic map the generator will not close.
+    ///
+    /// One type parameter on each side is the only shape with a single obvious pairing. With two
+    /// there is no answer to choose, only a combinatorial one, so the declaration is refused and
+    /// says so rather than quietly producing nothing.
+    /// </summary>
+    public static readonly DiagnosticDescriptor OpenGenericNotClosed = new(
+        id: "SM0026",
+        title: "Open generic map was not closed",
+        messageFormat: "ShiftMapper: {0}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "CreateMap(typeof(Wrapper<>), typeof(WrapperDto<>)) is closed for every pair " +
+                     "you already map, which needs exactly one type parameter on each side. Write " +
+                     "the closed CreateMap calls out instead.");
+
     /// <summary>SM0005 — the whole mapper produced nothing.</summary>
     public static readonly DiagnosticDescriptor MapperSkipped = new(
         id: "SM0005",
@@ -549,6 +643,11 @@ internal static class DiagnosticDescriptors
         HookIsNotProjectable,
         ConvertUsingIgnoresConfiguration,
         FlattenedMember,
-        AmbiguousFlattening);
+        AmbiguousFlattening,
+        UnresolvedBaseMap,
+        DerivedPairCannotDispatch,
+        IncludeIsNotProjectable,
+        ConcreteTypeCannotStandIn,
+        OpenGenericNotClosed);
 }
 

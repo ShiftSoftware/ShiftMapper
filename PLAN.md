@@ -37,7 +37,7 @@ Every step heading below carries the same marker: ✅ done, ⬜ pending.
 - [x] **Step 7** — Per-member power tools
 - [x] **Step 8** — Map-level hooks
 - [x] **Step 9** — Flattening and naming conventions
-- [ ] **Step 10** — Inheritance, polymorphism, open generics
+- [x] **Step 10** — Inheritance, polymorphism, open generics
 
 **Phase 3 — The general layer**
 
@@ -53,9 +53,8 @@ Every step heading below carries the same marker: ✅ done, ⬜ pending.
 - [ ] **Step 17** — Docs and sample
 - [ ] **Step 18** — Benchmarks
 
-Phase 1 is complete, and all of Phase 2 except Step 10 with it. Next on ShiftFramework's
-critical path is **Step 10**, then 10 → 11 → 12 → 13 → 14 → 15 (the summary at the foot of
-this file).
+Phases 1 and 2 are complete. Next on ShiftFramework's critical path is **Step 11**, then
+11 → 12 → 13 → 14 → 15 (the summary at the foot of this file).
 
 ---
 
@@ -791,7 +790,7 @@ returns it and `?sql=true` shows the three joins, with no `CASE` (every step is 
 live in the tests instead, which is said out loud in the `.http` file rather than contrived into an
 endpoint.
 
-### ⬜ Step 10 — Inheritance, polymorphism, open generics
+### ✅ Step 10 — Inheritance, polymorphism, open generics
 
 - `.IncludeBase<TSourceBase, TDestinationBase>()` — inherit a base map's members and its
   `ForMember` configuration. This is what makes "every entity to every DTO maps its audit
@@ -804,6 +803,62 @@ endpoint.
 - Abstract / interface destinations with a registered concrete implementation.
 
 `IncludeBase` is a prerequisite for Step 14. Do not skip it.
+
+**What landed.**
+
+- **`IncludeBase<TSourceBase, TDestinationBase>()`** inherits the base map's `ForMember`
+  configuration — not its members. The members were never the problem: `PhysicalItem` already IS
+  a `CatalogItem`, so `Sku` already matched by name. What could not be shared was everything said
+  ABOUT it. Bases merge NEAREST-FIRST and transitively, own configuration always wins per member,
+  conditions union, and the walk is loop-safe and capped. Map-level hooks are deliberately NOT
+  inherited: a `BeforeMap` written for the base's members would silently run over a derived
+  destination it has never seen.
+- **It reads every part of the mapper.** A base `CreateMap` may live in another file or another
+  `partial` half, so the generator walks EVERY `DeclaringSyntaxReference` of the class, lazily —
+  the lookup is only built when something actually asks for a base.
+- **And it projects, which is the half that took the work.** Everything written is stored against
+  the pair it was written for, so an inherited `MapFrom` lives under the BASE pair and a derived map
+  asking under its own would find nothing — in memory AND inside `Compose`, which collects by the
+  same key. The fix is a LINEAGE in `MapCustomizations` that `Value<>`, `Condition<>` and `Compose`
+  all walk. The alternative — deferring the merge to run time — was rejected because it would
+  have forced Roslyn symbols into the cached `MapModel`, which is the one thing that model may not
+  hold.
+
+  Doing this only in the in-memory path would have made `Map` upper-case the SKU and `ProjectTo`
+  not: two answers that each look right on their own, which is this library's whole reason to exist.
+- **`Include<TDerived, TDerivedDestination>()`** emits an ordinary type test at the top of the create
+  method (`if (source is Circle derived0) return MapToCircleDto(derived0);`), a paired test in the
+  update overload, and dispatches per ELEMENT in the collection overloads — a mixed list is the
+  normal case for a TPH table.
+- **`Include` costs the projection (SM0024), `As` does not.** That asymmetry is the whole design and
+  is worth stating as a rule: a projection has ONE element type, fixed when the query is written, so
+  a PER-ROW decision has nowhere to live — but `As` decides nothing per row, because the concrete
+  type was fixed at the `CreateMap`. So `Include` emits a THROWING projection member whose message
+  names the alternative (`OfType<Circle>().ProjectTo<CircleDto>(mapper)`), and `As` emits
+  `MapCustomizations.Widen<TSource, TConcrete, TDestination>(...)` — the concrete map's own
+  expression with a widening cast, and the same SQL as before.
+- **A throwing member, never a missing one.** Same rule as Steps 6→8: a projection member that is
+  absent is CS0103 the moment the map is nested inside another.
+- **`CreateMap(typeof(Page<>), typeof(PageDto<>))`** is closed for every pair the mapper ALREADY
+  maps. That rule is both the useful one and the only decidable one — "every closed pair in the
+  compilation" would mean guessing which of a program's thousands of types somebody meant to wrap,
+  and would change answer when an unrelated `using` was added. Constraints are checked; interface
+  and abstract element destinations are skipped, because a `PageDto<IWidgetDto>` has elements
+  nothing can construct. In the sample, one line produced SIXTEEN closed maps.
+- **Five diagnostics, SM0022→SM0026**, all Warning: a base pair with no `CreateMap`, an `Include`
+  pair that does not derive or has no map, the projection refusal, an `As` type that is not
+  assignable, and an open generic that could not be closed.
+
+**Severity, by the rule the earlier steps set.** SM0024 is a WARNING rather than the Info that
+SM0015 got, because `ConstructUsing` is written by someone who knows they are leaving the query
+path, while `Include` is written to fix an in-memory bug and takes the projection away as a side
+effect — the person who loses it is not the person who chose it.
+
+**In the sample.** `Entities/CatalogItem.cs` is a real TPH table, seeded with two physical and two
+digital rows, so `/api/catalog` dispatches per row, `/api/catalog/projected` shows the refusal,
+`/api/catalog/physical?sql=true` shows `WHERE [Discriminator] = N'PhysicalItem'` next to the
+INHERITED `UPPER([c].[Sku])` reaching SQL, `/api/catalog/labels?sql=true` shows `As` producing that
+same `SELECT`, and `/api/catalog/paged` and `/paged-brands` are two closed maps from one line.
 
 ---
 
@@ -1087,15 +1142,15 @@ mapper that cannot show its numbers has given up its main argument.
 | Phase | Steps | State | Blocking? |
 |---|---|---|---|
 | 1 — Trust | 1 Tests, 2 Runtime cost, 3 Packaging, 4 `IShiftMapper` | ✅ done | Everything depended on 1 and 4 |
-| 2 — Gaps | ~~5 Collections~~, ~~6 Constructors/records~~, ~~7 Member options~~, ~~8 Map hooks~~, ~~9 Flattening~~, 10 Inheritance/generics | ⬜ all but 10 done | 10 blocks Phase 3 |
+| 2 — Gaps | ~~5 Collections~~, ~~6 Constructors/records~~, ~~7 Member options~~, ~~8 Map hooks~~, ~~9 Flattening~~, ~~10 Inheritance/generics~~ | ✅ done | Unblocked Phase 3 |
 | 3 — General layer | 11 Profiles, 12 Global conversions, 13 Compile-time contract, 14 Member conventions, 15 ShiftFramework port | ⬜ pending | The goal |
 | 4 — Finish | 16 Diagnostics, 17 Docs, 18 Benchmarks | ⬜ pending | Can run alongside 2 and 3 |
 
 The shortest path to ShiftFramework being able to adopt this is
 **1 → 4 → 8 → 10 → 11 → 12 → 13 → 14 → 15**; with 1 and 4 done, it starts at **8**. Steps 5, 6, 7
 and 9 are needed for ShiftMapper to be a good general-purpose mapper, but they are not on
-ShiftFramework's critical path. **Only Step 10 is left in Phase 2, so the path is now
-10 → 11 → 12 → 13 → 14 → 15.** Everything else is done: 5, 6 and 7 because every
+ShiftFramework's critical path. **Phase 2 is now complete, so the path is
+11 → 12 → 13 → 14 → 15.** Everything in Phase 2 is done: 5, 6 and 7 because every
 application hits them on its first day (a list endpoint, a DTO that is a record, a PATCH), 8
 because it was the other Phase 3 blocker, and 9 because it is the one every DTO that is a grid row
 hits.

@@ -27,3 +27,8 @@ SM0018 | ShiftMapper | Warning | Map cannot be projected because it runs a Befor
 SM0019 | ShiftMapper | Warning | Configuration has no effect because ConvertUsing replaces the whole map
 SM0020 | ShiftMapper | Info | Destination property is filled by flattening
 SM0021 | ShiftMapper | Warning | Destination property could be flattened more than one way
+SM0022 | ShiftMapper | Warning | IncludeBase names a map that does not exist
+SM0023 | ShiftMapper | Warning | Include cannot dispatch to the derived pair
+SM0024 | ShiftMapper | Warning | Map cannot be projected because it dispatches on the runtime type
+SM0025 | ShiftMapper | Warning | As names a type that cannot stand in for the destination
+SM0026 | ShiftMapper | Warning | Open generic map was not closed

@@ -1,4 +1,4 @@
-using System.Collections.Immutable;
+﻿using System.Collections.Immutable;
 
 namespace ShiftMapper.Generator;
 
@@ -20,8 +20,13 @@ internal sealed class MapperClassModel
         bool isPublic,
         ImmutableArray<MapModel> maps,
         MapperSkipReason skipReason = MapperSkipReason.None,
-        LocationInfo? location = null)
+        LocationInfo? location = null,
+        ImmutableArray<string> openGenericProblems = default)
     {
+        OpenGenericProblems = openGenericProblems.IsDefault
+            ? ImmutableArray<string>.Empty
+            : openGenericProblems;
+
         SkipReason = skipReason;
         Location = location;
         NamespaceName = namespaceName;
@@ -53,6 +58,14 @@ internal sealed class MapperClassModel
 
     /// <summary>The maps declared by CreateMap calls inside this declaration.</summary>
     public ImmutableArray<MapModel> Maps { get; }
+
+    /// <summary>
+    /// Open generic declarations the generator refused, already worded — SM0026.
+    ///
+    /// They belong to the CLASS rather than to a map, because a refused one produces no map at
+    /// all: there is nothing to hang the message on except the declaration that asked for it.
+    /// </summary>
+    public ImmutableArray<string> OpenGenericProblems { get; }
 
     /// <summary>
     /// Set when the class derives from ShiftMapperBase but nothing can be generated for it.

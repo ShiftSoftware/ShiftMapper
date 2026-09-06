@@ -200,6 +200,16 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         var maps = ImmutableArray.CreateBuilder<MapModel>();
         var seen = new HashSet<string>();
 
+        // Every map in the mapper, by key, so an IncludeBase can find the base map's configuration
+        // WHEREVER it was declared — another part, another file. Built at most once per
+        // declaration and only when something actually inherits, because it re-reads every chain
+        // in the class and most mappers never ask.
+        Dictionary<string, Refinements>? everyMap = null;
+
+        Dictionary<string, Refinements> Lookup() => everyMap ??= ReadAllRefinements(
+            semanticModel.Compilation, classSymbol, baseClass, mapExpression, memberOptions,
+            allMemberOptions, mapOptions, classDefaultAllowNullCollections, cancellationToken);
+
         // Every CreateMap<A, B>() written anywhere inside THIS declaration. Other parts of
         // the same class arrive as their own model and are merged later.
         foreach (InvocationExpressionSyntax invocation in classDeclaration.DescendantNodes().OfType<InvocationExpressionSyntax>())
@@ -223,10 +233,72 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                          classDefaultAllowNullCollections,
                          classDefaultFlattening,
                          classDefaultNaming,
+                         Lookup,
                          cancellationToken))
             {
                 if (seen.Add(map.Key))
                     maps.Add(map);
+            }
+        }
+
+        // OPEN GENERIC MAPS, closed last — after every explicit map has been added, so an
+        // explicit CreateMap<Wrapper<Brand>, WrapperDto<BrandDto>> always wins over the one this
+        // would have generated for the same pair.
+        var openProblems = ImmutableArray.CreateBuilder<string>();
+
+        foreach (InvocationExpressionSyntax invocation in classDeclaration.DescendantNodes().OfType<InvocationExpressionSyntax>())
+        {
+            if (!IsOpenCreateMap(semanticModel, invocation, baseClass, cancellationToken,
+                    out INamedTypeSymbol? openSource, out INamedTypeSymbol? openDestination))
+            {
+                continue;
+            }
+
+            // ONE TYPE PARAMETER EACH. With two there is no single pairing to choose, only a
+            // combinatorial one nobody asked for, so it is refused rather than guessed at.
+            if (openSource!.TypeParameters.Length != 1 || openDestination!.TypeParameters.Length != 1)
+            {
+                openProblems.Add(
+                    $"'{openSource.Name}' to '{openDestination!.Name}' was not closed because open " +
+                    "generic maps need exactly one type parameter on each side");
+
+                continue;
+            }
+
+            LocationInfo? openLocation = LocationInfo.CreateFrom(invocation);
+
+            foreach ((INamedTypeSymbol element, INamedTypeSymbol elementDestination) in
+                     ReadAllPairs(semanticModel.Compilation, classSymbol, baseClass, cancellationToken))
+            {
+                if (!SatisfiesConstraints(openSource.TypeParameters[0], element)
+                    || !SatisfiesConstraints(openDestination.TypeParameters[0], elementDestination))
+                {
+                    continue;
+                }
+
+                // An INTERFACE or ABSTRACT element is skipped, and the reason is worth stating: a
+                // wrapper's member is a NESTED map, and nesting refuses those — there is no single
+                // type to construct. Closing over such a pair would produce a map whose Items
+                // member is SM0002 every time, for a map nobody wrote. An `As` map is the common
+                // way to get one, so this is not a corner.
+                if (elementDestination.TypeKind == TypeKind.Interface || elementDestination.IsAbstract)
+                    continue;
+
+                MapModel closed = BuildMapModel(
+                    semanticModel.Compilation,
+                    openSource.OriginalDefinition.Construct(element),
+                    openDestination.OriginalDefinition.Construct(elementDestination),
+                    openLocation,
+                    isReverse: false,
+                    caseSensitive: classDefaultCaseSensitive ?? false,
+                    allowNullCollections: classDefaultAllowNullCollections ?? false,
+                    flattening: classDefaultFlattening ?? true,
+                    naming: classDefaultNaming,
+                    refinements: Refinements.Empty,
+                    unresolvedBases: ImmutableArray<string>.Empty);
+
+                if (seen.Add(closed.Key))
+                    maps.Add(closed);
             }
         }
 
@@ -243,7 +315,9 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             className: classSymbol.Name,
             fullyQualifiedName: classSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
             isPublic: IsEffectivelyPublic(classSymbol),
-            maps: maps.ToImmutable());
+            maps: maps.ToImmutable(),
+            location: LocationInfo.CreateFrom(classDeclaration.Identifier.Parent ?? classDeclaration),
+            openGenericProblems: openProblems.ToImmutable());
     }
 
     /// <summary>
@@ -276,6 +350,327 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             dead.Add("AfterMap");
 
         return dead.ToImmutable();
+    }
+
+    /// <summary>
+    /// Recognises the non-generic <c>CreateMap(typeof(Wrapper&lt;&gt;), typeof(WrapperDto&lt;&gt;))</c>.
+    ///
+    /// The name gets it looked at and the SYMBOL decides, as everywhere else here — and the
+    /// arguments have to be <c>typeof</c> of an UNBOUND generic, which is the one thing C# can
+    /// write for "this type, without its argument".
+    /// </summary>
+    private static bool IsOpenCreateMap(
+        SemanticModel semanticModel,
+        InvocationExpressionSyntax invocation,
+        INamedTypeSymbol baseClass,
+        CancellationToken cancellationToken,
+        out INamedTypeSymbol? source,
+        out INamedTypeSymbol? destination)
+    {
+        source = null;
+        destination = null;
+
+        SimpleNameSyntax? name = invocation.Expression switch
+        {
+            IdentifierNameSyntax identifier => identifier,
+            MemberAccessExpressionSyntax access => access.Name,
+            _ => null,
+        };
+
+        if (name is null
+            || name.Identifier.ValueText != "CreateMap"
+            || invocation.ArgumentList.Arguments.Count != 2)
+        {
+            return false;
+        }
+
+        if (semanticModel.GetSymbolInfo(invocation, cancellationToken).Symbol is not IMethodSymbol method
+            || method.Parameters.Length != 2
+            || !SymbolEqualityComparer.Default.Equals(method.ContainingType, baseClass))
+        {
+            return false;
+        }
+
+        source = UnboundType(semanticModel, invocation.ArgumentList.Arguments[0].Expression, cancellationToken);
+        destination = UnboundType(semanticModel, invocation.ArgumentList.Arguments[1].Expression, cancellationToken);
+
+        return source is not null && destination is not null;
+    }
+
+    /// <summary>The <c>Wrapper&lt;&gt;</c> inside a <c>typeof</c>, or null when it is not one.</summary>
+    private static INamedTypeSymbol? UnboundType(
+        SemanticModel semanticModel,
+        ExpressionSyntax expression,
+        CancellationToken cancellationToken)
+    {
+        if (expression is not TypeOfExpressionSyntax typeOf)
+            return null;
+
+        return semanticModel.GetTypeInfo(typeOf.Type, cancellationToken).Type is INamedTypeSymbol { IsGenericType: true } type
+            ? type
+            : null;
+    }
+
+    /// <summary>
+    /// Every CLOSED pair the mapper declares, as symbols — what an open generic map is closed
+    /// over.
+    ///
+    /// A wrapper is closed over the things you already map and nothing else. That rule is the
+    /// useful one and the only one that is decidable: "every closed pair in the compilation" would
+    /// mean guessing which of a program's thousands of types somebody meant to wrap.
+    /// </summary>
+    private static List<(INamedTypeSymbol Source, INamedTypeSymbol Destination)> ReadAllPairs(
+        Compilation compilation,
+        INamedTypeSymbol classSymbol,
+        INamedTypeSymbol baseClass,
+        CancellationToken cancellationToken)
+    {
+        var pairs = new List<(INamedTypeSymbol, INamedTypeSymbol)>();
+
+        foreach (SyntaxReference reference in classSymbol.DeclaringSyntaxReferences)
+        {
+            if (reference.GetSyntax(cancellationToken) is not ClassDeclarationSyntax part)
+                continue;
+
+            SemanticModel model = compilation.GetSemanticModel(part.SyntaxTree);
+
+            foreach (InvocationExpressionSyntax invocation in part.DescendantNodes().OfType<InvocationExpressionSyntax>())
+            {
+                GenericNameSyntax? createMap = GetCreateMapName(model, invocation, baseClass, cancellationToken);
+
+                if (createMap is null)
+                    continue;
+
+                if (model.GetSymbolInfo(createMap.TypeArgumentList.Arguments[0], cancellationToken).Symbol
+                        is INamedTypeSymbol source
+                    && model.GetSymbolInfo(createMap.TypeArgumentList.Arguments[1], cancellationToken).Symbol
+                        is INamedTypeSymbol destination)
+                {
+                    pairs.Add((source, destination));
+                }
+            }
+        }
+
+        return pairs;
+    }
+
+    /// <summary>
+    /// Whether a type argument would actually be legal for a type parameter.
+    ///
+    /// Checked rather than assumed because the alternative is a CS error inside a generated file
+    /// the developer cannot edit: closing <c>Wrapper&lt;T&gt; where T : class</c> over a struct is
+    /// something the developer never wrote and could not fix.
+    /// </summary>
+    private static bool SatisfiesConstraints(ITypeParameterSymbol parameter, INamedTypeSymbol argument)
+    {
+        if (parameter.HasReferenceTypeConstraint && !argument.IsReferenceType)
+            return false;
+
+        if (parameter.HasValueTypeConstraint && !argument.IsValueType)
+            return false;
+
+        if (parameter.HasConstructorConstraint
+            && !argument.InstanceConstructors.Any(constructor =>
+                constructor.Parameters.Length == 0 && constructor.DeclaredAccessibility == Accessibility.Public))
+        {
+            return false;
+        }
+
+        foreach (ITypeSymbol constraint in parameter.ConstraintTypes)
+        {
+            if (constraint is INamedTypeSymbol named && !DerivesFromOrEquals(argument, named))
+                return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Every map declared anywhere in the mapper, keyed <c>"Source->Destination"</c>, with the
+    /// refinements each one was given.
+    ///
+    /// It re-reads chains that <see cref="BuildMapModels"/> will read again, and that is the
+    /// deliberate trade. The alternative is deferring member analysis until every part has been
+    /// merged — which would mean carrying Roslyn SYMBOLS in the cached model, and the whole
+    /// incremental design rests on that model holding nothing but strings. Re-reading is the
+    /// cheaper of the two, and it only happens when something inherits.
+    ///
+    /// Refinements are stored RAW here: no inheritance is applied while building the table, so a
+    /// base that itself inherits is followed by the caller instead, where a loop can be seen.
+    /// </summary>
+    private static Dictionary<string, Refinements> ReadAllRefinements(
+        Compilation compilation,
+        INamedTypeSymbol classSymbol,
+        INamedTypeSymbol baseClass,
+        INamedTypeSymbol? mapExpression,
+        INamedTypeSymbol? memberOptions,
+        INamedTypeSymbol? allMemberOptions,
+        INamedTypeSymbol? mapOptions,
+        bool? classDefaultAllowNullCollections,
+        CancellationToken cancellationToken)
+    {
+        var all = new Dictionary<string, Refinements>(StringComparer.Ordinal);
+
+        foreach (SyntaxReference reference in classSymbol.DeclaringSyntaxReferences)
+        {
+            if (reference.GetSyntax(cancellationToken) is not ClassDeclarationSyntax part)
+                continue;
+
+            SemanticModel model = compilation.GetSemanticModel(part.SyntaxTree);
+
+            foreach (InvocationExpressionSyntax invocation in part.DescendantNodes().OfType<InvocationExpressionSyntax>())
+            {
+                GenericNameSyntax? createMap = GetCreateMapName(model, invocation, baseClass, cancellationToken);
+
+                if (createMap is null)
+                    continue;
+
+                if (model.GetSymbolInfo(createMap.TypeArgumentList.Arguments[0], cancellationToken).Symbol
+                        is not INamedTypeSymbol source
+                    || model.GetSymbolInfo(createMap.TypeArgumentList.Arguments[1], cancellationToken).Symbol
+                        is not INamedTypeSymbol destination)
+                {
+                    continue;
+                }
+
+                bool allowNullCollections =
+                    ReadOption(model, FirstArgument(invocation), mapOptions,
+                        AllowNullCollectionsOption, cancellationToken) as bool?
+                    ?? classDefaultAllowNullCollections ?? false;
+
+                ChainInfo chain = ReadChain(
+                    model, invocation, mapExpression, memberOptions, allMemberOptions, mapOptions,
+                    source, destination, allowNullCollections, cancellationToken);
+
+                all[FullName(source) + "->" + FullName(destination)] = chain.Forward;
+
+                if (chain.ReverseMapName is not null)
+                    all[FullName(destination) + "->" + FullName(source)] = chain.Reverse;
+            }
+        }
+
+        return all;
+    }
+
+    /// <summary>
+    /// Folds every base map's configuration underneath this map's own.
+    ///
+    /// <para><b>NEAREST FIRST, AND OWN ALWAYS WINS.</b> A member is claimed by the first map that
+    /// says anything about it — this one, then each base in the order they were included, then
+    /// their bases. So inheriting a rule can never take away an exception you wrote, and the order
+    /// of the <c>IncludeBase</c> calls decides between two bases that both configure the same
+    /// member.</para>
+    ///
+    /// <para>CONDITIONS ARE THE EXCEPTION, and deliberately: they are MODIFIERS rather than
+    /// claims, so a conditioned member still matches by name and still converts. They union, and
+    /// the runtime picks the nearest one by the same lineage this walks.</para>
+    ///
+    /// <para>Map-level configuration — <c>ConstructUsing</c>, <c>ConvertUsing</c>, the hooks —
+    /// is NOT inherited. It replaces or extends the whole map rather than describing one member,
+    /// and inheriting one silently would take a derived map's projection away for a reason written
+    /// in another file.</para>
+    /// </summary>
+    /// <param name="unresolved">
+    /// Bases that name a map this mapper does not declare. Nothing is inherited from them and the
+    /// analyzer reports SM0022 — which is worth more than it looks, because the failure is
+    /// otherwise invisible: the derived map simply goes on doing what it did before.
+    /// </param>
+    private static Refinements Inherit(
+        Refinements own,
+        Func<Dictionary<string, Refinements>> lookup,
+        out ImmutableArray<string> unresolved)
+    {
+        unresolved = ImmutableArray<string>.Empty;
+
+        if (own.IncludedBases.IsEmpty)
+            return own;
+
+        Dictionary<string, Refinements> all = lookup();
+
+        var missing = ImmutableArray.CreateBuilder<string>();
+        var ancestry = new List<Refinements>();
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        var pending = new Queue<string>();
+
+        foreach (string included in own.IncludedBases)
+            pending.Enqueue(included);
+
+        while (pending.Count > 0)
+        {
+            string key = pending.Dequeue();
+
+            // A map that includes itself, directly or round a loop, is walked once and then left
+            // alone. There is nothing to report: the configuration is all still applied, just not
+            // twice.
+            if (!visited.Add(key))
+                continue;
+
+            if (!all.TryGetValue(key, out Refinements found))
+            {
+                missing.Add(key);
+                continue;
+            }
+
+            ancestry.Add(found);
+
+            foreach (string next in found.IncludedBases)
+                pending.Enqueue(next);
+        }
+
+        unresolved = missing.ToImmutable();
+
+        if (ancestry.Count == 0)
+            return own;
+
+        var claimed = new HashSet<string>(StringComparer.Ordinal);
+        var ignored = new List<string>();
+        var customized = new List<CustomProperty>();
+        var unconvertible = new List<UnmappedProperty>();
+        var conditioned = new List<string>(own.Conditioned);
+        bool allMembersCondition = own.HasAllMembersCondition;
+
+        void Take(Refinements from)
+        {
+            foreach (CustomProperty custom in from.Customized)
+            {
+                if (claimed.Add(custom.Name))
+                    customized.Add(custom);
+            }
+
+            foreach (string member in from.Ignored)
+            {
+                if (claimed.Add(member))
+                    ignored.Add(member);
+            }
+
+            foreach (UnmappedProperty refused in from.Unconvertible)
+            {
+                if (claimed.Add(refused.PropertyName))
+                    unconvertible.Add(refused);
+            }
+        }
+
+        Take(own);
+
+        foreach (Refinements ancestor in ancestry)
+        {
+            Take(ancestor);
+
+            foreach (string member in ancestor.Conditioned)
+            {
+                if (!conditioned.Contains(member))
+                    conditioned.Add(member);
+            }
+
+            allMembersCondition |= ancestor.HasAllMembersCondition;
+        }
+
+        return own.With(
+            ignored.ToImmutableArray(),
+            customized.ToImmutableArray(),
+            unconvertible.ToImmutableArray(),
+            conditioned.ToImmutableArray(),
+            allMembersCondition);
     }
 
     /// <summary>
@@ -522,6 +917,54 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                     // A blanket Condition. The NAME gets the call looked at and the SYMBOL decides,
                     // as everywhere else — an opt.Condition inside the lambda counts only when it
                     // is ours, on our wildcard options object.
+                    // The three inheritance calls. Each is read for its TYPE ARGUMENTS and
+                    // nothing else — what they mean is settled later, once every map in the
+                    // mapper is known, because a base or derived pair is very often declared in
+                    // another part of the class.
+                    case "IncludeBase":
+                        if (TypeArguments(semanticModel, memberAccess.Name, 2, cancellationToken) is { } bases)
+                        {
+                            string key = FullName(bases[0]) + "->" + FullName(bases[1]);
+
+                            if (!current.IncludedBases.Contains(key))
+                                current.IncludedBases.Add(key);
+                        }
+
+                        break;
+
+                    case "Include":
+                        if (TypeArguments(semanticModel, memberAccess.Name, 2, cancellationToken) is { } derived)
+                        {
+                            var pair = new DerivedPair(
+                                FullName(derived[0]),
+                                FullName(derived[1]),
+                                derived[0].Name,
+                                derived[1].Name,
+                                DerivesFromOrEquals(derived[0], currentSource),
+                                DerivesFromOrEquals(derived[1], currentDestination));
+
+                            if (!current.IncludedDerived.Any(existing => existing.Key == pair.Key))
+                                current.IncludedDerived.Add(pair);
+                        }
+
+                        break;
+
+                    case "As":
+                        if (TypeArguments(semanticModel, memberAccess.Name, 1, cancellationToken) is { } concrete)
+                        {
+                            // A concrete type that is not assignable to the destination is not
+                            // merely wrong, it is UNEMITTABLE: the generated method returns the
+                            // destination type, so redirecting to it would not compile. It is
+                            // recorded for the message and otherwise treated as absent, which
+                            // leaves the map to be reported the way it would have been anyway.
+                            if (DerivesFromOrEquals(concrete[0], currentDestination))
+                                current.AsConcrete = FullName(concrete[0]);
+                            else
+                                current.AsConcreteRejected = concrete[0].Name;
+                        }
+
+                        break;
+
                     case "ForAllMembers":
                         if (allMemberOptions is not null && HasAllMembersCondition(
                                 semanticModel, invocation, allMemberOptions, cancellationToken))
@@ -537,6 +980,58 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         }
 
         return new ChainInfo(reverseMapName, forward.Build(), reverse.Build());
+    }
+
+    /// <summary>
+    /// The type arguments of a chained generic call — the <c>A</c> and <c>B</c> of
+    /// <c>.IncludeBase&lt;A, B&gt;()</c>.
+    ///
+    /// Returns null when the call is not generic, has the wrong arity, or names something that
+    /// does not bind yet. Half-written code contributes nothing rather than a type that means
+    /// nothing, which is the same rule the rest of this file follows.
+    /// </summary>
+    private static INamedTypeSymbol[]? TypeArguments(
+        SemanticModel semanticModel,
+        SimpleNameSyntax name,
+        int count,
+        CancellationToken cancellationToken)
+    {
+        if (name is not GenericNameSyntax generic || generic.TypeArgumentList.Arguments.Count != count)
+            return null;
+
+        var resolved = new INamedTypeSymbol[count];
+
+        for (int i = 0; i < count; i++)
+        {
+            if (semanticModel.GetSymbolInfo(generic.TypeArgumentList.Arguments[i], cancellationToken).Symbol
+                is not INamedTypeSymbol type)
+            {
+                return null;
+            }
+
+            resolved[i] = type;
+        }
+
+        return resolved;
+    }
+
+    /// <summary>Fully qualified name, the spelling every model key and emitted type uses.</summary>
+    private static string FullName(ITypeSymbol type) =>
+        type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+
+    /// <summary>
+    /// Whether one type IS another or derives from it — what <c>Include</c> and <c>As</c> need to
+    /// check, and the reason both can be refused at build time rather than at the first call.
+    /// </summary>
+    private static bool DerivesFromOrEquals(INamedTypeSymbol type, INamedTypeSymbol candidateBase)
+    {
+        if (SymbolEqualityComparer.Default.Equals(type, candidateBase))
+            return true;
+
+        if (candidateBase.TypeKind == TypeKind.Interface)
+            return type.AllInterfaces.Any(i => SymbolEqualityComparer.Default.Equals(i, candidateBase));
+
+        return DerivesFrom(type, candidateBase);
     }
 
     /// <summary>
@@ -854,8 +1349,16 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             bool convertsWithExpression,
             bool hasBeforeMap,
             bool hasAfterMap,
-            bool hasAllMembersCondition)
+            bool hasAllMembersCondition,
+            ImmutableArray<string> includedBases,
+            ImmutableArray<DerivedPair> includedDerived,
+            string? asConcrete,
+            string? asConcreteRejected)
         {
+            IncludedBases = includedBases;
+            IncludedDerived = includedDerived;
+            AsConcrete = asConcrete;
+            AsConcreteRejected = asConcreteRejected;
             Ignored = ignored;
             Customized = customized;
             Unconvertible = unconvertible;
@@ -878,6 +1381,22 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
         /// <summary>Whether <c>.ForAllMembers(...)</c> stated a blanket condition.</summary>
         public bool HasAllMembersCondition { get; }
+
+        /// <summary>
+        /// Base maps whose ForMember configuration this one takes over, as <c>"A->B"</c> keys and
+        /// in the order they were written. Resolved against every part of the mapper, because the
+        /// base map is very often declared in another file.
+        /// </summary>
+        public ImmutableArray<string> IncludedBases { get; }
+
+        /// <summary>Derived pairs this map dispatches to at run time.</summary>
+        public ImmutableArray<DerivedPair> IncludedDerived { get; }
+
+        /// <summary>The concrete type an interface or abstract destination is built as, or null.</summary>
+        public string? AsConcrete { get; }
+
+        /// <summary>An <c>As</c> naming a type that is not assignable to the destination — SM0025.</summary>
+        public string? AsConcreteRejected { get; }
 
         /// <summary>
         /// Destination members an <c>opt.Condition</c> named. Unlike everything else here they are
@@ -906,7 +1425,22 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             ImmutableArray<string>.Empty, ImmutableArray<CustomProperty>.Empty,
             ImmutableArray<UnmappedProperty>.Empty, ImmutableArray<string>.Empty,
             constructsWithFactory: false, convertsWithExpression: false,
-            hasBeforeMap: false, hasAfterMap: false, hasAllMembersCondition: false);
+            hasBeforeMap: false, hasAfterMap: false, hasAllMembersCondition: false,
+            includedBases: ImmutableArray<string>.Empty,
+            includedDerived: ImmutableArray<DerivedPair>.Empty,
+            asConcrete: null,
+            asConcreteRejected: null);
+
+        /// <summary>The same refinements with an inherited base's configuration folded underneath.</summary>
+        public Refinements With(
+            ImmutableArray<string> ignored,
+            ImmutableArray<CustomProperty> customized,
+            ImmutableArray<UnmappedProperty> unconvertible,
+            ImmutableArray<string> conditioned,
+            bool hasAllMembersCondition) =>
+            new(ignored, customized, unconvertible, conditioned,
+                ConstructsWithFactory, ConvertsWithExpression, HasBeforeMap, HasAfterMap,
+                hasAllMembersCondition, IncludedBases, IncludedDerived, AsConcrete, AsConcreteRejected);
     }
 
     /// <summary>Collects one direction's refinements while the chain is being walked.</summary>
@@ -930,16 +1464,28 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
         public bool HasAllMembersCondition { get; set; }
 
+        public List<string> IncludedBases { get; } = new();
+
+        public List<DerivedPair> IncludedDerived { get; } = new();
+
+        public string? AsConcrete { get; set; }
+
+        public string? AsConcreteRejected { get; set; }
+
         public Refinements Build() =>
             Ignored.Count == 0 && Customized.Count == 0 && Unconvertible.Count == 0
             && Conditioned.Count == 0 && !ConstructsWithFactory && !ConvertsWithExpression
             && !HasBeforeMap && !HasAfterMap && !HasAllMembersCondition
+            && IncludedBases.Count == 0 && IncludedDerived.Count == 0
+            && AsConcrete is null && AsConcreteRejected is null
                 ? Refinements.Empty
                 : new Refinements(
                     Ignored.ToImmutableArray(), Customized.ToImmutableArray(),
                     Unconvertible.ToImmutableArray(), Conditioned.ToImmutableArray(),
                     ConstructsWithFactory, ConvertsWithExpression,
-                    HasBeforeMap, HasAfterMap, HasAllMembersCondition);
+                    HasBeforeMap, HasAfterMap, HasAllMembersCondition,
+                    IncludedBases.ToImmutableArray(), IncludedDerived.ToImmutableArray(),
+                    AsConcrete, AsConcreteRejected);
     }
 
     /// <summary>
@@ -958,6 +1504,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         bool? classDefaultAllowNullCollections,
         bool? classDefaultFlattening,
         NamingConventions classDefaultNaming,
+        Func<Dictionary<string, Refinements>> lookup,
         CancellationToken cancellationToken)
     {
         TypeSyntax sourceSyntax = createMap.TypeArgumentList.Arguments[0];
@@ -1019,7 +1566,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             allowNullCollections: allowNullCollections,
             flattening: flattening,
             naming: naming,
-            refinements: chain.Forward);
+            refinements: Inherit(chain.Forward, lookup, out ImmutableArray<string> unresolvedForward),
+            unresolvedBases: unresolvedForward);
 
         if (chain.ReverseMapName is null)
             yield break;
@@ -1065,7 +1613,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             allowNullCollections: reverseNullCollections ?? allowNullCollections,
             flattening: reverseFlattening ?? flattening,
             naming: reverseNaming.IsEmpty ? naming : reverseNaming,
-            refinements: chain.Reverse);
+            refinements: Inherit(chain.Reverse, lookup, out ImmutableArray<string> unresolvedReverse),
+            unresolvedBases: unresolvedReverse);
     }
 
     /// <summary>The configure lambda passed to a call, or null when it was left off.</summary>
@@ -1328,7 +1877,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         bool allowNullCollections,
         bool flattening,
         NamingConventions naming,
-        Refinements refinements)
+        Refinements refinements,
+        ImmutableArray<string> unresolvedBases)
     {
         // ONE PLACE where "what the developer asked for" becomes "what the generated code does".
         // A runtime older than the OrEmpty builders cannot be asked to invent an empty
@@ -1370,7 +1920,11 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             hasAfterMap: refinements.HasAfterMap,
             deadConfiguration: DeadConfiguration(refinements),
             flattenedMembers: analysis.Flattened,
-            ambiguousFlattening: analysis.AmbiguousFlattening);
+            ambiguousFlattening: analysis.AmbiguousFlattening,
+            unresolvedBases: unresolvedBases,
+            includedDerived: refinements.IncludedDerived,
+            asConcrete: refinements.AsConcrete,
+            asConcreteRejected: refinements.AsConcreteRejected);
     }
 
     /// <summary>The result of comparing one source type against one destination type.</summary>
@@ -1491,6 +2045,31 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         NamingConventions naming,
         Refinements refinements)
     {
+        // An `As` map has no members of its own either, and for a cleaner reason than
+        // ConvertUsing's: it does not map, it REDIRECTS. Everything is the concrete map's, so
+        // matching names here would report an interface's properties as unmapped when the type
+        // that actually gets built maps them perfectly well.
+        //
+        // It is also the one thing that makes an interface or abstract destination constructible
+        // at all, which is why canConstruct comes back true where SM0004 would otherwise fire.
+        if (refinements.AsConcrete is not null)
+        {
+            return new PropertyAnalysis(
+                ImmutableArray<PropertyPair>.Empty,
+                ImmutableArray<PropertyPair>.Empty,
+                ImmutableArray<UnmappedProperty>.Empty,
+                ImmutableArray<ConvertedProperty>.Empty,
+                ImmutableArray<NestedProperty>.Empty,
+                canConstruct: true,
+                constructor: ConstructorPlan.Parameterless,
+                constructionProblems: ImmutableArray<ConstructionProblem>.Empty,
+                customized: ImmutableArray<CustomProperty>.Empty,
+                conditioned: ImmutableArray<string>.Empty,
+                refusedConditions: ImmutableArray<ConditionRefusal>.Empty,
+                flattened: ImmutableArray<FlattenedMember>.Empty,
+                ambiguousFlattening: ImmutableArray<FlattenedMember>.Empty);
+        }
+
         // A ConvertUsing map has no members to analyse AT ALL. The expression is the whole map,
         // so matching names would produce assignments nothing emits and diagnostics about
         // properties this map never touches — SM0001 for every member of a destination the
@@ -3083,6 +3662,26 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         sb.AppendLine($"{indent}    {{");
         AppendNullGuard(sb, $"{indent}        ", "source", map.IsSourceValueType);
 
+        // An `As` map hands the whole job to the concrete pair's own method. One line, and the
+        // mapping lives in exactly one place rather than being copied into a second.
+        if (map.AsConcrete is not null)
+        {
+            string concreteKey = map.SourceType + "->" + map.AsConcrete;
+
+            sb.AppendLine(directNames.TryGetValue(concreteKey, out string? concrete)
+                ? $"{indent}        return {concrete}(source);"
+                : $"{indent}        return Map<{map.AsConcrete}>(source);");
+
+            sb.AppendLine($"{indent}    }}");
+            return;
+        }
+
+        // POLYMORPHISM. A base-typed value that is really a derived one maps through the derived
+        // pair, so nothing a Circle knows is lost on the way to a ShapeDto. Written before the
+        // base map's own body, because the first branch that matches is the most derived one the
+        // developer declared.
+        AppendDerivedDispatch(sb, $"{indent}        ", map, directNames);
+
         // A ConvertUsing map IS the developer's expression. Nothing is matched, nothing is
         // assigned, and there is no destination for a hook to touch — which is why every other
         // refinement on such a map is reported as dead (SM0019) rather than quietly emitted here.
@@ -3741,6 +4340,11 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         AppendNullGuard(sb, $"{indent}        ", "source", map.IsSourceValueType);
         AppendNullGuard(sb, $"{indent}        ", "destination", map.IsDestinationValueType);
 
+        // The update overload dispatches on BOTH objects: a Circle written onto a CircleDto goes
+        // through the derived map, and a Circle written onto a plain ShapeDto does not, because
+        // there is no derived destination to fill.
+        AppendDerivedUpdateDispatch(sb, $"{indent}        ", map);
+
         // Here "before" means what it says: the object arrived built, so the hook sees it exactly
         // as the caller passed it, before the first assignment.
         AppendHook(sb, $"{indent}        ", map, before: true);
@@ -3777,6 +4381,61 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                       $"Customizations.Value<{map.SourceType}, {map.DestinationType}, {custom.DelegateType}>(\"{custom.Name}\"))(source)";
 
         return custom.ConversionTemplate is null ? call : custom.ConversionTemplate.Replace("{0}", call);
+    }
+
+    /// <summary>
+    /// The type tests a map with <c>Include</c> opens its create method with.
+    ///
+    /// <code>
+    /// if (source is global::Circle derived0)
+    ///     return MapToCircleDto(derived0);
+    /// </code>
+    ///
+    /// A pair whose derived map does not exist is skipped rather than emitted — the build is
+    /// already failing on SM0023, and a call to a method that was never written would bury that
+    /// under a CS error in a file the developer cannot edit. Same for a pair whose types do not
+    /// actually derive: the test could never be true, and the return would not compile.
+    /// </summary>
+    private static void AppendDerivedDispatch(
+        StringBuilder sb,
+        string indent,
+        MapModel map,
+        Dictionary<string, string> directNames)
+    {
+        int index = 0;
+
+        foreach (DerivedPair derived in map.IncludedDerived)
+        {
+            if (!derived.DerivesFromSource || !derived.DerivesFromDestination)
+                continue;
+
+            if (!directNames.TryGetValue(derived.Key, out string? method))
+                continue;
+
+            sb.AppendLine($"{indent}if (source is {derived.SourceType} derived{index})");
+            sb.AppendLine($"{indent}    return {method}(derived{index});");
+            sb.AppendLine();
+
+            index++;
+        }
+    }
+
+    /// <inheritdoc cref="AppendDerivedDispatch"/>
+    private static void AppendDerivedUpdateDispatch(StringBuilder sb, string indent, MapModel map)
+    {
+        int index = 0;
+
+        foreach (DerivedPair derived in map.IncludedDerived)
+        {
+            if (!derived.DerivesFromSource || !derived.DerivesFromDestination)
+                continue;
+
+            sb.AppendLine($"{indent}if (source is {derived.SourceType} source{index} && destination is {derived.DestinationType} destination{index})");
+            sb.AppendLine($"{indent}    return Map(source{index}, destination{index});");
+            sb.AppendLine();
+
+            index++;
+        }
     }
 
     /// <summary>
@@ -4044,6 +4703,21 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         string field = "_" + name;
         string type = $"global::System.Linq.Expressions.Expression<global::System.Func<{map.SourceType}, {map.DestinationType}>>";
 
+        // An `As` map's projection is the CONCRETE map's, with a cast on the end. There is no
+        // per-row decision here — the concrete type is fixed at compile time — so EF sees the
+        // same `new` it always did, and this is the one inheritance feature that projects.
+        if (map.AsConcrete is not null)
+        {
+            sb.AppendLine($"{indent}    /// <summary>Holds the redirected projection once it has been built.</summary>");
+            sb.AppendLine($"{indent}    private {type}? {field};");
+            sb.AppendLine();
+            sb.AppendLine($"{indent}    /// <summary>The {map.SourceName} to {map.DestinationName} map, which is the {ShortName(map.AsConcrete)} map cast.</summary>");
+            sb.AppendLine($"{indent}    private {type} {name} =>");
+            sb.AppendLine($"{indent}        {field} ??= global::ShiftMapper.MapCustomizations.Widen<{map.SourceType}, {map.AsConcrete}, {map.DestinationType}>(");
+            sb.AppendLine($"{indent}            {ProjectionMemberName(map.SourceType, map.AsConcrete)});");
+            return;
+        }
+
         // A ConvertUsing map's projection IS the developer's expression, handed to EF unchanged.
         // Nothing is composed into it because there is nothing to merge: the expression is the
         // whole map. That is what makes it the one map-level hook that projects.
@@ -4069,13 +4743,17 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         // instead of a sentence explaining which map cannot be projected and why.
         if (!map.IsProjectable)
         {
-            string cause = map.HasHooks
+            string cause = !map.IncludedDerived.IsEmpty
+                ? "dispatches on the source's runtime type through Include"
+                : map.HasHooks
                 ? $"runs {HookNames(map)} over its destination"
                 : map.ConstructsWithFactory
                     ? "builds its destination with ConstructUsing"
                     : $"assigns {string.Join(", ", map.ConditionedMembers)} behind a Condition";
 
-            string fix = map.HasHooks
+            string fix = !map.IncludedDerived.IsEmpty
+                ? $"Use Map instead, or project the derived type directly: OfType<{map.IncludedDerived[0].SourceName}>().ProjectTo<{map.IncludedDerived[0].DestinationName}>(mapper)."
+                : map.HasHooks
                 ? "Use Map instead, or move what the hook does into a ForMember, which projects."
                 : map.ConstructsWithFactory
                     ? $"Use Map instead, or give '{map.DestinationName}' a constructor ShiftMapper can match by name."
@@ -4752,7 +5430,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
     /// <summary>Strips the global:: prefix so a type reads nicely inside a message.</summary>
     private static string Readable(string fullyQualifiedType) =>
-        fullyQualifiedType.StartsWith("global::", StringComparison.Ordinal)
-            ? fullyQualifiedType.Substring("global::".Length)
-            : fullyQualifiedType;
+        // EVERY occurrence, not just the leading one. A closed generic carries the alias on its
+        // type arguments as well — global::PagedResult<global::Brand> — and leaving the inner one
+        // in turns a generated member name into ShiftMapperProjection_PagedResult_global__Brand_.
+        fullyQualifiedType.Replace("global::", string.Empty);
 }

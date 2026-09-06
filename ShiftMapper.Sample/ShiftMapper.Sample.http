@@ -554,6 +554,141 @@ Accept: text/plain
 GET {{HostAddress}}/api/invoices/lines/flat
 Accept: application/json
 
+### 1p. INCLUDE + INCLUDEBASE — one TPH table, and the two features it needs.
+#
+#     The rows behind this come from ONE table with a Discriminator column: two physical items,
+#     two digital ones. db.CatalogItems is an IQueryable<CatalogItem>, so the static type says
+#     nothing about which row is which — and that is the whole problem.
+#
+#     WITHOUT Include, every one of these would map to a bare CatalogItemDto and the weights and
+#     sizes would be dropped IN SILENCE. Nothing in the types is wrong; the map for CatalogItem
+#     ran, and it was correct as far as it could see.
+#
+#     Read "kinds" in the response: PhysicalItemDto, PhysicalItemDto, DigitalItemDto,
+#     DigitalItemDto. The generated map tests the runtime type first, per element:
+#
+#         if (source is PhysicalItem derived0) return MapToPhysicalItemDto(derived0);
+#         if (source is DigitalItem  derived1) return MapToDigitalItemDto(derived1);
+#
+#     THEN READ "sku" AND "kind", which are INCLUDEBASE rather than Include. Both are configured
+#     ONCE, on the base map:
+#
+#         CreateMap<CatalogItem, CatalogItemDto>()
+#             .ForMember(d => d.Sku,  opt => opt.MapFrom(s => s.Sku.ToUpper()))
+#             .ForMember(d => d.Kind, opt => opt.Ignore());
+#
+#         CreateMap<PhysicalItem, PhysicalItemDto>().IncludeBase<CatalogItem, CatalogItemDto>();
+#         CreateMap<DigitalItem,  DigitalItemDto>().IncludeBase<CatalogItem, CatalogItemDto>();
+#
+#     Every SKU comes back upper-cased and every "kind" is still "item", and neither derived map
+#     says a word about either. WHAT IS INHERITED IS THE CONFIGURATION, not the members — the
+#     members already matched by name, because PhysicalItem already IS a CatalogItem. What could
+#     not be shared before was everything said ABOUT them.
+GET {{HostAddress}}/api/catalog
+Accept: application/json
+
+### 1p2. THE REFUSAL, and it is deliberate. The map above dispatches on the runtime type, so it
+#      has no projection — which the build already said, as a warning, when you compiled:
+#
+#        warning SM0024: the map from 'CatalogItem' to 'CatalogItemDto' dispatches on the
+#                        source's runtime type through Include, so ProjectTo cannot use it;
+#                        Map is unaffected
+#
+#      A projection has ONE element type, fixed when the query is written. SQL returns rows of
+#      one shape; there is no per-row type test a provider could translate and no way to hand
+#      back a different DTO per row from a single SELECT.
+#
+#      So ShiftMapper generates a projection member that THROWS. The alternative would have been
+#      to quietly return bare CatalogItemDtos — the wrong answer wearing the right type, and
+#      exactly the divergence between Map and ProjectTo this library exists to prevent.
+#
+#      The message names what to write instead, and 1p3 is that.
+GET {{HostAddress}}/api/catalog/projected
+Accept: application/json
+
+### 1p3. WHAT TO WRITE INSTEAD — and it is not a workaround, it is the query you meant.
+#
+#          db.CatalogItems.OfType<PhysicalItem>().ProjectTo<PhysicalItemDto>(mapper)
+#
+#      OfType names the one shape, so the projection has an element type again. Still ONE round
+#      trip, and the code now says which shape it meant.
+GET {{HostAddress}}/api/catalog/physical
+Accept: application/json
+
+### 1p4. THE SQL BEHIND 1p3 — the request to read carefully, for two lines in it:
+#
+#        SELECT COALESCE(CONVERT(varchar(100), [c].[WeightKg]), '') AS [WeightKg],
+#               [c].[Id], [c].[Name], UPPER([c].[Sku]) AS [Sku]
+#        FROM [CatalogItems] AS [c]
+#        WHERE [c].[Discriminator] = N'PhysicalItem'
+#        ORDER BY [c].[Id]
+#
+#      WHERE [Discriminator] = N'PhysicalItem' is what OfType compiled to — one query, not a
+#      filter in memory.
+#
+#      UPPER([c].[Sku]) IS THE ONE TO DWELL ON. That expression was written on the BASE map, and
+#      everything you write is stored against the type pair you wrote it for — so it lives
+#      under CatalogItem → CatalogItemDto, and this projection is for PhysicalItem →
+#      PhysicalItemDto. Asking under its own pair would have found nothing.
+#
+#      Both backends therefore walk a LINEAGE to resolve it. Had only the in-memory path done so,
+#      Map would upper-case the SKU and ProjectTo would not — two answers that each look
+#      perfectly right on their own, which is the class of bug that survives review.
+GET {{HostAddress}}/api/catalog/physical?sql=true
+
+### 1p5. AS — an interface destination, and the contrast with Include that makes both worth
+#      having.
+#
+#          CreateMap<PhysicalItem, ICatalogLabel>().As<PhysicalItemDto>();
+#
+#      ICatalogLabel has no constructor, so this pair was SM0004 and no map at all. As names the
+#      type that stands in for it, and what comes out is a REDIRECTION rather than a second copy
+#      of the mapping — Map<ICatalogLabel> is one line calling MapToPhysicalItemDto. One place
+#      the mapping lives, one place to change it.
+#
+#      "runtimeType" in the response is PhysicalItemDto, declared as ICatalogLabel.
+GET {{HostAddress}}/api/catalog/labels
+Accept: application/json
+
+### 1p6. AND UNLIKE INCLUDE, AS PROJECTS. This is the distinction, and the reason both exist.
+#
+#      Nothing is decided per row here. The concrete type was fixed when the CreateMap was
+#      written, so the projection is the concrete map's own expression with a widening cast on
+#      the end:
+#
+#          MapCustomizations.Widen<PhysicalItem, PhysicalItemDto, ICatalogLabel>(...)
+#
+#      Compare this SQL with 1p4's. It is the same SELECT, discriminator and all — the database
+#      was never told anything changed.
+GET {{HostAddress}}/api/catalog/labels?sql=true
+
+### 1p7. OPEN GENERICS — one CreateMap, closed for every pair.
+#
+#      There is no CreateMap<PagedResult<PhysicalItem>, PagedResultDto<PhysicalItemDto>> anywhere
+#      in AppMapper. There is only this, once:
+#
+#          CreateMap(typeof(PagedResult<>), typeof(PagedResultDto<>));
+#
+#      The generator closed it over every pair the mapper already maps — sixteen of them in this
+#      sample. The alternative is that same line written once per DTO, until somebody adds a DTO
+#      and forgets.
+#
+#      The closed maps are ORDINARY in every respect: "items" went through the element pair's own
+#      map, so each one still carries its inherited upper-cased SKU, and "total" converted
+#      int -> string by the ordinary conversion table.
+GET {{HostAddress}}/api/catalog/paged
+Accept: application/json
+
+### 1p8. THE SECOND closed map from that SAME one line — over Brand, a pair declared hundreds of
+#      lines earlier with nothing whatever to do with the catalogue.
+#
+#      This is what "closed over every pair you already map" buys, and why the rule is that one
+#      rather than something wider. Closing over every closed type in the compilation would mean
+#      guessing which of a program's thousands of types somebody meant to wrap — and would
+#      change its answer when an unrelated using was added.
+GET {{HostAddress}}/api/catalog/paged-brands
+Accept: application/json
+
 ### 2. Invoices — THE MAP AS A DATABASE QUERY.
 #     db.Invoices.ProjectTo<InvoiceDto>(mapper), and again not one Include, yet the response
 #     is four levels deep: invoice -> lines -> product -> brand and stock.

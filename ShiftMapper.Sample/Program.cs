@@ -63,4 +63,7 @@ app.MapStockEndpoints();
 // Dictionaries, on a pair with no table behind it.
 app.MapSupplierFeedEndpoints();
 
+// Inheritance, polymorphism and open generics, over a table-per-hierarchy table.
+app.MapCatalogEndpoints();
+
 app.Run();

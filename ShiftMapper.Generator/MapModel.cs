@@ -43,8 +43,16 @@ internal sealed class MapModel
         bool hasAfterMap,
         ImmutableArray<string> deadConfiguration,
         ImmutableArray<FlattenedMember> flattenedMembers,
-        ImmutableArray<FlattenedMember> ambiguousFlattening)
+        ImmutableArray<FlattenedMember> ambiguousFlattening,
+        ImmutableArray<string> unresolvedBases,
+        ImmutableArray<DerivedPair> includedDerived,
+        string? asConcrete,
+        string? asConcreteRejected)
     {
+        AsConcreteRejected = asConcreteRejected;
+        UnresolvedBases = unresolvedBases;
+        IncludedDerived = includedDerived;
+        AsConcrete = asConcrete;
         FlattenedMembers = flattenedMembers;
         AmbiguousFlattening = ambiguousFlattening;
         ConvertsWithExpression = convertsWithExpression;
@@ -171,6 +179,27 @@ internal sealed class MapModel
     /// </summary>
     public ImmutableArray<FlattenedMember> AmbiguousFlattening { get; }
 
+    /// <summary>
+    /// <c>IncludeBase</c> calls naming a map this mapper does not declare — SM0022.
+    ///
+    /// Worth reporting louder than it looks: nothing else goes wrong. The derived map simply keeps
+    /// doing what it did before, so a base map that was renamed takes its configuration with it in
+    /// silence.
+    /// </summary>
+    public ImmutableArray<string> UnresolvedBases { get; }
+
+    /// <summary>Derived pairs this map dispatches to at run time — what <c>Include</c> declared.</summary>
+    public ImmutableArray<DerivedPair> IncludedDerived { get; }
+
+    /// <summary>
+    /// The concrete type an interface or abstract destination is built as — what <c>As</c>
+    /// declared, and the one thing that makes such a destination constructible at all.
+    /// </summary>
+    public string? AsConcrete { get; }
+
+    /// <summary>An <c>As</c> naming a type not assignable to the destination — SM0025.</summary>
+    public string? AsConcreteRejected { get; }
+
     /// <summary>Whether the map declared a <c>BeforeMap</c> hook.</summary>
     public bool HasBeforeMap { get; }
 
@@ -265,7 +294,19 @@ internal sealed class MapModel
     /// </summary>
     public bool IsProjectable =>
         ConvertsWithExpression
-        || (!ConstructsWithFactory && ConditionedMembers.Length == 0 && !HasHooks);
+        || AsConcrete is not null
+        || (!ConstructsWithFactory && ConditionedMembers.Length == 0 && !HasHooks
+            && IncludedDerived.IsEmpty);
+
+    /// <summary>
+    /// Whether the map is a REDIRECTION to another map rather than a mapping of its own — what
+    /// <c>As</c> produces.
+    ///
+    /// It has no members, no update overload and no projection template: everything is the
+    /// concrete map's, and this one only names it. That is the point rather than a limitation
+    /// — one place the mapping lives, and one place to change it.
+    /// </summary>
+    public bool RedirectsToConcrete => AsConcrete is not null;
 
     /// <summary>
     /// Whether anything at all can be assigned to the destination after it exists — which is
@@ -286,7 +327,8 @@ internal sealed class MapModel
     /// assigned once it exists.
     /// </summary>
     public bool CanUpdate =>
-        !IsDestinationValueType && HasAssignableMembers && !ConvertsWithExpression;
+        !IsDestinationValueType && HasAssignableMembers && !ConvertsWithExpression
+        && AsConcrete is null;
 
     private static bool AnySettable(ImmutableArray<CustomProperty> properties)
     {
@@ -391,7 +433,8 @@ internal sealed class MapModel
             nestedProperties, DestinationName, Location, IsReverse, AllowNullCollections,
             Constructor, ConstructionProblems, ConstructsWithFactory, ConditionedMembers,
             RefusedConditions, ConvertsWithExpression, HasBeforeMap, HasAfterMap, DeadConfiguration,
-            FlattenedMembers, AmbiguousFlattening);
+            FlattenedMembers, AmbiguousFlattening, UnresolvedBases, IncludedDerived, AsConcrete,
+            AsConcreteRejected);
 
     /// <summary>
     /// The same map with a constructor argument's nested value settled, produced by the resolve
@@ -408,5 +451,6 @@ internal sealed class MapModel
             NestedProperties, DestinationName, Location, IsReverse, AllowNullCollections,
             constructor, ConstructionProblems, ConstructsWithFactory, ConditionedMembers,
             RefusedConditions, ConvertsWithExpression, HasBeforeMap, HasAfterMap, DeadConfiguration,
-            FlattenedMembers, AmbiguousFlattening);
+            FlattenedMembers, AmbiguousFlattening, UnresolvedBases, IncludedDerived, AsConcrete,
+            AsConcreteRejected);
 }

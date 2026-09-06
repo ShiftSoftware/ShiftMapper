@@ -68,6 +68,40 @@ public class Catalog
     public CatalogOwner? Owner { get; set; }
 }
 
+/// <summary>The base of the <c>IncludeBase</c> family.</summary>
+public class AuditEntity
+{
+    public string Tag { get; set; } = string.Empty;
+
+    public string Secret { get; set; } = string.Empty;
+}
+
+/// <inheritdoc cref="AuditEntity"/>
+public class Widget : AuditEntity
+{
+    public string Name { get; set; } = string.Empty;
+}
+
+/// <summary>The base of the polymorphic family.</summary>
+public class Shape
+{
+    public string Name { get; set; } = string.Empty;
+}
+
+/// <inheritdoc cref="Shape"/>
+public class Circle : Shape
+{
+    public int Radius { get; set; }
+}
+
+/// <summary>The open generic wrapper's source side.</summary>
+public class Page<T>
+{
+    public List<T> Items { get; set; } = new();
+
+    public int Total { get; set; }
+}
+
 /// <summary>The far end of an optional relationship, reached only by flattening.</summary>
 public class CatalogOwner
 {

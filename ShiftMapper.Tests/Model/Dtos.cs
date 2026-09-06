@@ -98,6 +98,65 @@ public class CatalogSummaryDto
 }
 
 /// <summary>
+/// The BASE of a small inheritance family, and the point of <c>IncludeBase</c>: everything said
+/// here is said once and inherited by every DTO below it.
+/// </summary>
+public class AuditDto
+{
+    /// <summary>Filled by a <c>MapFrom</c> on the BASE map, and inherited.</summary>
+    public string Tag { get; set; } = string.Empty;
+
+    /// <summary>Ignored on the base map, and inherited — so no derived map fills it either.</summary>
+    public string Secret { get; set; } = "untouched";
+}
+
+/// <inheritdoc cref="AuditDto"/>
+public class WidgetDto : AuditDto
+{
+    public string Name { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// The polymorphic family. A <c>Shape</c> that is really a <c>Circle</c> maps to a
+/// <c>CircleDto</c> — which is what <c>Include</c> buys, and what is silently lost without it.
+/// </summary>
+public class ShapeDto
+{
+    public string Name { get; set; } = string.Empty;
+}
+
+/// <inheritdoc cref="ShapeDto"/>
+public class CircleDto : ShapeDto
+{
+    public int Radius { get; set; }
+}
+
+/// <summary>
+/// An INTERFACE destination, which has nothing to construct — so it is SM0004 until <c>As</c>
+/// names the concrete type that stands in for it.
+/// </summary>
+public interface IWidgetDto
+{
+    string Name { get; }
+}
+
+/// <summary>The concrete type <c>As</c> names. It is an ordinary map in every other respect.</summary>
+public class ConcreteWidgetDto : IWidgetDto
+{
+    public string Name { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// The OPEN GENERIC wrapper, closed by the generator for every pair the mapper already maps.
+/// </summary>
+public class PageDto<T>
+{
+    public List<T> Items { get; set; } = new();
+
+    public int Total { get; set; }
+}
+
+/// <summary>
 /// Built ENTIRELY by a <c>ConvertUsing</c> expression — the one map-level hook that projects.
 ///
 /// Nothing here is matched by name: <c>Label</c> has no counterpart on <c>Brand</c> and is never

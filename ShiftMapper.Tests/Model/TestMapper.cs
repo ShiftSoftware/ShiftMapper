@@ -58,6 +58,34 @@ public partial class TestMapper : ShiftMapperBase
         CreateMap<Stock, StockRequiredDto>()
             .ForMember(d => d.Summary, opt => opt.MapFrom(s => s.Name + ", " + s.City));
 
+        // ------------------------------------------------------------------
+        // INHERITANCE, POLYMORPHISM, OPEN GENERICS.
+        // ------------------------------------------------------------------
+        //
+        // INCLUDEBASE. Everything the base map says is said ONCE and inherited: the Tag MapFrom
+        // and the Secret Ignore both reach WidgetDto without being repeated. At run time the
+        // expression is still stored against the BASE pair, which is why the store keeps a lineage
+        // and both Map and ProjectTo walk it.
+        CreateMap<AuditEntity, AuditDto>()
+            .ForMember(d => d.Tag, opt => opt.MapFrom(s => "audit:" + s.Tag))
+            .ForMember(d => d.Secret, opt => opt.Ignore());
+
+        CreateMap<Widget, WidgetDto>().IncludeBase<AuditEntity, AuditDto>();
+
+        // INCLUDE. A Shape that is really a Circle maps to a CircleDto rather than losing
+        // everything a circle knows. In-memory only (SM0024): a projection has one element type.
+        CreateMap<Shape, ShapeDto>().Include<Circle, CircleDto>();
+        CreateMap<Circle, CircleDto>();
+
+        // AS. An interface has nothing to construct, so this names the type that stands in — and
+        // unlike Include it PROJECTS, because the concrete type is fixed at compile time.
+        CreateMap<Widget, ConcreteWidgetDto>();
+        CreateMap<Widget, IWidgetDto>().As<ConcreteWidgetDto>();
+
+        // OPEN GENERIC. One declaration, closed for every pair above: Page<Brand> -> PageDto<BrandDto>,
+        // Page<Widget> -> PageDto<WidgetDto>, and so on.
+        CreateMap(typeof(Page<>), typeof(PageDto<>));
+
         // CONVERTUSING — the expression IS the map, and the one map-level hook that projects.
         // No member is matched, so Label is never reported unmapped; and the tree is exactly what
         // a projection needs, so ProjectTo hands it to EF unchanged.

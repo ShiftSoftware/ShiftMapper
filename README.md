@@ -348,6 +348,97 @@ The rules, briefly:
   update overload**. It would return the object it was handed having done nothing, and a compile
   error at the call site is the better answer.
 
+### Inheritance, polymorphism and open generics
+
+A table-per-hierarchy table is one table, a discriminator column, and a base type you can query
+without knowing which row is which. Four things follow from that, and each has an answer.
+
+**`IncludeBase` — say it once.**
+
+```csharp
+CreateMap<CatalogItem, CatalogItemDto>()
+    .ForMember(d => d.Sku,  opt => opt.MapFrom(s => s.Sku.ToUpper()))
+    .ForMember(d => d.Kind, opt => opt.Ignore());
+
+CreateMap<PhysicalItem, PhysicalItemDto>().IncludeBase<CatalogItem, CatalogItemDto>();
+CreateMap<DigitalItem,  DigitalItemDto>().IncludeBase<CatalogItem, CatalogItemDto>();
+```
+
+What is inherited is the **configuration, not the members**. The members were never the problem:
+`PhysicalItem` already *is* a `CatalogItem`, so `Sku` already matched by name. What could not be
+shared was everything said *about* it, which had to be repeated on every map in the family. Own
+configuration always wins per member, so a derived map can disagree about one member without
+restating the rest; bases are merged nearest-first, transitively, and across every part of a
+partial mapper. An `IncludeBase` naming a pair with no `CreateMap` is **SM0022**.
+
+**And it projects.** Worth stating because it very nearly did not: everything you write is stored
+against the pair you wrote it for, so that `Sku` expression lives under
+`CatalogItem → CatalogItemDto` and a derived map asking under its own pair would find nothing.
+That is true in memory and equally true inside the projection, which collects by the same key. The
+customization store keeps a lineage and **both backends walk it** — otherwise `Map` would
+upper-case the SKU and `ProjectTo` would not, which is the kind of divergence that survives review
+because each answer looks right on its own.
+
+**`Include` — dispatch on what the value really is.**
+
+```csharp
+CreateMap<CatalogItem, CatalogItemDto>()
+    .Include<PhysicalItem, PhysicalItemDto>()
+    .Include<DigitalItem,  DigitalItemDto>();
+```
+
+Without it, a row that is really a `PhysicalItem` maps to a bare `CatalogItemDto` and the weight is
+dropped in silence — nothing in the types was wrong, the map for `CatalogItem` ran and was correct
+as far as it could see. With it, that map tests the runtime type first, per value and per collection
+element:
+
+```csharp
+if (source is PhysicalItem derived0) return MapToPhysicalItemDto(derived0);
+if (source is DigitalItem  derived1) return MapToDigitalItemDto(derived1);
+```
+
+**It costs the projection, and the build says so (SM0024).** A projection has one element type,
+fixed when the query is written; SQL returns rows of one shape, and there is no per-row type test a
+provider could translate. So the generated projection member *throws*, with a message naming the
+alternative, rather than quietly returning bare `CatalogItemDto`s — the wrong answer wearing the
+right type. The alternative is not a workaround but the query you meant:
+
+```csharp
+db.CatalogItems.OfType<PhysicalItem>().ProjectTo<PhysicalItemDto>(mapper)
+```
+
+Still one round trip, with `WHERE [Discriminator] = N'PhysicalItem'` doing the filtering.
+
+**`As` — an interface or abstract destination.**
+
+```csharp
+CreateMap<PhysicalItem, ICatalogLabel>().As<PhysicalItemDto>();
+```
+
+An interface has no constructor, so the pair was SM0004 and no map at all. `As` names the type that
+stands in for it, and what comes out is a **redirection** rather than a second copy of the mapping:
+`Map<ICatalogLabel>` is one line calling `MapToPhysicalItemDto`. A named type that is not assignable
+to the destination is **SM0025**.
+
+**And unlike `Include`, `As` projects** — the distinction is the reason both exist. Nothing is
+decided per row: the concrete type was fixed when the `CreateMap` was written, so the projection is
+the concrete map's own expression with a widening cast on the end, and the database sees the
+`SELECT` it always did.
+
+**Open generics — one declaration, closed per pair.**
+
+```csharp
+CreateMap(typeof(PagedResult<>), typeof(PagedResultDto<>));
+```
+
+Closed for **every pair the mapper already maps**, which is both the useful rule and the only
+decidable one — closing over every closed type in the compilation would mean guessing which of a
+program's thousands of types somebody meant to wrap, and would change its answer when an unrelated
+`using` was added. Constraints are checked, interface and abstract element destinations are skipped,
+and the closed maps are ordinary in every respect, projection included. One type parameter on each
+side: with two there is no single pairing to choose, only a combinatorial one, so it is refused
+(**SM0026**) rather than guessed at.
+
 ### `ConstructUsing`, for what convention cannot reach
 
 ```csharp
@@ -424,7 +515,7 @@ and think. Each is reported as SM0002 rather than skipped in silence.
 
 ## Diagnostics
 
-Twenty-one rules, `SM0001` to `SM0021`. Three stop the build; the rest describe something that
+Twenty-six rules, `SM0001` to `SM0026`. Three stop the build; the rest describe something that
 will not be mapped, or will be mapped in a way worth knowing about.
 
 | Id | Default | What it means |
@@ -450,6 +541,11 @@ will not be mapped, or will be mapped in a way worth knowing about.
 | SM0019 | Warning | `ConvertUsing` replaces the whole map, so other configuration does nothing |
 | SM0020 | Info | A destination property was filled by flattening (names the path) |
 | SM0021 | Warning | A destination property flattens more than one way, so none was taken |
+| SM0022 | Warning | `IncludeBase` names a pair with no `CreateMap` |
+| SM0023 | Warning | `Include` names a pair that does not derive from this one, or has no map |
+| SM0024 | Warning | The map dispatches through `Include`, so `ProjectTo` cannot use it |
+| SM0025 | Warning | `As` names a type that is not assignable to the destination |
+| SM0026 | Warning | An open generic `CreateMap` was not closed (needs one type parameter a side) |
 
 `SM0011` is an error because a null nested object in a response looks exactly like a null in the
 database. Two ways forward, both one line: declare the map, or `opt.Ignore()` the property.

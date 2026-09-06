@@ -148,6 +148,14 @@ public sealed class ShiftMapperAnalyzer : DiagnosticAnalyzer
             return;
         }
 
+        // SM0026 — open generic declarations that produced no map. Reported per PART, because
+        // that is where the declaration was written.
+        foreach (MapperPart part in ordered)
+        {
+            foreach (string problem in part.Model.OpenGenericProblems)
+                reporter.Report(DiagnosticDescriptors.OpenGenericNotClosed, part.Model.Location, problem);
+        }
+
         // Merging and resolving is what raises SM0011 and SM0012; what comes back is the graph
         // the generator will emit, which is what the rest of the messages are about.
         ReportSkippedProperties(
@@ -170,6 +178,15 @@ public sealed class ShiftMapperAnalyzer : DiagnosticAnalyzer
         public MapperClassModel Model { get; }
     }
 
+    /// <summary>The type's own name, for a message a developer reads.</summary>
+    private static string ShortName(string fullyQualified)
+    {
+        string readable = fullyQualified.Replace("global::", string.Empty);
+        int lastDot = readable.LastIndexOf('.');
+
+        return lastDot < 0 ? readable : readable.Substring(lastDot + 1);
+    }
+
     /// <summary>Human wording for <see cref="MapperSkipReason"/>, used in SM0005.</summary>
     private static string DescribeSkipReason(MapperSkipReason reason) => reason switch
     {
@@ -184,9 +201,81 @@ public sealed class ShiftMapperAnalyzer : DiagnosticAnalyzer
     /// </summary>
     private static void ReportSkippedProperties(DiagnosticReporter report, ImmutableArray<MapModel> maps)
     {
+        // Which pairs this mapper actually declares. Include and As both name another map, and
+        // whether it exists is only answerable once every part has been merged — which is here.
+        var declared = new HashSet<string>(maps.Select(map => map.Key), StringComparer.Ordinal);
+
         foreach (MapModel map in maps)
         {
             LocationInfo? location = map.Location;
+
+            // SM0022 — a base map that is not there. Nothing else goes wrong, which is exactly
+            // why it is worth saying.
+            foreach (string missing in map.UnresolvedBases)
+            {
+                report.Report(
+                    DiagnosticDescriptors.UnresolvedBaseMap,
+                    location,
+                    map.SourceName,
+                    map.DestinationName,
+                    missing.Replace("global::", string.Empty).Replace("->", "' to '"));
+            }
+
+            // SM0023 — an Include with nothing to dispatch to. Three ways to get here and the
+            // message names which one, because the fix differs.
+            foreach (DerivedPair derived in map.IncludedDerived)
+            {
+                string? reason =
+                    !derived.DerivesFromSource
+                        ? $"'{derived.SourceName}' does not derive from '{map.SourceName}'"
+                    : !derived.DerivesFromDestination
+                        ? $"'{derived.DestinationName}' does not derive from '{map.DestinationName}'"
+                    : !declared.Contains(derived.Key)
+                        ? $"there is no CreateMap<{derived.SourceName}, {derived.DestinationName}>()"
+                    : null;
+
+                if (reason is not null)
+                {
+                    report.Report(
+                        DiagnosticDescriptors.DerivedPairCannotDispatch,
+                        location,
+                        map.SourceName,
+                        map.DestinationName,
+                        derived.SourceName,
+                        derived.DestinationName,
+                        reason);
+                }
+            }
+
+            // SM0024 — the projection that dispatching costs.
+            if (!map.IncludedDerived.IsEmpty)
+            {
+                report.Report(
+                    DiagnosticDescriptors.IncludeIsNotProjectable,
+                    location,
+                    map.SourceName,
+                    map.DestinationName);
+            }
+
+            // SM0025 — an As that cannot stand in, either because the type does not fit or
+            // because the pair it names is not mapped.
+            string? asProblem =
+                map.AsConcreteRejected is not null
+                    ? $"it is not assignable to '{map.DestinationName}'"
+                : map.AsConcrete is not null && !declared.Contains(map.SourceType + "->" + map.AsConcrete)
+                    ? $"there is no CreateMap<{map.SourceName}, {ShortName(map.AsConcrete)}>()"
+                    : null;
+
+            if (asProblem is not null)
+            {
+                report.Report(
+                    DiagnosticDescriptors.ConcreteTypeCannotStandIn,
+                    location,
+                    map.SourceName,
+                    map.DestinationName,
+                    map.AsConcreteRejected ?? ShortName(map.AsConcrete!),
+                    asProblem);
+            }
 
             // The destination cannot be built, and there are three different things to say
             // about that. SM0013 and SM0014 can name the exact parameter or member and are worth

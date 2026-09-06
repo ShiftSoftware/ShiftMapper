@@ -328,6 +328,121 @@ public readonly struct MapExpression<TSource, TDestination>
     }
 
     /// <summary>
+    /// Takes over the <c>ForMember</c> configuration of a map between the BASE types, so a rule
+    /// about every entity is written once instead of on every map.
+    ///
+    /// <code>
+    /// // said once
+    /// CreateMap&lt;ShiftEntity, ShiftEntityViewDTO&gt;()
+    ///     .ForMember(d =&gt; d.ID,         opt =&gt; opt.MapFromSource(s =&gt; s.ID))
+    ///     .ForMember(d =&gt; d.CreateDate, opt =&gt; opt.Ignore());
+    ///
+    /// // and inherited by every map that wants it
+    /// CreateMap&lt;Brand, BrandDTO&gt;().IncludeBase&lt;ShiftEntity, ShiftEntityViewDTO&gt;();
+    /// CreateMap&lt;Stock, StockDTO&gt;().IncludeBase&lt;ShiftEntity, ShiftEntityViewDTO&gt;();
+    /// </code>
+    ///
+    /// <para><b>WHAT IS INHERITED is the CONFIGURATION, not the members.</b> The members were never
+    /// the problem: <c>Brand</c> derives from <c>ShiftEntity</c>, so it already carries the base's
+    /// properties and they already match by name. What could not be shared was everything said
+    /// ABOUT them — an <c>Ignore</c>, a <c>MapFrom</c>, a <c>MapFromSource</c>, a
+    /// <c>Condition</c> — which had to be repeated on every map. This is that, once.</para>
+    ///
+    /// <para><b>YOUR OWN CONFIGURATION WINS</b>, per member. A <c>ForMember</c> on this map
+    /// overrides whatever the base said about the same member, so inheriting a rule never takes an
+    /// exception away from you. Order does not matter: <c>IncludeBase</c> may be chained before or
+    /// after your own <c>ForMember</c> calls and means the same thing.</para>
+    ///
+    /// <para><b>IT FOLLOWS THROUGH.</b> If the base map itself includes a base, that one is
+    /// inherited too, and a loop is refused rather than followed.</para>
+    ///
+    /// <para><b>WHAT IS NOT INHERITED:</b> the map-level hooks. <c>BeforeMap</c>, <c>AfterMap</c>,
+    /// <c>ConstructUsing</c> and <c>ConvertUsing</c> stay on the map that declared them. They
+    /// replace or extend the whole map rather than describing one member, and inheriting one
+    /// silently would take a derived map's projection away for a reason written in another file.
+    /// Declare them where they apply.</para>
+    ///
+    /// <para>The base map has to exist somewhere in this mapper — any part of it, in any file.
+    /// If it does not, nothing is inherited and the build says so (SM0022).</para>
+    /// </summary>
+    /// <typeparam name="TSourceBase">The base map's source type.</typeparam>
+    /// <typeparam name="TDestinationBase">The base map's destination type.</typeparam>
+    public MapExpression<TSource, TDestination> IncludeBase<TSourceBase, TDestinationBase>()
+    {
+        // Unlike ReverseMap and ForMember, this one leaves a mark at RUNTIME as well. Everything
+        // the developer wrote is stored against the type pair it was written for, so a base map's
+        // MapFrom would be invisible to a derived map asking under its own pair — in memory and,
+        // just as importantly, inside Compose. Recording the link here is what makes both paths
+        // find the same expression.
+        _customizations?.RegisterInheritance(
+            typeof(TSource), typeof(TDestination), typeof(TSourceBase), typeof(TDestinationBase));
+
+        return this;
+    }
+
+    /// <summary>
+    /// Declares that a DERIVED pair exists, so mapping a base-typed value that is really the
+    /// derived type produces the derived destination.
+    ///
+    /// <code>
+    /// CreateMap&lt;Shape, ShapeDto&gt;()
+    ///     .Include&lt;Circle, CircleDto&gt;()
+    ///     .Include&lt;Square, SquareDto&gt;();
+    ///
+    /// Shape shape = new Circle();
+    /// ShapeDto dto = mapper.Map&lt;ShapeDto&gt;(shape);   // really a CircleDto
+    /// </code>
+    ///
+    /// Without this, a <c>Shape</c> that happens to be a <c>Circle</c> maps to a plain
+    /// <c>ShapeDto</c> and everything a circle knows is lost — silently, because nothing in the
+    /// types says it should have been otherwise.
+    ///
+    /// <para>The derived pair needs its own <c>CreateMap</c>, and <typeparamref name="TDerived"/>
+    /// must derive from this map's source with
+    /// <typeparamref name="TDerivedDestination"/> deriving from its destination. Both are checked
+    /// at build time (SM0023) rather than left to fail at run time.</para>
+    ///
+    /// <para><b>IT IS IN-MEMORY ONLY, and the build says so (SM0024).</b> A projection has ONE
+    /// element type, fixed when the query is written; there is no per-row type test in a member
+    /// initializer that EF could translate. So a map with <c>Include</c> has no projection, and
+    /// asking throws a message naming it. Project the derived type directly instead —
+    /// <c>db.Shapes.OfType&lt;Circle&gt;().ProjectTo&lt;CircleDto&gt;(mapper)</c> — which is one
+    /// query and says which shape you meant.</para>
+    /// </summary>
+    /// <typeparam name="TDerived">A type deriving from <typeparamref name="TSource"/>.</typeparam>
+    /// <typeparam name="TDerivedDestination">
+    /// Its destination, which must derive from <typeparamref name="TDestination"/>.
+    /// </typeparam>
+    public MapExpression<TSource, TDestination> Include<TDerived, TDerivedDestination>() => this;
+
+    /// <summary>
+    /// Names the CONCRETE type to build when this map's destination is an interface or an abstract
+    /// class.
+    ///
+    /// <code>
+    /// CreateMap&lt;Brand, IBrandDto&gt;().As&lt;BrandDto&gt;();
+    ///
+    /// IBrandDto dto = mapper.Map&lt;IBrandDto&gt;(brand);   // really a BrandDto
+    /// </code>
+    ///
+    /// An interface has nothing to construct, so without this such a destination is SM0004 and
+    /// gets no create method at all. This says which type stands in for it, and the map then
+    /// delegates outright to that pair's own map — so there is exactly one place the mapping
+    /// lives, and this one is a redirection rather than a second copy of it.
+    ///
+    /// <para><typeparamref name="TConcrete"/> must be assignable to
+    /// <typeparamref name="TDestination"/> and needs its own <c>CreateMap</c>. Both are checked at
+    /// build time (SM0025).</para>
+    ///
+    /// <para><b>IT PROJECTS</b>, unlike <c>Include</c>, and for a reason worth keeping straight:
+    /// there is no per-row decision here. The concrete type is fixed at compile time, so the
+    /// projection is the concrete map's own expression with a cast on the end, and EF sees one
+    /// <c>new</c> exactly as it always did.</para>
+    /// </summary>
+    /// <typeparam name="TConcrete">The type to build. Must be assignable to the destination.</typeparam>
+    public MapExpression<TSource, TDestination> As<TConcrete>() => this;
+
+    /// <summary>
     /// Says one thing about EVERY member of this map, instead of repeating it on each.
     ///
     /// <code>

@@ -142,4 +142,39 @@ public abstract class ShiftMapperBase
     protected virtual void ConfigureDefaults(MapOptions options)
     {
     }
+
+    /// <summary>
+    /// Declares an OPEN GENERIC map {D} one written once for <c>PagedResult&lt;&gt;</c> and closed
+    /// by the generator for every element pair you already map.
+    ///
+    /// <code>
+    /// CreateMap&lt;Brand, BrandDto&gt;();
+    /// CreateMap&lt;Stock, StockDto&gt;();
+    ///
+    /// CreateMap(typeof(PagedResult&lt;&gt;), typeof(PagedResultDto&lt;&gt;));
+    /// // gives you PagedResult&lt;Brand&gt; -&gt; PagedResultDto&lt;BrandDto&gt;
+    /// //       and PagedResult&lt;Stock&gt; -&gt; PagedResultDto&lt;StockDto&gt;
+    /// </code>
+    ///
+    /// <para><b>WHICH PAIRS IT CLOSES.</b> One per map you already declared: for every
+    /// <c>CreateMap&lt;A, B&gt;</c>, the generator emits <c>Wrapper&lt;A&gt; -&gt; WrapperDto&lt;B&gt;</c>
+    /// if both types can be constructed that way. That rule is the useful one and the only one
+    /// that is decidable {D} a wrapper is closed over the things you map, and nothing else. The
+    /// closed maps are ordinary maps in every other respect, projection included.</para>
+    ///
+    /// <para>ONE TYPE PARAMETER EACH, on both sides. Anything else is reported (SM0026) rather
+    /// than guessed at: with two parameters there is no single pairing to choose, only a
+    /// combinatorial one nobody asked for.</para>
+    ///
+    /// <para>Like the generic <c>CreateMap</c>, this does NOTHING at run time {D} the generator
+    /// reads the two <c>typeof</c> expressions at compile time. It takes <c>Type</c> rather than
+    /// type parameters because C# has no way to write an unbound generic as a type argument.</para>
+    /// </summary>
+    /// <param name="source">An unbound generic type, e.g. <c>typeof(PagedResult&lt;&gt;)</c>.</param>
+    /// <param name="destination">The matching unbound generic destination.</param>
+    protected void CreateMap(Type source, Type destination)
+    {
+        _ = source;
+        _ = destination;
+    }
 }

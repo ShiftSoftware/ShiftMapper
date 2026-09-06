@@ -63,6 +63,22 @@ public sealed class MapCustomizations
     private readonly Dictionary<CustomizationKey, Delegate> _conditions = new();
 
     /// <summary>
+    /// Which map each map takes its inherited configuration from — what <c>IncludeBase</c>
+    /// records, in the order it was written.
+    ///
+    /// <para><b>WHY THIS HAS TO EXIST AT RUNTIME</b> and not only in the generator. Everything the
+    /// developer wrote is stored against the type pair it was written for: a <c>MapFrom</c> on
+    /// <c>ShiftEntity → ShiftEntityViewDTO</c> lives under THAT key. A derived map asking for it
+    /// under <c>Brand → BrandDTO</c> would find nothing — in memory AND in the projection,
+    /// where <c>Compose</c> collects by the same key. So the lookups walk this chain, and
+    /// the answer is the same on both paths rather than merely similar.
+    /// </para>
+    ///
+    /// Written only from the mapper's CONSTRUCTOR, like the two dictionaries above it.
+    /// </summary>
+    private readonly Dictionary<(Type Source, Type Destination), List<(Type Source, Type Destination)>> _inherited = new();
+
+    /// <summary>
     /// Compiled copies of the trees, kept for the life of the PROCESS and keyed by the mapper's
     /// TYPE rather than by the instance that registered them.
     ///
@@ -245,6 +261,34 @@ public sealed class MapCustomizations
         return (Expression<Func<TSource, TDestination>>)converter;
     }
 
+    /// <summary>
+    /// Re-types a projection so it produces a BASE destination — what an <c>As</c> map's
+    /// projection is, and the whole of it.
+    ///
+    /// <code>
+    /// // Brand -> BrandDto, presented as Brand -> IBrandDto
+    /// Widen&lt;Brand, BrandDto, IBrandDto&gt;(concreteProjection)
+    /// </code>
+    ///
+    /// The BODY is untouched: EF still sees the same <c>new BrandDto { ... }</c> and reads the same
+    /// columns. Only the lambda's declared return type changes, with a widening
+    /// <see cref="Expression.Convert(Expression, Type)"/> that every provider treats as a no-op
+    /// because it is an up-cast to a type the value already is.
+    ///
+    /// That is why <c>As</c> projects where <c>Include</c> cannot: there is no decision here. The
+    /// concrete type was fixed when the map was declared, not when the row arrived.
+    /// </summary>
+    public static Expression<Func<TSource, TDestination>> Widen<TSource, TConcrete, TDestination>(
+        Expression<Func<TSource, TConcrete>> concrete)
+        where TConcrete : TDestination
+    {
+        if (concrete is null)
+            throw new ArgumentNullException(nameof(concrete));
+
+        return Expression.Lambda<Func<TSource, TDestination>>(
+            Expression.Convert(concrete.Body, typeof(TDestination)), concrete.Parameters);
+    }
+
     /// <summary>Records a <c>BeforeMap</c> or <c>AfterMap</c> hook.</summary>
     internal void RegisterHook(Type source, Type destination, string member, Delegate hook) =>
         _conditions[new CustomizationKey(source, destination, member)] = hook;
@@ -335,6 +379,15 @@ public sealed class MapCustomizations
         if (_conditions.TryGetValue(new CustomizationKey(typeof(TSource), typeof(TDestination), member), out Delegate? predicate))
             return ((Func<TSource, TDestination, TProperty, bool>)predicate)(source, destination, candidate);
 
+        // A base map's condition, taken over by IncludeBase. Its delegate is typed in the base
+        // pair, and both of its object parameters are contravariant, so it accepts the derived
+        // values unchanged.
+        foreach ((Type Source, Type Destination) ancestor in Lineage(typeof(TSource), typeof(TDestination)))
+        {
+            if (_conditions.TryGetValue(new CustomizationKey(ancestor.Source, ancestor.Destination, member), out Delegate? inheritedPredicate))
+                return ((Func<TSource, TDestination, TProperty, bool>)inheritedPredicate)(source, destination, candidate);
+        }
+
         // A ForAllMembers condition, which is stored once under a wildcard rather than copied onto
         // every member. It is typed in OBJECT because it has to serve members of every type, so the
         // value is boxed on the way in — the one cost of saying a rule once instead of per member.
@@ -342,6 +395,70 @@ public sealed class MapCustomizations
             return ((Func<TSource, TDestination, object?, bool>)all)(source, destination, candidate);
 
         return true;
+    }
+
+    /// <summary>
+    /// Records that one map takes its member configuration from another. Internal for the same
+    /// reason as <see cref="Register"/>: the only supported way here is
+    /// <see cref="MapExpression{TSource, TDestination}.IncludeBase{TSourceBase, TDestinationBase}"/>.
+    /// </summary>
+    internal void RegisterInheritance(Type source, Type destination, Type baseSource, Type baseDestination)
+    {
+        (Type, Type) key = (source, destination);
+
+        if (!_inherited.TryGetValue(key, out List<(Type, Type)>? bases))
+            _inherited[key] = bases = new List<(Type, Type)>();
+
+        if (!bases.Contains((baseSource, baseDestination)))
+            bases.Add((baseSource, baseDestination));
+    }
+
+    /// <summary>
+    /// One member's expression taken from a map this one INHERITS from, or null when no ancestor
+    /// configured it either.
+    ///
+    /// The key travels with it, because the compile cache is keyed on where the tree was DECLARED:
+    /// two derived maps inheriting the same base member must share one compiled delegate rather
+    /// than compiling the base's expression once each.
+    /// </summary>
+    private (CustomizationKey Key, LambdaExpression Expression)? Inherited(Type source, Type destination, string member)
+    {
+        foreach ((Type Source, Type Destination) ancestor in Lineage(source, destination))
+        {
+            CustomizationKey key = new(ancestor.Source, ancestor.Destination, member);
+
+            if (_values.TryGetValue(key, out LambdaExpression? expression))
+                return (key, expression);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The map itself and then every map it inherits from, nearest first, following through where
+    /// a base map has a base of its own.
+    ///
+    /// Nearest first is what makes "your own configuration wins" true: the first entry holding a
+    /// member is the one used. A loop is walked once and dropped rather than followed, so a
+    /// mapper that includes itself in a circle still starts up.
+    /// </summary>
+    private List<(Type Source, Type Destination)> Lineage(Type source, Type destination)
+    {
+        var lineage = new List<(Type Source, Type Destination)> { (source, destination) };
+
+        for (int i = 0; i < lineage.Count && i < 32; i++)
+        {
+            if (!_inherited.TryGetValue(lineage[i], out List<(Type, Type)>? bases))
+                continue;
+
+            foreach ((Type, Type) next in bases)
+            {
+                if (!lineage.Contains(next))
+                    lineage.Add(next);
+            }
+        }
+
+        return lineage;
     }
 
     /// <summary>
@@ -381,10 +498,22 @@ public sealed class MapCustomizations
 
         if (!_values.TryGetValue(key, out LambdaExpression? expression))
         {
-            throw new InvalidOperationException(
-                $"ShiftMapper: no custom mapping was registered for '{typeof(TDestination).Name}.{member}', " +
-                $"but the generated code expects one. Rebuild the project — this normally means the " +
-                $"generated mapper is out of date with the CreateMap calls in your constructor.");
+            // Not this map's own — so it may be a base map's, taken over by IncludeBase. The
+            // delegate that comes back is typed in the BASE source, and handing it a derived value
+            // is exactly what Func's contravariance is for, so the cast below is a reference
+            // conversion rather than a hope.
+            if (Inherited(typeof(TSource), typeof(TDestination), member) is { } fromBase)
+            {
+                key = fromBase.Key;
+                expression = fromBase.Expression;
+            }
+            else
+            {
+                throw new InvalidOperationException(
+                    $"ShiftMapper: no custom mapping was registered for '{typeof(TDestination).Name}.{member}', " +
+                    $"but the generated code expects one. Rebuild the project — this normally means the " +
+                    $"generated mapper is out of date with the CreateMap calls in your constructor.");
+            }
         }
 
         SharedKey shared = new(_owner, key);
@@ -577,12 +706,28 @@ public sealed class MapCustomizations
         // The ConstructUsing factory lives in the same dictionary under a name no property can
         // have. It is not a member to bind, so it is filtered out here rather than tripping over
         // MemberNamed below.
-        List<KeyValuePair<CustomizationKey, LambdaExpression>> applicable = _values
-            .Where(entry => entry.Key.Source == typeof(TSource)
-                         && entry.Key.Destination == typeof(TDestination)
-                         && entry.Key.Member != ConstructorMember
-                         && entry.Key.Member != ConverterMember)
-            .ToList();
+        // THIS MAP'S OWN CUSTOMIZATIONS, then any it inherited. Nearest first, and a member is
+        // taken from the first map that has one — which is what makes "your own configuration
+        // wins" mean the same thing in a projection as it does in memory.
+        var applicable = new List<KeyValuePair<CustomizationKey, LambdaExpression>>();
+        var claimed = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach ((Type Source, Type Destination) ancestor in Lineage(typeof(TSource), typeof(TDestination)))
+        {
+            foreach (KeyValuePair<CustomizationKey, LambdaExpression> entry in _values)
+            {
+                if (entry.Key.Source != ancestor.Source
+                    || entry.Key.Destination != ancestor.Destination
+                    || entry.Key.Member == ConstructorMember
+                    || entry.Key.Member == ConverterMember)
+                {
+                    continue;
+                }
+
+                if (claimed.Add(entry.Key.Member))
+                    applicable.Add(entry);
+            }
+        }
 
         if (applicable.Count == 0 && nested.Length == 0 && constructorArguments.Length == 0)
             return conventions;

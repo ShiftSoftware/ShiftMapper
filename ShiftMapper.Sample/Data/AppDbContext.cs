@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using ShiftMapper.Sample.Entities;
 
 namespace ShiftMapper.Sample.Data;
@@ -18,6 +18,13 @@ public class AppDbContext : DbContext
     public DbSet<Product> Products => Set<Product>();
     public DbSet<Invoice> Invoices => Set<Invoice>();
     public DbSet<InvoiceLine> InvoiceLines => Set<InvoiceLine>();
+
+    /// <summary>
+    /// The TABLE-PER-HIERARCHY set — physical and digital items share one table and are told apart
+    /// by a Discriminator column. Querying it gives you an IQueryable&lt;CatalogItem&gt; whose rows
+    /// are really derived types, which is the situation Include and OfType are both answers to.
+    /// </summary>
+    public DbSet<CatalogItem> CatalogItems => Set<CatalogItem>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -77,6 +84,17 @@ public class AppDbContext : DbContext
                 .HasForeignKey(x => x.ProductId)
                 .OnDelete(DeleteBehavior.Restrict);
         });
+
+        // TPH. EF needs no instruction beyond discovering the derived types — it adds the
+        // Discriminator column itself — but the lengths are worth setting like any other.
+        modelBuilder.Entity<CatalogItem>(c =>
+        {
+            c.Property(x => x.Sku).HasMaxLength(50).IsRequired();
+            c.Property(x => x.Name).HasMaxLength(150).IsRequired();
+        });
+
+        modelBuilder.Entity<PhysicalItem>()
+            .Property(x => x.WeightKg).HasColumnType("decimal(18,3)");
 
         // Insert the demo rows (brands, stocks, products, a few invoices).
         SeedData.Apply(modelBuilder);
