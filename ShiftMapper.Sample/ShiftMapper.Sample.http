@@ -757,6 +757,47 @@ Accept: application/json
 GET {{HostAddress}}/api/catalog/paged-brands
 Accept: application/json
 
+### 1q. PROFILES — the same request as 1p, and nothing about it changed.
+#
+#      That is the point. Every catalogue map moved out of AppMapper's constructor into
+#      Mapping/CatalogProfile.cs, added with one line:
+#
+#          AddProfile<CatalogProfile>();
+#
+#      AppMapper's constructor was 638 lines. A profile is a place to WRITE declarations, not a
+#      second mapper: these are still AppMapper's maps, and there is no CatalogProfile.Map to
+#      call. The response below is byte-for-byte what request 1p returned before the split.
+#
+#      Note what crossed the boundary without being asked to. The open generic at the foot of
+#      CatalogProfile closes over Brand → BrandDto, declared in AppMapper itself
+#      (/api/catalog/paged-brands still works), and the IncludeBase chain resolves across both
+#      files. A profile is a place to write, not a wall.
+GET {{HostAddress}}/api/catalog
+Accept: application/json
+
+### 1q2. A PROFILE WITH A DEPENDENCY — the half that needed designing rather than moving text.
+#
+#      Mapping/InvoiceLabelProfile.cs takes IInvoiceNumbering:
+#
+#          public InvoiceLabelProfile(IInvoiceNumbering numbering) =>
+#              CreateMap<Invoice, InvoiceLabelDto>()
+#                  .ConstructUsing(s => new InvoiceLabelDto(numbering.Prefix + s.Number));
+#
+#      It CANNOT be built while AppMapper's constructor runs: a mapper's Services is assigned by
+#      AddShiftMapper AFTER the constructor returns, because the object has to exist before
+#      anything can be set on it. So AddProfile only records the type, and profiles are built the
+#      first time something is actually mapped — by which point DI is in place.
+#
+#      The "IQ/" in the label below is that having worked: the prefix came from a service, through
+#      a profile, into a map declared in a different file from the mapper that owns it.
+#
+#      One consequence worth knowing: a profile taking dependencies makes the WHOLE mapper
+#      DI-only, because all profiles are built together and one that cannot be built fails the
+#      first map. Skipping it would leave its members quietly unfilled, which is the divergence
+#      this library exists to prevent — so it throws, naming the profile and what to register.
+GET {{HostAddress}}/api/invoices/1/label
+Accept: application/json
+
 ### 2. Invoices — THE MAP AS A DATABASE QUERY.
 #     db.Invoices.ProjectTo<InvoiceDto>(mapper), and again not one Include, yet the response
 #     is four levels deep: invoice -> lines -> product -> brand and stock.

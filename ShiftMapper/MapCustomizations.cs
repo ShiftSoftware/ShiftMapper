@@ -123,6 +123,55 @@ public sealed class MapCustomizations
     internal MapCustomizations(Type owner) => _owner = owner;
 
     /// <summary>
+    /// Folds a PROFILE's registrations into this store.
+    ///
+    /// <para>A profile builds its own <see cref="MapCustomizations"/> while its constructor runs —
+    /// it has to, because <c>CreateMap</c> needs somewhere to put a <c>MapFrom</c> tree before
+    /// anyone knows which mapper will use it. This is where those trees join the mapper's own, and
+    /// after it the profile object has no further part to play.</para>
+    ///
+    /// <para><b>WHAT IS ALREADY HERE WINS</b>, and that is what makes the runtime agree with the
+    /// generator. The mapper's own constructor has already run, so a pair declared both on the
+    /// mapper and in a profile keeps the mapper's version — the same precedence the generator
+    /// applies when it reads the two declarations, and the reason it is safe for the build to
+    /// report the clash as a warning rather than an error.</para>
+    ///
+    /// <para>The owner is deliberately NOT copied. Compiled delegates are shared per mapper TYPE,
+    /// and a tree that arrived from a profile is still, as far as reuse goes, part of the mapper
+    /// that included it.</para>
+    /// </summary>
+    internal void MergeFrom(MapCustomizations profile)
+    {
+        foreach (KeyValuePair<CustomizationKey, LambdaExpression> entry in profile._values)
+        {
+            if (!_values.ContainsKey(entry.Key))
+                _values[entry.Key] = entry.Value;
+        }
+
+        foreach (KeyValuePair<CustomizationKey, Delegate> entry in profile._conditions)
+        {
+            if (!_conditions.ContainsKey(entry.Key))
+                _conditions[entry.Key] = entry.Value;
+        }
+
+        foreach (KeyValuePair<(Type Source, Type Destination), List<(Type Source, Type Destination)>> entry
+                 in profile._inherited)
+        {
+            // Lineages UNION rather than overwrite. A base declared in a profile and another
+            // declared on the mapper are both real, and dropping either would leave an inherited
+            // member resolving to nothing on one of the two backends.
+            if (!_inherited.TryGetValue(entry.Key, out List<(Type, Type)>? bases))
+                _inherited[entry.Key] = bases = new List<(Type, Type)>();
+
+            foreach ((Type, Type) baseKey in entry.Value)
+            {
+                if (!bases.Contains(baseKey))
+                    bases.Add(baseKey);
+            }
+        }
+    }
+
+    /// <summary>
     /// Records the expression a <c>MapFrom</c> call supplied. Internal because the only
     /// supported way to get here is through
     /// <see cref="MemberOptions{TSource, TDestination, TProperty}.MapFrom"/>.

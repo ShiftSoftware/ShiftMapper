@@ -1,4 +1,7 @@
-﻿namespace ShiftMapper;
+﻿using System;
+using System.Collections.Generic;
+
+namespace ShiftMapper;
 
 /// <summary>
 /// Base class for a mapper.
@@ -82,7 +85,31 @@ public abstract class ShiftMapperBase
     /// Protected because the generated half of your mapper is the only thing that should touch
     /// it; that code lives in the same partial class, so protected is enough.
     /// </summary>
-    protected MapCustomizations Customizations { get; }
+    protected MapCustomizations Customizations
+    {
+        get
+        {
+            EnsureProfiles();
+            return _customizations;
+        }
+    }
+
+    /// <summary>
+    /// The same store, reached WITHOUT materialising profiles.
+    ///
+    /// <para>The distinction is the whole of the profile timing problem. <c>CreateMap</c> runs
+    /// inside your constructor and must not trigger profile construction, because a profile may
+    /// need services and <see cref="Services"/> is not assigned until after your constructor
+    /// returns. The generated code, which reads <see cref="Customizations"/>, only ever runs when
+    /// something is actually mapped — by which time everything is in place.</para>
+    /// </summary>
+    private readonly MapCustomizations _customizations;
+
+    /// <summary>The profile types <see cref="AddProfile{TProfile}"/> recorded, in order.</summary>
+    private List<Type>? _profileTypes;
+
+    /// <summary>Set once the profiles have been constructed and folded in.</summary>
+    private bool _profilesMaterialised;
 
     /// <summary>
     /// Hands the customization store the mapper CLASS it belongs to, which is what lets a
@@ -90,7 +117,99 @@ public abstract class ShiftMapperBase
     /// being compiled again per request. <c>GetType()</c> is the runtime type, so a mapper that
     /// derives from another gets its own entries rather than sharing its base's.
     /// </summary>
-    protected ShiftMapperBase() => Customizations = new MapCustomizations(GetType());
+    protected ShiftMapperBase() => _customizations = new MapCustomizations(GetType());
+
+    /// <summary>
+    /// Declares that this mapper also uses the maps written in a
+    /// <see cref="ShiftMapperProfile"/>. Call it from your constructor, like <c>CreateMap</c>.
+    ///
+    /// <code>
+    /// public partial class AppMapper : ShiftMapperBase
+    /// {
+    ///     public AppMapper()
+    ///     {
+    ///         AddProfile&lt;CatalogProfile&gt;();
+    ///         AddProfile&lt;InvoiceProfile&gt;();
+    ///     }
+    /// }
+    /// </code>
+    ///
+    /// <para>Nothing about the generated code changes. The profile's maps become THIS mapper's
+    /// maps — <c>mapper.Map&lt;BrandDto&gt;(brand)</c> and <c>ProjectTo</c> work exactly as if the
+    /// <c>CreateMap</c> had been written here. A profile is a place to write declarations, not a
+    /// second mapper, and it never gets Map methods of its own.</para>
+    ///
+    /// <para>UNLIKE the rest of the declaration API, this one does something at run time as well
+    /// as at compile time. The generator reads it to find the maps; the call itself records the
+    /// type so the profile can be CONSTRUCTED later — which is what puts its <c>MapFrom</c> trees
+    /// where the generated code looks for them.</para>
+    ///
+    /// <para>"Later" rather than "now" is deliberate: a profile may take constructor dependencies,
+    /// and this mapper's <see cref="Services"/> is not assigned until after its own constructor
+    /// returns. So profiles are built on first use — through DI when the mapper came from DI, and
+    /// through the parameterless constructor otherwise.</para>
+    ///
+    /// <para>A pair declared BOTH here and in a profile keeps the version written here, and the
+    /// build reports the clash (SM0027) rather than leaving you to find out which won.</para>
+    /// </summary>
+    protected void AddProfile<TProfile>() where TProfile : ShiftMapperProfile
+    {
+        (_profileTypes ??= new List<Type>()).Add(typeof(TProfile));
+
+        // A profile added after something has already been mapped would otherwise be ignored in
+        // silence. It cannot happen from a constructor, which is the only supported place, but
+        // this makes the unsupported one loud instead of subtle.
+        _profilesMaterialised = false;
+    }
+
+    /// <summary>
+    /// Builds each profile once and folds its registrations into this mapper's store.
+    ///
+    /// <para>Profiles are resolved from <see cref="Services"/> when there is one, so a profile can
+    /// take the same constructor dependencies a mapper can. When the mapper was built by hand
+    /// rather than by DI there is no provider to ask, and a parameterless profile still works —
+    /// which keeps a plain <c>new AppMapper()</c> usable in a test.</para>
+    /// </summary>
+    private void EnsureProfiles()
+    {
+        if (_profilesMaterialised)
+            return;
+
+        // Set FIRST. A profile constructor that reached back into this mapper would otherwise
+        // re-enter here and build the same profiles again, forever.
+        _profilesMaterialised = true;
+
+        if (_profileTypes is null)
+            return;
+
+        foreach (Type profileType in _profileTypes)
+            _customizations.MergeFrom(CreateProfile(profileType).Customizations);
+    }
+
+    private ShiftMapperProfile CreateProfile(Type profileType)
+    {
+        object? profile = _services?.GetService(profileType);
+
+        if (profile is null)
+        {
+            try
+            {
+                profile = Activator.CreateInstance(profileType);
+            }
+            catch (MissingMethodException error)
+            {
+                throw new InvalidOperationException(
+                    $"ShiftMapper: the profile '{profileType.Name}' takes constructor arguments, so " +
+                    $"it has to come from DI, but '{GetType().Name}' was not resolved from a service " +
+                    $"provider. Register the profile with services.AddTransient<{profileType.Name}>() " +
+                    "and resolve the mapper through AddShiftMapper, or give the profile a " +
+                    "parameterless constructor.",
+                    error);
+            }
+        }
+
+        return (ShiftMapperProfile)profile!;
+    }
 
     /// <summary>
     /// Declares that you want a map from <typeparamref name="TSource"/> to
@@ -120,7 +239,7 @@ public abstract class ShiftMapperBase
     /// </code>
     /// </param>
     protected MapExpression<TSource, TDestination> CreateMap<TSource, TDestination>(
-        Action<MapOptions>? configure = null) => new(Customizations);
+        Action<MapOptions>? configure = null) => new(_customizations);
 
     /// <summary>
     /// Sets the defaults every map in THIS mapper starts from. Override it when a whole

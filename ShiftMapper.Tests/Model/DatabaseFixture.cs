@@ -29,6 +29,12 @@ public sealed class DatabaseFixture : IDisposable
         var services = new ServiceCollection();
         services.AddSingleton<IInvoiceNumbering, InvoiceNumbering>();
 
+        // A profile with a dependency is resolved like any other service. One without a dependency
+        // needs no registration at all — GadgetProfile is deliberately left unregistered to prove
+        // that fallback works.
+        services.AddTransient<NumberedProfile>();
+        services.AddShiftMapper<ProfileMapper>();
+
         // Registered exactly as an application would, so the tests exercise the real path:
         // constructor injection, plus the Services property AddShiftMapper fills in.
         services.AddShiftMapper<TestMapper>();
@@ -42,6 +48,9 @@ public sealed class DatabaseFixture : IDisposable
 
     /// <summary>A mapper resolved from DI, the way application code gets one.</summary>
     public TestMapper Mapper => _services.GetRequiredService<TestMapper>();
+
+    /// <summary>The mapper carrying the profile that needs DI.</summary>
+    public ProfileMapper ProfileMapper => _services.GetRequiredService<ProfileMapper>();
 
     public IServiceProvider Services => _services;
 

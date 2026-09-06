@@ -32,3 +32,6 @@ SM0023 | ShiftMapper | Warning | Include cannot dispatch to the derived pair
 SM0024 | ShiftMapper | Warning | Map cannot be projected because it dispatches on the runtime type
 SM0025 | ShiftMapper | Warning | As names a type that cannot stand in for the destination
 SM0026 | ShiftMapper | Warning | Open generic map was not closed
+SM0027 | ShiftMapper | Warning | A map is declared both in a profile and outside it
+SM0028 | ShiftMapper | Warning | A profile in a referenced assembly cannot be read
+SM0029 | ShiftMapper | Warning | ConfigureDefaults on a profile has no effect

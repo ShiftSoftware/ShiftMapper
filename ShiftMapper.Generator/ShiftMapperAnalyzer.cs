@@ -156,6 +156,30 @@ public sealed class ShiftMapperAnalyzer : DiagnosticAnalyzer
                 reporter.Report(DiagnosticDescriptors.OpenGenericNotClosed, part.Model.Location, problem);
         }
 
+        // SM0027 / SM0028 / SM0029 — the profile problems, each carrying the id that reports it.
+        // One list rather than three keeps the model from growing a limb per diagnostic.
+        foreach (MapperPart part in ordered)
+        {
+            foreach (string problem in part.Model.ProfileProblems)
+            {
+                int split = problem.IndexOf('|');
+
+                if (split < 0)
+                    continue;
+
+                DiagnosticDescriptor? descriptor = problem.Substring(0, split) switch
+                {
+                    "SM0027" => DiagnosticDescriptors.ProfileMapDeclaredTwice,
+                    "SM0028" => DiagnosticDescriptors.ProfileNotInSource,
+                    "SM0029" => DiagnosticDescriptors.ProfileDefaultsIgnored,
+                    _ => null,
+                };
+
+                if (descriptor is not null)
+                    reporter.Report(descriptor, part.Model.Location, problem.Substring(split + 1));
+            }
+        }
+
         // Merging and resolving is what raises SM0011 and SM0012; what comes back is the graph
         // the generator will emit, which is what the rest of the messages are about.
         ReportSkippedProperties(

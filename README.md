@@ -348,6 +348,68 @@ The rules, briefly:
   update overload**. It would return the object it was handed having done nothing, and a compile
   error at the call site is the better answer.
 
+### Profiles: maps written outside the mapper
+
+One constructor is a fine place for a dozen maps and a poor place for fifty.
+
+```csharp
+public class CatalogProfile : ShiftMapperProfile
+{
+    public CatalogProfile()
+    {
+        CreateMap<CatalogItem, CatalogItemDto>()
+            .ForMember(d => d.Sku, opt => opt.MapFrom(s => s.Sku.ToUpper()));
+
+        CreateMap<PhysicalItem, PhysicalItemDto>().IncludeBase<CatalogItem, CatalogItemDto>();
+    }
+}
+
+public partial class AppMapper : ShiftMapperBase
+{
+    public AppMapper() => AddProfile<CatalogProfile>();
+}
+```
+
+**A profile is a place to write declarations, not a second mapper.** Nothing is generated onto it:
+its maps become the maps of every mapper that adds it, called through that mapper exactly as if the
+`CreateMap` had been written in its own constructor. There is no `CatalogProfile.Map` to find.
+
+The whole surface is inherited, because it is literally the same method — `CreateMap`, the open
+generic `CreateMap`, and every refinement chained onto them mean the same thing in a profile. So
+does crossing between them: an `IncludeBase` finds a base map declared in another profile, and an
+open generic closes over pairs declared anywhere. A profile is a place to write, not a wall.
+
+**Defaults come from the mapper.** One mapper has one `ConfigureDefaults` whichever file a map was
+written in; an override on a profile is reported as doing nothing (**SM0029**). A pair declared both
+in a profile and outside it keeps the one outside, and the clash is reported (**SM0027**) rather
+than left to be discovered.
+
+**Dependencies work, and are resolved late:**
+
+```csharp
+public class InvoiceProfile : ShiftMapperProfile
+{
+    public InvoiceProfile(IInvoiceNumbering numbering) =>
+        CreateMap<Invoice, InvoiceLabelDto>()
+            .ConstructUsing(s => new InvoiceLabelDto(numbering.Prefix + s.Number));
+}
+```
+
+Register it and it is resolved from the mapper's `Services` the first time anything is mapped —
+not while the mapper's constructor runs, because that provider does not exist yet. A parameterless
+profile needs no registration at all.
+
+The edge that follows is worth knowing: **a profile taking dependencies makes the whole mapper
+DI-only.** All of a mapper's profiles are built together on first use, so one that cannot be built
+fails the mapper's first map, including maps unrelated to it. Skipping it instead would leave its
+`MapFrom` members quietly unfilled, which is the divergence this library exists to prevent. If you
+construct mappers by hand in tests, keep their profiles parameterless.
+
+**Same compilation only.** A profile is read as SOURCE, so one compiled into a referenced package
+cannot be read at all — a generator sees a referenced assembly as metadata, and metadata has no
+method bodies. That is reported (**SM0028**), not silently mapped as nothing. Extending a mapper
+from another assembly needs a different mechanism entirely, and is what the next steps are about.
+
 ### Inheritance, polymorphism and open generics
 
 A table-per-hierarchy table is one table, a discriminator column, and a base type you can query
@@ -534,7 +596,7 @@ and think. Each is reported as SM0002 rather than skipped in silence.
 
 ## Diagnostics
 
-Twenty-six rules, `SM0001` to `SM0026`. Three stop the build; the rest describe something that
+Twenty-nine rules, `SM0001` to `SM0029`. Three stop the build; the rest describe something that
 will not be mapped, or will be mapped in a way worth knowing about.
 
 | Id | Default | What it means |
@@ -565,6 +627,9 @@ will not be mapped, or will be mapped in a way worth knowing about.
 | SM0024 | Warning | The map dispatches through `Include`, so `ProjectTo` cannot use it |
 | SM0025 | Warning | `As` names a type that is not assignable to the destination |
 | SM0026 | Warning | An open generic `CreateMap` was not closed (needs one type parameter a side) |
+| SM0027 | Warning | A pair is declared both in a profile and outside it |
+| SM0028 | Warning | A profile in a referenced assembly cannot be read |
+| SM0029 | Warning | `ConfigureDefaults` on a profile has no effect |
 
 `SM0011` is an error because a null nested object in a response looks exactly like a null in the
 database. Two ways forward, both one line: declare the map, or `opt.Ignore()` the property.

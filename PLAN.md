@@ -41,7 +41,7 @@ Every step heading below carries the same marker: ✅ done, ⬜ pending.
 
 **Phase 3 — The general layer**
 
-- [ ] **Step 11** — Profiles: maps declared outside the mapper class
+- [x] **Step 11** — Profiles: maps declared outside the mapper class
 - [ ] **Step 12** — Global type-pair converters
 - [ ] **Step 13** — The compile-time extension contract for referenced assemblies
 - [ ] **Step 14** — Declarative member conventions
@@ -53,8 +53,8 @@ Every step heading below carries the same marker: ✅ done, ⬜ pending.
 - [ ] **Step 17** — Docs and sample
 - [ ] **Step 18** — Benchmarks
 
-Phases 1 and 2 are complete. Next on ShiftFramework's critical path is **Step 11**, then
-11 → 12 → 13 → 14 → 15 (the summary at the foot of this file).
+Phases 1 and 2 are complete, and Step 11 with them. Next on ShiftFramework's critical path is
+**Step 12**, then 12 → 13 → 14 → 15 (the summary at the foot of this file).
 
 ---
 
@@ -906,7 +906,7 @@ The concrete rules ShiftFramework has today, all currently hand-rolled in
 Phase 3 is done when ShiftFramework can express all of that in ShiftMapper's own vocabulary
 and delete its bespoke mapper generator.
 
-### ⬜ Step 11 — Profiles: maps declared outside the mapper class
+### ✅ Step 11 — Profiles: maps declared outside the mapper class
 
 Today every map lives in one class's constructor. A framework cannot add to it.
 
@@ -931,9 +931,71 @@ public partial class AppMapper : ShiftMapperBase
   assembly is the hard case, and is Step 13.
 - Profiles are how an application splits a large mapper across files; they are also the
   mental model everyone arriving from AutoMapper already has.
+
+**What landed.**
+
+- **`ShiftMapperProfile` DERIVES FROM `ShiftMapperBase`**, which is why there is no second API to
+  keep in step: `CreateMap`, the open generic `CreateMap` and every refinement are literally the
+  same methods. The cost is that a profile passes the generator's "is this a mapper" test, so it is
+  turned away explicitly — by equality as well as derivation, or the library's own abstract class
+  reports SM0005 against itself.
+- **`AddProfile<T>()` means two different things at two times.** At compile time it is read like any
+  other declaration and the profile's `CreateMap` calls are merged into the mapper being generated.
+  At run time it records the type so the profile can be CONSTRUCTED — which is what puts its
+  `MapFrom` trees where the generated lookups will find them.
+- **Materialised on FIRST USE, not in the constructor**, and that is the whole design. A profile may
+  take dependencies; a mapper's `Services` is assigned by `AddShiftMapper` AFTER its constructor
+  returns. So `CreateMap` writes to the store through a private field while `Customizations` — the
+  property the generated code reads, and only at map time — materialises profiles first.
+- **The edge that follows, accepted rather than engineered around:** a profile taking dependencies
+  makes the whole mapper DI-only, because all profiles are built together and one that cannot be
+  built fails the first map. Skipping it would leave its members quietly unfilled, which is the
+  divergence this library exists to prevent. Found by the test suite, which builds mappers by hand
+  in ten places; kept, documented, and pinned by a test.
+- **Crossing between declarations works in every direction**, because the lookups that were already
+  walking every part of a partial mapper now walk profile parts too: `IncludeBase` resolves a base
+  map declared in another profile, and an open generic closes over pairs declared anywhere —
+  including an open generic declared IN a profile, which the first sample split immediately caught.
+- **Profiles are transitive and cycle-safe.** A profile may add profiles; two that add each other
+  terminate and map the union, which is what anyone writing it would expect.
+- **Precedence is the same on both sides.** The mapper's own declaration wins over a profile's, in
+  the generated code and in the runtime merge alike — which is what lets SM0027 be a warning
+  rather than an error, since both halves already agree on the answer.
+- **Three diagnostics.** SM0027 a pair declared twice, SM0028 a profile that arrived as metadata
+  rather than source, SM0029 a `ConfigureDefaults` override on a profile, which configures nothing
+  because defaults are read from the mapper's type.
+- **Diagnostics point INTO the profile file**, which fell out of `LocationInfo` already carrying a
+  path, and is the thing that would have made profiles feel broken had it not.
+
+**In the sample.** `AppMapper` was 638 lines; the catalogue family moved to
+`Mapping/CatalogProfile.cs` and the `ConstructUsing` label map — which needs `IInvoiceNumbering` —
+to `Mapping/InvoiceLabelProfile.cs`, registered in Program.cs. No endpoint changed, and
+`/api/invoices/1/label` still answers `IQ/INV-2026-0001`, which is the DI profile having been
+resolved and run.
+
+---
 - The mapper class is already `partial`, so a second generator (ShiftFramework's, or a
-  scaffolder) can contribute `CreateMap` calls as generated source. State that as a supported
-  extension route and test it.
+  scaffolder) can contribute `CreateMap` calls as generated source — **but only through
+  `RegisterPostInitializationOutput`, and that is far more limited than it sounds.** Measured, and
+  pinned by `CrossGeneratorTests`:
+
+  | How the other generator adds its source | ShiftMapper sees it? |
+  |---|---|
+  | `RegisterPostInitializationOutput` | **yes**, in either generator order |
+  | `RegisterSourceOutput` (the ordinary pass) | **no**, in either order |
+
+  Post-initialization sources enter the compilation before any generation pass, so everyone sees
+  them. Ordinary generated source nobody sees: every generator is handed the compilation as it was
+  BEFORE any generator ran, and there is no ordering, no chaining, and no way to ask for one.
+
+  **The catch is what a post-init generator is able to say.** Its context has no compilation, so
+  its text is fixed at build time and cannot name a type the application declared. That makes it a
+  route for a framework's OWN maps between its OWN types, and NOT for the application's entities —
+  scanning those needs the compilation, and needing the compilation puts the output in exactly the
+  pass nobody else can read.
+
+  So this is a real but narrow extension route, and it is not the one ShiftFramework needs. That
+  is Step 13, and this measurement is the argument for it.
 
 ### ⬜ Step 12 — Global type-pair converters
 
@@ -1158,7 +1220,7 @@ mapper that cannot show its numbers has given up its main argument.
 |---|---|---|---|
 | 1 — Trust | 1 Tests, 2 Runtime cost, 3 Packaging, 4 `IShiftMapper` | ✅ done | Everything depended on 1 and 4 |
 | 2 — Gaps | ~~5 Collections~~, ~~6 Constructors/records~~, ~~7 Member options~~, ~~8 Map hooks~~, ~~9 Flattening~~, ~~10 Inheritance/generics~~ | ✅ done | Unblocked Phase 3 |
-| 3 — General layer | 11 Profiles, 12 Global conversions, 13 Compile-time contract, 14 Member conventions, 15 ShiftFramework port | ⬜ pending | The goal |
+| 3 — General layer | ~~11 Profiles~~, 12 Global conversions, 13 Compile-time contract, 14 Member conventions, 15 ShiftFramework port | ⬜ 11 done | The goal |
 | 4 — Finish | 16 Diagnostics, 17 Docs, 18 Benchmarks | ⬜ pending | Can run alongside 2 and 3 |
 
 The shortest path to ShiftFramework being able to adopt this is

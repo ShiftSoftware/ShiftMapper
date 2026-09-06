@@ -21,11 +21,16 @@ internal sealed class MapperClassModel
         ImmutableArray<MapModel> maps,
         MapperSkipReason skipReason = MapperSkipReason.None,
         LocationInfo? location = null,
-        ImmutableArray<string> openGenericProblems = default)
+        ImmutableArray<string> openGenericProblems = default,
+        ImmutableArray<string> profileProblems = default)
     {
         OpenGenericProblems = openGenericProblems.IsDefault
             ? ImmutableArray<string>.Empty
             : openGenericProblems;
+
+        ProfileProblems = profileProblems.IsDefault
+            ? ImmutableArray<string>.Empty
+            : profileProblems;
 
         SkipReason = skipReason;
         Location = location;
@@ -66,6 +71,16 @@ internal sealed class MapperClassModel
     /// all: there is nothing to hang the message on except the declaration that asked for it.
     /// </summary>
     public ImmutableArray<string> OpenGenericProblems { get; }
+
+    /// <summary>
+    /// What went wrong with this mapper's profiles, each prefixed by the id that should report it
+    /// — SM0027, SM0028 or SM0029.
+    ///
+    /// The id travels IN the string because these belong to the class rather than to a map, and
+    /// there is nothing else to hang them on; keeping them in one list rather than three parallel
+    /// ones is what stops the merge in EmitAll growing a limb per diagnostic.
+    /// </summary>
+    public ImmutableArray<string> ProfileProblems { get; }
 
     /// <summary>
     /// Set when the class derives from ShiftMapperBase but nothing can be generated for it.

@@ -602,6 +602,57 @@ internal static class DiagnosticDescriptors
                      "you already map, which needs exactly one type parameter on each side. Write " +
                      "the closed CreateMap calls out instead.");
 
+    /// <summary>
+    /// SM0027 — one type pair declared in a profile AND outside it.
+    ///
+    /// A warning rather than an error because there IS a defined answer, and both halves of the
+    /// library give the same one: the declaration outside the profile wins, in the generated code
+    /// and in the runtime store alike. What it cannot be is silent — the losing declaration reads
+    /// exactly like the winning one.
+    /// </summary>
+    public static readonly DiagnosticDescriptor ProfileMapDeclaredTwice = new(
+        id: "SM0027",
+        title: "A map is declared both in a profile and outside it",
+        messageFormat: "ShiftMapper: {0}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "The declaration outside the profile is the one that runs. Delete whichever " +
+                     "of the two you did not mean to keep.");
+
+    /// <summary>
+    /// SM0028 — a profile that arrived as metadata rather than source.
+    ///
+    /// The one profile failure with no workaround inside this step, so the message says what the
+    /// limitation IS rather than only that it was hit.
+    /// </summary>
+    public static readonly DiagnosticDescriptor ProfileNotInSource = new(
+        id: "SM0028",
+        title: "A profile in a referenced assembly cannot be read",
+        messageFormat: "ShiftMapper: {0}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "A source generator sees referenced assemblies as metadata, which carries no " +
+                     "method bodies, so CreateMap calls compiled into a package are unreadable.");
+
+    /// <summary>
+    /// SM0029 — ConfigureDefaults overridden on a profile, where it configures nothing.
+    ///
+    /// Defaults are read from the MAPPER's type, so one mapper has one set of them whichever file
+    /// a map was written in. An override on a profile is a reasonable guess that happens to be
+    /// wrong, which is precisely the kind this library reports rather than ignores.
+    /// </summary>
+    public static readonly DiagnosticDescriptor ProfileDefaultsIgnored = new(
+        id: "SM0029",
+        title: "ConfigureDefaults on a profile has no effect",
+        messageFormat: "ShiftMapper: {0}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "A map takes its defaults from the mapper that added the profile. Override " +
+                     "ConfigureDefaults on the mapper, or set the option on each CreateMap.");
+
     /// <summary>SM0005 — the whole mapper produced nothing.</summary>
     public static readonly DiagnosticDescriptor MapperSkipped = new(
         id: "SM0005",
@@ -648,6 +699,9 @@ internal static class DiagnosticDescriptors
         DerivedPairCannotDispatch,
         IncludeIsNotProjectable,
         ConcreteTypeCannotStandIn,
-        OpenGenericNotClosed);
+        OpenGenericNotClosed,
+        ProfileMapDeclaredTwice,
+        ProfileNotInSource,
+        ProfileDefaultsIgnored);
 }
 

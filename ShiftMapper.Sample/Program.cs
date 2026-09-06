@@ -28,6 +28,12 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 // custom mapping — no ShiftMapper-specific registration involved.
 builder.Services.AddSingleton<IInvoiceNumbering, InvoiceNumbering>();
 
+// A PROFILE WITH A DEPENDENCY. Mapping/InvoiceLabelProfile.cs takes IInvoiceNumbering, so it is
+// resolved from DI the first time anything is mapped — not while AppMapper is being constructed,
+// which is before its Services is assigned. CatalogProfile has no dependencies and needs no
+// registration at all.
+builder.Services.AddTransient<InvoiceLabelProfile>();
+
 builder.Services.AddShiftMapper<AppMapper>();
 
 builder.Services.AddOpenApi();
