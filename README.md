@@ -348,6 +348,57 @@ The rules, briefly:
   update overload**. It would return the object it was handed having done nothing, and a compile
   error at the call site is the better answer.
 
+### Rules from a referenced assembly
+
+A profile is read as SOURCE, so a package cannot ship one: a generator sees a reference as
+METADATA, and metadata has no method bodies. Anything a package wants understood has to be
+expressed in what metadata does carry — attributes, signatures and names.
+
+```csharp
+// in ShiftFramework, once
+[assembly: ShiftMapperContract(1)]
+[assembly: ShiftMapperConversions(typeof(ShiftEntityConversions))]
+
+[ShiftMapperConversions]
+public static class ShiftEntityConversions
+{
+    // memory form: the SIGNATURE is the declaration — (long) to (string)
+    public static string ToHashId(long id) => "H" + id;
+
+    // query form for the same pair, matched by the types it returns rather than by name
+    [ShiftMapperQueryForm]
+    public static Expression<Func<long, string>> ToHashIdQuery => id => "H" + id;
+}
+```
+
+Every application that references the package now converts that pair, everywhere, having written
+nothing. **And what it gets is BETTER than the in-project route rather than a degraded version of
+it**: a `CreateConversion` lambda can only be looked up on the mapper at run time, but a declared
+one has a NAME, so the generated code calls it directly — no dictionary, no delegate, and the
+element lambdas of a collection stay `static`.
+
+```csharp
+Files       = global::ShiftFramework.ShiftEntityConversions.ToFiles(source.Files),
+ExternalIds = ValueConverter.ToListOrEmpty<long, string>(
+                  source.ExternalIds, static item => ShiftEntityConversions.ToHashId(item)),
+```
+
+Only the query form still travels as a tree, because an expression is the one thing a name cannot
+stand in for; the generated mapper registers those so a projection can splice them. In the sample
+that reaches SQL Server as `N'H' + CAST(...)`, from a rule in another assembly.
+
+**Precedence, near to far:** a `ForMember` beats everything; a conversion this project declares
+beats one a package declares; a declared pair beats the built-in table. Two packages claiming one
+pair is an **error** (SM0031) rather than a coin toss.
+
+**Version it.** `[assembly: ShiftMapperContract(1)]` lets a newer package be refused with a
+sentence (SM0033) instead of being half-understood and emitted as code that will not compile.
+
+**A profile in a package is reported, not silently ignored** (SM0028). Worth knowing: it is
+invisible to the compiler but still LIVE at run time, so one that declares a conversion will
+quietly override what the build described. Declare rules through the attributes; keep profiles for
+the same compilation.
+
 ### Global type-pair conversions
 
 Every other feature configures a MEMBER of a MAP. This configures a TYPE PAIR, once, for every map.
@@ -651,7 +702,7 @@ and think. Each is reported as SM0002 rather than skipped in silence.
 
 ## Diagnostics
 
-Thirty rules, `SM0001` to `SM0030`. Three stop the build; the rest describe something that
+Thirty-three rules, `SM0001` to `SM0033`. Four stop the build; the rest describe something that
 will not be mapped, or will be mapped in a way worth knowing about.
 
 | Id | Default | What it means |
@@ -686,6 +737,9 @@ will not be mapped, or will be mapped in a way worth knowing about.
 | SM0028 | Warning | A profile in a referenced assembly cannot be read |
 | SM0029 | Warning | `ConfigureDefaults` on a profile has no effect |
 | SM0030 | Warning | A conversion has no query form, so `ProjectTo` cannot use the map |
+| SM0031 | **Error** | Two referenced assemblies declare a conversion for the same type pair |
+| SM0032 | Warning | A declared conversion could not be read (bad signature, orphan query form) |
+| SM0033 | Warning | A referenced assembly declares a newer ShiftMapper contract |
 
 `SM0011` is an error because a null nested object in a response looks exactly like a null in the
 database. Two ways forward, both one line: declare the map, or `opt.Ignore()` the property.

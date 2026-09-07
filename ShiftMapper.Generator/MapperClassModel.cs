@@ -22,8 +22,18 @@ internal sealed class MapperClassModel
         MapperSkipReason skipReason = MapperSkipReason.None,
         LocationInfo? location = null,
         ImmutableArray<string> openGenericProblems = default,
-        ImmutableArray<string> profileProblems = default)
+        ImmutableArray<string> profileProblems = default,
+        ImmutableArray<string> declaredProblems = default,
+        ImmutableArray<string> queryRegistrations = default)
     {
+        DeclaredProblems = declaredProblems.IsDefault
+            ? ImmutableArray<string>.Empty
+            : declaredProblems;
+
+        QueryRegistrations = queryRegistrations.IsDefault
+            ? ImmutableArray<string>.Empty
+            : queryRegistrations;
+
         OpenGenericProblems = openGenericProblems.IsDefault
             ? ImmutableArray<string>.Empty
             : openGenericProblems;
@@ -81,6 +91,25 @@ internal sealed class MapperClassModel
     /// ones is what stops the merge in EmitAll growing a limb per diagnostic.
     /// </summary>
     public ImmutableArray<string> ProfileProblems { get; }
+
+    /// <summary>
+    /// What went wrong with conversions declared by REFERENCED ASSEMBLIES, each prefixed by the id
+    /// that reports it — SM0031, SM0032 or SM0033.
+    ///
+    /// Belongs to the class rather than to a map for the same reason the profile problems do: a bad
+    /// declaration produces no map to hang a message on.
+    /// </summary>
+    public ImmutableArray<string> DeclaredProblems { get; }
+
+    /// <summary>
+    /// The lines the generated mapper needs so a projection can splice a declared conversion's
+    /// query form — one <c>RegisterQueryConversion</c> call each, already written out.
+    ///
+    /// <para>Rendered here as TEXT rather than carried as symbols, like every other thing that
+    /// reaches this model. That is not a formality: this is what the compiler caches between
+    /// keystrokes.</para>
+    /// </summary>
+    public ImmutableArray<string> QueryRegistrations { get; }
 
     /// <summary>
     /// Set when the class derives from ShiftMapperBase but nothing can be generated for it.

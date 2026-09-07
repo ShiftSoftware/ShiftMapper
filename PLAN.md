@@ -43,7 +43,7 @@ Every step heading below carries the same marker: ✅ done, ⬜ pending.
 
 - [x] **Step 11** — Profiles: maps declared outside the mapper class
 - [x] **Step 12** — Global type-pair converters
-- [ ] **Step 13** — The compile-time extension contract for referenced assemblies
+- [x] **Step 13** — The compile-time extension contract for referenced assemblies
 - [ ] **Step 14** — Declarative member conventions
 - [ ] **Step 15** — What ShiftFramework then builds (ShiftEntity repository, not this one)
 
@@ -53,8 +53,8 @@ Every step heading below carries the same marker: ✅ done, ⬜ pending.
 - [ ] **Step 17** — Docs and sample
 - [ ] **Step 18** — Benchmarks
 
-Phases 1 and 2 are complete, and Steps 11 and 12 with them. Next on ShiftFramework's critical
-path is **Step 13**, then 13 → 14 → 15 (the summary at the foot of this file).
+Phases 1 and 2 are complete, and Steps 11, 12 and 13 with them. Next on ShiftFramework's
+critical path is **Step 14**, then 14 → 15 (the summary at the foot of this file).
 
 ---
 
@@ -1074,7 +1074,7 @@ argument for keeping the sample honest rather than treating it as a demo.
 
 ---
 
-### ⬜ Step 13 — The compile-time extension contract for referenced assemblies
+### ✅ Step 13 — The compile-time extension contract for referenced assemblies
 
 Steps 11 and 12 work when the profile is source in the same compilation. ShiftFramework's is
 not — it arrives as a compiled DLL, and a source generator sees referenced assemblies as
@@ -1128,6 +1128,55 @@ the same declarations so they cannot disagree.
   reason to use this library over hand-written code.
 - *The framework emits the entire mapper itself.* That is `ShiftEntityMapperGenerator` today,
   and the goal is to delete it, not to re-derive it.
+
+**What landed.**
+
+- **`[assembly: ShiftMapperConversions(typeof(Holder))]`**, plus `[ShiftMapperQueryForm]` on the
+  member supplying the projection expression and `[ShiftMapperContract(1)]` for versioning. A
+  conversion is a `public static` method with one parameter and a return value — the SIGNATURE is
+  the declaration, so nothing can drift out of step with a name.
+- **ASSEMBLY ATTRIBUTES ONLY.** Scanning every exported type of every referenced assembly for a
+  marker would be paid on every keystroke of every project that references anything; the
+  assembly-level list is the contract and the attribute on the holder is documentation.
+- **The generated code CALLS the declared method by name**, which is the part worth stating loudly:
+  the metadata route is FASTER than the in-source one, not a degraded fallback. A `CreateConversion`
+  lambda can only be looked up at run time; a declared one is
+  `global::ShiftFramework.ShiftEntityConversions.ToFiles(source.Files)`. It also keeps a collection's
+  element lambda `static`, because nothing is captured.
+- **Only the query forms are registered at run time**, through a generated
+  `RegisterDeclaredConversions` override, because an expression tree is the one thing a name cannot
+  stand in for. Everything else Step 12 built — `Splice`, `Compose`, the resolver — was reused
+  unchanged.
+- **Precedence, near to far:** `ForMember`, then this project's own `CreateConversion`, then a
+  package's declaration, then the built-in table. The same order in the generator and in the runtime
+  merge, so the two halves cannot disagree.
+- **Three diagnostics.** SM0031 (two packages claiming one pair) is an ERROR because there is no
+  answer to pick; SM0032 (a malformed declaration) is a warning because the mistake belongs to the
+  package author rather than to whoever is building now; SM0033 (a newer contract) ignores the
+  assembly's conversions rather than half-reading a shape it does not know.
+
+**`ShiftFramework.Mock`, a new project, and what building it taught.** It is referenced by the
+sample and the test suite as a compiled library — no analyzer, no source — so the contract is
+exercised the way an application actually meets it. Two things came out of writing it that no unit
+test would have:
+
+- **The two forms of a conversion can disagree, and nothing can catch it.** The mock's hash id was
+  `"H" + id.ToString("D6")` in memory and `"H" + id` in the query form: both well-typed, both
+  translate, and the same brand came back as `H010010` from `Map` and `H10010` from `ProjectTo`.
+  That is a framework author's own responsibility, and the reason the sample shows both backends of
+  one map side by side.
+- **A JSON column genuinely cannot be parsed in SQL**, so the honest declaration is a memory form
+  and NO query form. The first attempt invented a query expression that "translated", which EF then
+  refused outright — and would have been a lie if it had not. So the mock declares that pair one
+  way only, and every application referencing it is told at build time which of its endpoints stops
+  being one query (SM0030). That is the whole argument for compile time over a runtime table, and
+  it is now a live example rather than a paragraph.
+- **A profile shipped in a package is invisible to the compiler and LIVE at run time.** Registering
+  one that declared a conversion silently replaced the framework's own query form while the build
+  said the profile contributed nothing. The mock's profile now declares an inert map instead, and
+  the asymmetry is written down where somebody will hit it.
+
+---
 
 ### ⬜ Step 14 — Declarative member conventions
 
@@ -1260,7 +1309,7 @@ mapper that cannot show its numbers has given up its main argument.
 |---|---|---|---|
 | 1 — Trust | 1 Tests, 2 Runtime cost, 3 Packaging, 4 `IShiftMapper` | ✅ done | Everything depended on 1 and 4 |
 | 2 — Gaps | ~~5 Collections~~, ~~6 Constructors/records~~, ~~7 Member options~~, ~~8 Map hooks~~, ~~9 Flattening~~, ~~10 Inheritance/generics~~ | ✅ done | Unblocked Phase 3 |
-| 3 — General layer | ~~11 Profiles~~, ~~12 Global conversions~~, 13 Compile-time contract, 14 Member conventions, 15 ShiftFramework port | ⬜ 11, 12 done | The goal |
+| 3 — General layer | ~~11 Profiles~~, ~~12 Global conversions~~, ~~13 Compile-time contract~~, 14 Member conventions, 15 ShiftFramework port | ⬜ 11—13 done | The goal |
 | 4 — Finish | 16 Diagnostics, 17 Docs, 18 Benchmarks | ⬜ pending | Can run alongside 2 and 3 |
 
 The shortest path to ShiftFramework being able to adopt this is

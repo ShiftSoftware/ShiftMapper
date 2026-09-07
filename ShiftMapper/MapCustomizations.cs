@@ -146,14 +146,22 @@ public sealed class MapCustomizations
     /// <summary>One registered type-pair conversion.</summary>
     private readonly struct TypeConversion
     {
-        public TypeConversion(Delegate memory, LambdaExpression? query)
+        public TypeConversion(Delegate? memory, LambdaExpression? query)
         {
             Memory = memory;
             Query = query;
         }
 
-        /// <summary>The delegate the in-memory maps call.</summary>
-        public Delegate Memory { get; }
+        /// <summary>
+        /// The delegate the in-memory maps call, or null.
+        ///
+        /// <para>NULL for a conversion declared by a referenced assembly through
+        /// <c>[ShiftMapperConversions]</c>. There the generator knows the method's name at compile
+        /// time and emits a DIRECT CALL to it, so nothing needs to be looked up at run time and
+        /// only the query form has to live here. Faster than the source-declared path, and the
+        /// reason metadata is worth the ceremony.</para>
+        /// </summary>
+        public Delegate? Memory { get; }
 
         /// <summary>The tree spliced into a projection, or null when there is none.</summary>
         public LambdaExpression? Query { get; }
@@ -166,6 +174,31 @@ public sealed class MapCustomizations
     internal void RegisterConversion(Type source, Type destination, Delegate memory, LambdaExpression? query)
     {
         _typeConversions[(source, destination)] = new TypeConversion(memory, query);
+        _resolvedConversions = null;
+    }
+
+    /// <summary>
+    /// Records only the QUERY form of a conversion — what a referenced assembly's
+    /// <c>[ShiftMapperQueryForm]</c> member supplies.
+    ///
+    /// <para>There is no memory form to record because there is nothing to look up: the generator
+    /// read the method's name out of metadata and emitted a direct call to it. This is here so the
+    /// projection can still splice a tree, which is the one thing a name alone cannot do.</para>
+    ///
+    /// <para>Public because the GENERATED half of a mapper calls it, and that code lives in the
+    /// developer's own namespace rather than in this one.</para>
+    /// </summary>
+    public void RegisterQueryConversion(Type source, Type destination, LambdaExpression query)
+    {
+        if (query is null)
+            throw new ArgumentNullException(nameof(query));
+
+        // A conversion the application declared in its own source WINS. It is nearer to the
+        // developer than a rule arriving from a package, and the generator resolves the pair by the
+        // same precedence, so the two halves cannot disagree about which one runs.
+        if (!_typeConversions.ContainsKey((source, destination)))
+            _typeConversions[(source, destination)] = new TypeConversion(memory: null, query);
+
         _resolvedConversions = null;
     }
 
@@ -192,7 +225,7 @@ public sealed class MapCustomizations
         if (_resolvedConversions.TryGetValue(key, out Delegate? cached))
             return (Func<TSource, TDestination>)cached;
 
-        if (Registered(typeof(TSource), typeof(TDestination)) is not { } found)
+        if (Registered(typeof(TSource), typeof(TDestination))?.Memory is null)
         {
             throw new InvalidOperationException(
                 $"ShiftMapper: no conversion is registered from '{typeof(TSource).Name}' to " +
@@ -201,7 +234,7 @@ public sealed class MapCustomizations
                 "this mapper no longer adds.");
         }
 
-        var typed = (Func<TSource, TDestination>)found.Memory;
+        var typed = (Func<TSource, TDestination>)Registered(typeof(TSource), typeof(TDestination))!.Value.Memory!;
 
         _resolvedConversions[key] = typed;
 

@@ -36,3 +36,6 @@ SM0027 | ShiftMapper | Warning | A map is declared both in a profile and outside
 SM0028 | ShiftMapper | Warning | A profile in a referenced assembly cannot be read
 SM0029 | ShiftMapper | Warning | ConfigureDefaults on a profile has no effect
 SM0030 | ShiftMapper | Warning | Map cannot be projected because a conversion has no query form
+SM0031 | ShiftMapper | Error | Two assemblies declare a conversion for the same type pair
+SM0032 | ShiftMapper | Warning | A declared conversion could not be read
+SM0033 | ShiftMapper | Warning | A referenced assembly declares a newer ShiftMapper contract

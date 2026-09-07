@@ -231,11 +231,29 @@ public abstract class ShiftMapperBase
         // re-enter here and build the same profiles again, forever.
         _profilesMaterialised = true;
 
-        if (_profileTypes is null)
-            return;
+        if (_profileTypes is not null)
+        {
+            foreach (Type profileType in _profileTypes)
+                _customizations.MergeFrom(CreateProfile(profileType).Customizations);
+        }
 
-        foreach (Type profileType in _profileTypes)
-            _customizations.MergeFrom(CreateProfile(profileType).Customizations);
+        // AFTER the profiles, so a conversion the application declared in its own source keeps its
+        // place: RegisterQueryConversion does not overwrite, and the generator resolves the pair by
+        // the same precedence. Near beats far, in both halves.
+        RegisterDeclaredConversions(_customizations);
+    }
+
+    /// <summary>
+    /// Hands the store the QUERY forms of conversions declared by REFERENCED ASSEMBLIES —
+    /// overridden by the generated half of the mapper, and empty here.
+    ///
+    /// <para>Only the query forms. A conversion declared through <c>[ShiftMapperConversions]</c>
+    /// has its memory form called DIRECTLY by the generated code, by name, because the generator
+    /// read that name out of metadata at compile time. An expression tree is the one thing a name
+    /// cannot stand in for, so it is the one thing that has to arrive here.</para>
+    /// </summary>
+    protected virtual void RegisterDeclaredConversions(MapCustomizations customizations)
+    {
     }
 
     private ShiftMapperProfile CreateProfile(Type profileType)

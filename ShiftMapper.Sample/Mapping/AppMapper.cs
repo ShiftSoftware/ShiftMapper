@@ -1,4 +1,5 @@
 ﻿using Microsoft.Extensions.Logging;
+using ShiftFramework;
 using ShiftMapper.Sample.Dtos;
 using ShiftMapper.Sample.Entities;
 using ShiftMapper.Sample.Services;
@@ -470,6 +471,7 @@ public partial class AppMapper : ShiftMapperBase
             .ForMember(d => d.Tags, opt => opt.Ignore())
             .ForMember(d => d.ExternalIds, opt => opt.Ignore())
             .ForMember(d => d.Aliases, opt => opt.Ignore())
+            .ForMember(d => d.Files, opt => opt.Ignore())
             .ForMember(d => d.Products, opt => opt.Ignore());
 
 
@@ -531,6 +533,44 @@ public partial class AppMapper : ShiftMapperBase
 
         CreateMap<Invoice, InvoiceStampDto>();
         CreateMap<Product, ProductFingerprintDto>();
+
+        // ------------------------------------------------------------------
+        // RULES FROM A REFERENCED ASSEMBLY — the compile-time extension contract.
+        // ------------------------------------------------------------------
+        //
+        // ShiftFramework.Mock is referenced the way a NuGet package would be: a compiled assembly,
+        // no analyzer, no source. It declares two conversions with two assembly attributes, and
+        // this project picks both up without writing anything:
+        //
+        //   string        -> List<ShiftFileDTO>   (a JSON column becoming files)
+        //   long          -> string               (hash ids, which BEAT the built-in conversion)
+        //
+        // The one line below is the whole of this project's involvement. What the generator emits
+        // is a DIRECT CALL to the framework's static method — no reflection, no registry lookup —
+        // because a name is something metadata carries and a lambda is not.
+        CreateMap<Brand, BrandFilesDto>();
+
+        // The projectable half. BrandFilesDto uses the JSON pair, which the framework declared
+        // WITHOUT a query form because no database can parse JSON into objects — so that map is
+        // in-memory only, and the build says so (SM0030). This one uses only the hash ids, which
+        // have both forms, and it projects.
+        CreateMap<Brand, BrandHashDto>();
+
+        // AND THE ROUTE THAT DOES NOT CROSS AN ASSEMBLY, registered on purpose so the build says so:
+        //
+        //   warning SM0028: the profile 'ShiftFileProfile' is compiled into a referenced assembly,
+        //                   so its CreateConversion calls cannot be read and none of its maps were
+        //                   generated
+        //
+        // A profile is read as SOURCE. From a package there is no source to read — a generator
+        // sees a reference as metadata, and metadata has no method bodies. ShiftFileProfile is the
+        // obvious thing for a package author to write, and it is why the attribute contract exists.
+        //
+        // Registering it is harmless BECAUSE OF WHAT IT DECLARES: a map between two of the
+        // framework's own types, which nothing here asks for. An earlier version declared a
+        // conversion instead, and this sample caught what that costs — invisible to the compiler,
+        // live at run time, quietly replacing the framework's own query form. See ShiftFileProfile.
+        AddProfile<ShiftFileProfile>();
     }
 
     /// <summary>Proof that constructor injection works on this class.</summary>

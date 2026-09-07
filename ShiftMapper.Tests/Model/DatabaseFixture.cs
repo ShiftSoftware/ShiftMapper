@@ -35,6 +35,7 @@ public sealed class DatabaseFixture : IDisposable
         services.AddTransient<NumberedProfile>();
         services.AddShiftMapper<ProfileMapper>();
         services.AddShiftMapper<ConversionMapper>();
+        services.AddShiftMapper<DeclaredMapper>();
 
         // Registered exactly as an application would, so the tests exercise the real path:
         // constructor injection, plus the Services property AddShiftMapper fills in.
@@ -55,6 +56,9 @@ public sealed class DatabaseFixture : IDisposable
 
     /// <summary>The mapper carrying the global type-pair conversions.</summary>
     public ConversionMapper ConversionMapper => _services.GetRequiredService<ConversionMapper>();
+
+    /// <summary>The mapper whose conversions come from a referenced assembly.</summary>
+    public DeclaredMapper DeclaredMapper => _services.GetRequiredService<DeclaredMapper>();
 
     public IServiceProvider Services => _services;
 

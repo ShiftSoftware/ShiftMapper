@@ -155,8 +155,14 @@ internal static class ConversionResolver
             string source = FullName(sourceType);
             string destination = FullName(destinationType);
 
+            // A DECLARED conversion is CALLED, a source-declared one is looked up. That is the
+            // whole difference metadata buys: the generator read the method's name out of the
+            // referenced assembly, so the generated code names it too — no dictionary, no
+            // delegate, and the element lambdas of a collection stay `static`.
             return new ValueConversion(
-                template: $"Customizations.Conversion<{source}, {destination}>()({{0}})",
+                template: registered.MemoryCall is { } call
+                    ? $"{call}({{0}})"
+                    : $"Customizations.Conversion<{source}, {destination}>()({{0}})",
                 risk: ConversionRisk.None,
                 note: null,
                 // A MARKER, not a call. The projection is an expression tree EF reads, and the
@@ -167,7 +173,7 @@ internal static class ConversionResolver
                     ? null
                     : $"the conversion from '{sourceType.Name}' to '{destinationType.Name}' was " +
                       "registered without a query form",
-                capturesMapper: true);
+                capturesMapper: registered.MemoryCall is null);
         }
 
         // 2. COLLECTIONS OF SIMPLE VALUES, ahead of the identity test on purpose.

@@ -180,6 +180,29 @@ public sealed class ShiftMapperAnalyzer : DiagnosticAnalyzer
             }
         }
 
+        // SM0031 / SM0032 / SM0033 — the referenced-assembly contract. Reported once for the
+        // mapper rather than per part: the declarations are the same whichever file is being
+        // looked at, and repeating them per part would multiply one package's mistake by the
+        // number of files somebody happened to split their mapper across.
+        foreach (string problem in ordered[0].Model.DeclaredProblems)
+        {
+            int split = problem.IndexOf('|');
+
+            if (split < 0)
+                continue;
+
+            DiagnosticDescriptor? descriptor = problem.Substring(0, split) switch
+            {
+                "SM0031" => DiagnosticDescriptors.DeclaredConversionConflict,
+                "SM0032" => DiagnosticDescriptors.DeclaredConversionMalformed,
+                "SM0033" => DiagnosticDescriptors.DeclaredContractTooNew,
+                _ => null,
+            };
+
+            if (descriptor is not null)
+                reporter.Report(descriptor, ordered[0].Model.Location, problem.Substring(split + 1));
+        }
+
         // Merging and resolving is what raises SM0011 and SM0012; what comes back is the graph
         // the generator will emit, which is what the rest of the messages are about.
         ReportSkippedProperties(

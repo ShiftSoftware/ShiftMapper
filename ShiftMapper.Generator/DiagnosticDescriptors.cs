@@ -673,6 +673,58 @@ internal static class DiagnosticDescriptors
                      "that the pair cannot be translated to SQL. Supply a query expression, or use " +
                      "Map rather than ProjectTo for maps that touch the pair.");
 
+    /// <summary>
+    /// SM0031 — two referenced assemblies declaring a conversion for the same type pair.
+    ///
+    /// AN ERROR, unlike almost everything else here, because there is no answer to pick. Whichever
+    /// won, half the maps in the application would convert the other way and nobody reading either
+    /// package could see why. The fix is a decision, and it has to be made by a person.
+    /// </summary>
+    public static readonly DiagnosticDescriptor DeclaredConversionConflict = new(
+        id: "SM0031",
+        title: "Two assemblies declare a conversion for the same type pair",
+        messageFormat: "ShiftMapper: {0}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true,
+        description: "Remove one of the declarations, or declare the pair in this project with " +
+                     "CreateConversion, which wins over both.");
+
+    /// <summary>
+    /// SM0032 — a declaration a referenced assembly got wrong.
+    ///
+    /// A WARNING rather than an error: the assembly compiled, so the mistake belongs to the package
+    /// author rather than to whoever is building now, and failing their build over it would leave
+    /// them with nothing to do but wait. It is loud enough to report upstream.
+    /// </summary>
+    public static readonly DiagnosticDescriptor DeclaredConversionMalformed = new(
+        id: "SM0032",
+        title: "A declared conversion could not be read",
+        messageFormat: "ShiftMapper: {0}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "A conversion is a public static method with exactly one parameter and a " +
+                     "return value; its query form is a public static member returning " +
+                     "Expression<Func<TSource, TDestination>>.");
+
+    /// <summary>
+    /// SM0033 — a package built against a NEWER contract than this generator understands.
+    ///
+    /// Its conversions are ignored rather than half-read. A generator that guessed at a shape it
+    /// does not know would emit code that fails to compile in a file the developer cannot edit,
+    /// which is the worst outcome available.
+    /// </summary>
+    public static readonly DiagnosticDescriptor DeclaredContractTooNew = new(
+        id: "SM0033",
+        title: "A referenced assembly declares a newer ShiftMapper contract",
+        messageFormat: "ShiftMapper: {0}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "Update the ShiftMapper package in this project to the version the referenced " +
+                     "package was built against.");
+
     /// <summary>SM0005 — the whole mapper produced nothing.</summary>
     public static readonly DiagnosticDescriptor MapperSkipped = new(
         id: "SM0005",
@@ -723,6 +775,9 @@ internal static class DiagnosticDescriptors
         ProfileMapDeclaredTwice,
         ProfileNotInSource,
         ProfileDefaultsIgnored,
-        ConversionHasNoQueryForm);
+        ConversionHasNoQueryForm,
+        DeclaredConversionConflict,
+        DeclaredConversionMalformed,
+        DeclaredContractTooNew);
 }
 

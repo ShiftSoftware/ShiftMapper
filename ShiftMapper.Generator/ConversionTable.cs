@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using Microsoft.CodeAnalysis;
 
 namespace ShiftMapper.Generator;
@@ -49,7 +50,10 @@ internal sealed class ConversionTable
                 if (entry.HasQueryForm)
                     continue;
 
-                string described = $"'{entry.Source.Name}' to '{entry.Destination.Name}'";
+                // MinimallyQualified rather than Name: a Name says "List" where the pair is really
+                // List<ShiftFileDTO>, and a message that cannot tell two conversions apart is not
+                // worth printing.
+                string described = $"'{Short(entry.Source)}' to '{Short(entry.Destination)}'";
 
                 if (seen.Add(described))
                     yield return described;
@@ -62,6 +66,51 @@ internal sealed class ConversionTable
 
     public void Add(ITypeSymbol source, ITypeSymbol destination, bool hasQueryForm) =>
         _entries.Add(new Entry(source, destination, hasQueryForm));
+
+    /// <summary>
+    /// Adds a conversion DECLARED BY A REFERENCED ASSEMBLY, whose members the generator can name.
+    /// </summary>
+    public void AddDeclared(
+        ITypeSymbol source,
+        ITypeSymbol destination,
+        string memoryCall,
+        string? queryAccess) =>
+        _entries.Add(new Entry(source, destination, queryAccess is not null, memoryCall, queryAccess));
+
+    /// <summary>
+    /// The lines the generated mapper needs so a projection can splice the query forms — one per
+    /// declared conversion that has one.
+    ///
+    /// <para>ALL of them, not only the ones some map used. The list is short and fixed, registering
+    /// an unused one costs a dictionary entry, and working out which maps used what would mean
+    /// carrying usage into the cached model for no gain.</para>
+    /// </summary>
+    public IEnumerable<string> QueryRegistrations
+    {
+        get
+        {
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+
+            foreach (Entry entry in _entries)
+            {
+                if (entry.QueryAccess is null)
+                    continue;
+
+                string line =
+                    $"customizations.RegisterQueryConversion(typeof({Full(entry.Source)}), " +
+                    $"typeof({Full(entry.Destination)}), {entry.QueryAccess});";
+
+                if (seen.Add(line))
+                    yield return line;
+            }
+        }
+    }
+
+    private static string Full(ITypeSymbol type) =>
+        type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+
+    private static string Short(ITypeSymbol type) =>
+        type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
 
     /// <summary>
     /// The registration that answers for a pair, or null.
@@ -166,12 +215,33 @@ internal sealed class ConversionTable
     /// <summary>One registered pair.</summary>
     internal sealed class Entry
     {
-        public Entry(ITypeSymbol source, ITypeSymbol destination, bool hasQueryForm)
+        public Entry(
+            ITypeSymbol source,
+            ITypeSymbol destination,
+            bool hasQueryForm,
+            string? memoryCall = null,
+            string? queryAccess = null)
         {
             Source = source;
             Destination = destination;
             HasQueryForm = hasQueryForm;
+            MemoryCall = memoryCall;
+            QueryAccess = queryAccess;
         }
+
+        /// <summary>
+        /// The fully qualified method the generated code CALLS for the in-memory form, or null when
+        /// the conversion was declared in source and lives in the runtime store.
+        ///
+        /// <para>This is the difference metadata buys. A source-declared conversion is a lambda in
+        /// the developer's file, and the generated code can only look it up; a declared one has a
+        /// NAME, so the generated code calls it directly — no dictionary, no delegate, and the
+        /// element lambdas of a collection stay <c>static</c>.</para>
+        /// </summary>
+        public string? MemoryCall { get; }
+
+        /// <summary>The fully qualified member holding the query expression, or null.</summary>
+        public string? QueryAccess { get; }
 
         public ITypeSymbol Source { get; }
 

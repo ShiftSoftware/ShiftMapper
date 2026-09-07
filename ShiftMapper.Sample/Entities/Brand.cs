@@ -17,6 +17,13 @@ public class Brand
     /// </summary>
     public string ISOCode { get; set; } = string.Empty;
 
+    /// <summary>
+    /// FILES AS JSON IN ONE COLUMN — ShiftFramework's real shape, and the reason Step 13 exists.
+    /// The framework knows how to turn this into List&lt;ShiftFileDTO&gt;; this project does not,
+    /// and does not need to.
+    /// </summary>
+    public string Files { get; set; } = "[]";
+
     public int FoundedYear { get; set; }
 
     /// <summary>

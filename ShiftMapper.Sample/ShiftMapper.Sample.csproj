@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk.Web">
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -33,6 +33,11 @@
   <ItemGroup>
     <!-- Normal reference: gives us the IShiftMapper / MapperConfiguration types at runtime. -->
     <ProjectReference Include="..\ShiftMapper\ShiftMapper.csproj" />
+
+    <!-- A STAND-IN FOR SHIFTFRAMEWORK, referenced the way a NuGet package would be: as a compiled
+         assembly, with no analyzer and no source. Everything it wants this project's generated
+         mapper to know travels through metadata. See Mapping/AppMapper.cs. -->
+    <ProjectReference Include="..\ShiftFramework.Mock\ShiftFramework.Mock.csproj" />
 
     <!-- Analyzer reference: the generator is loaded BY THE COMPILER, not shipped with
          the app. OutputItemType="Analyzer" is what makes it a source generator, and

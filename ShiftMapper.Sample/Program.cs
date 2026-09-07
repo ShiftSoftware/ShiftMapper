@@ -75,4 +75,7 @@ app.MapCatalogEndpoints();
 // Global type-pair conversions — one rule, and the two halves of the query-form decision.
 app.MapConversionEndpoints();
 
+// Rules arriving from a REFERENCED ASSEMBLY, through metadata rather than source.
+app.MapFrameworkEndpoints();
+
 app.Run();

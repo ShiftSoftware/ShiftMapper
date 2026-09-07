@@ -272,7 +272,7 @@ public class GlobalConversionTests
 
         string message = run.Single("SM0030").GetMessage();
 
-        Assert.Contains("'Money' to 'String'", message);
+        Assert.Contains("'Money' to 'string'", message);
         Assert.Contains("no query form", message);
 
         // In memory it works exactly as before; only the projection is refused, and it THROWS

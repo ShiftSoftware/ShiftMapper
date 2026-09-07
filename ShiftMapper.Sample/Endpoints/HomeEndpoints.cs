@@ -38,6 +38,8 @@ public static class HomeEndpoints
                 "GET  /api/catalog/paged-brands (the same one line, closed over an unrelated pair)",
                 "GET  /api/invoices/stamps   (GLOBAL CONVERSION: one rule, in the SQL; ?sql=true)",
                 "GET  /api/products/fingerprints (the same, with no query form; ?project=true refuses)",
+                "GET  /api/brands/hashed     (A REFERENCED ASSEMBLY's rule, in the SQL; ?sql=true)",
+                "GET  /api/brands/files      (the same package's other rule, in memory only; ?project=true)",
             }
         }))
         .WithName("Home")

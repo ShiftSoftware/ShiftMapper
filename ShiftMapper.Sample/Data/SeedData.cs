@@ -23,7 +23,7 @@ public static class SeedData
         // at — every one of those six comes back with [] rather than null, from both backends.
         // See BrandDto.Aliases.
         modelBuilder.Entity<Brand>().HasData(
-            new Brand { Id = 1, Name = "Apple", Country = "United States", FoundedYear = 1976, ISOCode = "US", Tags = ["premium", "mobile", "audio"], ExternalIds = [10_010L, 10_011L], Aliases = ["Apple Inc.", "Apple Computer"] },
+            new Brand { Id = 1, Name = "Apple", Country = "United States", FoundedYear = 1976, ISOCode = "US", Tags = ["premium", "mobile", "audio"], ExternalIds = [10_010L, 10_011L], Aliases = ["Apple Inc.", "Apple Computer"], Files = """[{"name":"logo.svg","url":"/files/apple-logo.svg"},{"name":"brand-guide.pdf","url":"/files/apple-guide.pdf"}]""" },
             new Brand { Id = 2, Name = "Samsung", Country = "South Korea", FoundedYear = 1938, ISOCode = "KR", Tags = ["mobile", "displays"], ExternalIds = [10_020L], Aliases = ["Samsung Electronics"] },
             new Brand { Id = 3, Name = "Sony", Country = "Japan", FoundedYear = 1946, ISOCode = "JP", Tags = ["audio", "imaging"], ExternalIds = [10_030L] },
             new Brand { Id = 4, Name = "Dell", Country = "United States", FoundedYear = 1984, ISOCode = "US", Tags = ["computing", "enterprise"], ExternalIds = [10_040L] },

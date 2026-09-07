@@ -226,8 +226,11 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
 
         // THE GLOBAL CONVERSIONS, read once for the whole mapper. Symbols live in here, which is
         // safe precisely because it does not outlive this method — see ConversionTable.
+        var declaredProblems = new List<string>();
+
         ConversionTable conversions = ReadConversions(
-            semanticModel.Compilation, classSymbol, baseClass, profileBase, cancellationToken);
+            semanticModel.Compilation, classSymbol, baseClass, profileBase, declaredProblems,
+            cancellationToken);
 
         var maps = ImmutableArray.CreateBuilder<MapModel>();
         var seen = new HashSet<string>();
@@ -469,7 +472,9 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             maps: maps.ToImmutable(),
             location: LocationInfo.CreateFrom(classDeclaration.Identifier.Parent ?? classDeclaration),
             openGenericProblems: openProblems.ToImmutable(),
-            profileProblems: profileProblems.ToImmutable());
+            profileProblems: profileProblems.ToImmutable(),
+            declaredProblems: declaredProblems.ToImmutableArray(),
+            queryRegistrations: conversions.QueryRegistrations.ToImmutableArray());
     }
 
     /// <summary>
@@ -663,6 +668,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         INamedTypeSymbol classSymbol,
         INamedTypeSymbol baseClass,
         INamedTypeSymbol? profileBase,
+        List<string> declaredProblems,
         CancellationToken cancellationToken)
     {
         var table = new ConversionTable();
@@ -708,6 +714,10 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                 table.Add(source, destination, hasQuery);
             }
         }
+
+        // THE REFERENCED ASSEMBLIES, read LAST so a conversion declared in this project's own
+        // source keeps the pair. Near beats far, and the runtime merge applies the same order.
+        DeclaredConversions.Read(compilation, table, declaredProblems);
 
         return table;
     }
@@ -3483,7 +3493,13 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                 first.ClassName,
                 first.FullyQualifiedName,
                 first.IsPublic,
-                maps));
+                maps,
+                // CARRIED THROUGH THE MERGE. Anything the merged model does not copy is silently
+                // lost — which is exactly how the query registrations went missing the first
+                // time, and how a map's projection refusals went missing before that. The
+                // registrations are the same for every part, since they come from the referenced
+                // assemblies rather than from any one file.
+                queryRegistrations: first.QueryRegistrations));
         }
     }
 
@@ -3925,6 +3941,8 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             sb.AppendLine();
 
         AppendInterfaceImplementation(sb, indent, bySource);
+
+        AppendDeclaredConversionRegistrations(sb, indent, model);
 
         sb.AppendLine($"{indent}}}");
 
@@ -4777,6 +4795,40 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
     /// answer a grandchild with the CHILD's map, dropping in silence exactly what
     /// <c>Include</c> was added to keep.</para>
     /// </summary>
+    /// <summary>
+    /// The override that hands the store the QUERY FORMS of conversions declared by referenced
+    /// assemblies.
+    ///
+    /// <para>Only the query forms. A declared conversion's MEMORY form is called directly by name
+    /// wherever it is used — the generator read that name out of metadata — so nothing about it
+    /// needs registering. An expression tree is the one thing a name cannot stand in for, and this
+    /// is the one line of plumbing that costs.</para>
+    ///
+    /// <para>Emitted only where there is something to register, so a mapper in a project that
+    /// references no such package pays nothing, not even an empty override.</para>
+    /// </summary>
+    private static void AppendDeclaredConversionRegistrations(
+        StringBuilder sb,
+        string indent,
+        MapperClassModel model)
+    {
+        if (model.QueryRegistrations.IsEmpty)
+            return;
+
+        sb.AppendLine();
+        sb.AppendLine($"{indent}    /// <summary>");
+        sb.AppendLine($"{indent}    /// Query forms for conversions declared by referenced assemblies, so a projection can");
+        sb.AppendLine($"{indent}    /// splice them. Their in-memory forms are called directly and need no registration.");
+        sb.AppendLine($"{indent}    /// </summary>");
+        sb.AppendLine($"{indent}    protected override void RegisterDeclaredConversions(global::ShiftMapper.MapCustomizations customizations)");
+        sb.AppendLine($"{indent}    {{");
+
+        foreach (string registration in model.QueryRegistrations)
+            sb.AppendLine($"{indent}        {registration}");
+
+        sb.AppendLine($"{indent}    }}");
+    }
+
     private static void AppendDerivedDispatch(
         StringBuilder sb,
         string indent,
