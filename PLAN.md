@@ -44,17 +44,24 @@ Every step heading below carries the same marker: ✅ done, ⬜ pending.
 - [x] **Step 11** — Profiles: maps declared outside the mapper class
 - [x] **Step 12** — Global type-pair converters
 - [x] **Step 13** — The compile-time extension contract for referenced assemblies
-- [ ] **Step 14** — Declarative member conventions
-- [ ] **Step 15** — What ShiftFramework then builds (ShiftEntity repository, not this one)
+- [ ] **Step 14** — Declaration metadata: one API in a project and in a package
+- [ ] **Step 15** — Declarative member conventions
+- [ ] **Step 16** — What ShiftFramework then builds (ShiftEntity repository, not this one)
 
 **Phase 4 — Finish**
 
-- [ ] **Step 16** — Diagnostics and analyzer completeness
-- [ ] **Step 17** — Docs and sample
-- [ ] **Step 18** — Benchmarks
+- [ ] **Step 17** — Diagnostics and analyzer completeness
+- [ ] **Step 18** — Docs and sample
+- [ ] **Step 19** — Benchmarks
 
-Phases 1 and 2 are complete, and Steps 11, 12 and 13 with them. Next on ShiftFramework's
-critical path is **Step 14**, then 14 → 15 (the summary at the foot of this file).
+Phases 1 and 2 are complete, and Steps 11, 12 and 13 with them — but Steps 12 and 13 left the
+library with TWO vocabularies for the same ideas, one for a project and one for a package. **Step 14
+replaces them with one**, and Steps 11—13 are refactored onto it rather than left as they are. It
+comes before member conventions on purpose: that step should be built on the single vocabulary from
+its first line, not retrofitted afterwards.
+
+Next on ShiftFramework's critical path is **Step 14**, then 14 → 15 → 16 (the summary at the
+foot of this file).
 
 ---
 
@@ -627,7 +634,7 @@ CreateMap<Brand, BrandDto>()
 ```
 
 - `BeforeMap` / `AfterMap` are in-memory only, and are what ShiftFramework's
-  `DefaultEntityToDtoAfterMap` / `DefaultDtoToEntityAfterMap` need (see Step 15).
+  `DefaultEntityToDtoAfterMap` / `DefaultDtoToEntityAfterMap` need (see Step 16).
 - `ConvertUsing` taking an `Expression<Func<TSource, TDestination>>` DOES project — this is
   the single most important entry in Phase 2 for Phase 3, because a global type converter is
   just a `ConvertUsing` that was registered globally.
@@ -908,6 +915,11 @@ and delete its bespoke mapper generator.
 
 ### ✅ Step 11 — Profiles: maps declared outside the mapper class
 
+> **Refactored by Step 14.** `AddProfile<T>()` currently compiles and does nothing when the profile
+> is in a referenced assembly (SM0028), while the RUNTIME half registers it anyway — invisible to
+> the compiler, live at run time. Step 14 closes that: the compile-time half starts working and the
+> asymmetry goes away.
+
 Today every map lives in one class's constructor. A framework cannot add to it.
 
 ```csharp
@@ -999,6 +1011,10 @@ resolved and run.
 
 ### ✅ Step 12 — Global type-pair converters
 
+> **Refactored by Step 14.** The in-project API below is unchanged and correct. What changes is the
+> route a PACKAGE uses to say the same thing: instead of the hand-written attribute class of Step 13,
+> a package writes this exact API in a profile and the generator emits the metadata.
+
 The keystone. One registration, applied to every map, everywhere, in both backends.
 
 ```csharp
@@ -1075,6 +1091,14 @@ argument for keeping the sample honest rather than treating it as a demo.
 ---
 
 ### ✅ Step 13 — The compile-time extension contract for referenced assemblies
+
+> **Largely SUPERSEDED by Step 14, and this section is kept for its reasoning rather than its API.**
+> Everything below about metadata being the only thing that crosses an assembly is right and still
+> load-bearing. What was wrong was asking a framework AUTHOR to write the metadata by hand: it gave
+> conversions a second vocabulary that nothing else in the library uses, and it could never carry a
+> map or a profile at all. Step 14 keeps the mechanism and generates the metadata instead, so the
+> author writes `CreateConversion` like everybody else. The attribute types below survive as the
+> emitted FORMAT; whether the hand-written form stays as an escape hatch is an open question there.
 
 Steps 11 and 12 work when the profile is source in the same compilation. ShiftFramework's is
 not — it arrives as a compiled DLL, and a source generator sees referenced assemblies as
@@ -1178,7 +1202,170 @@ test would have:
 
 ---
 
-### ⬜ Step 14 — Declarative member conventions
+### ⬜ Step 14 — Declaration metadata: one API in a project and in a package
+
+**The problem Steps 11—13 left behind.** There are now two vocabularies for the same ideas, and
+which one you use depends on where your code will end up:
+
+| | In a project | In a package |
+|---|---|---|
+| A map | `CreateMap<A, B>()` | — nothing — |
+| A conversion | `CreateConversion<A, B>(memory, query)` | a hand-written `[ShiftMapperConversions]` class of static methods |
+| A profile | `AddProfile<T>()` | compiles, does nothing (SM0028) |
+
+That is not a design, it is two designs. A framework author has to learn a second spelling, express
+their rules as bare static methods instead of the API everyone else uses, and still cannot ship a
+map or a profile at all. `ShiftEntityConversions` in `ShiftFramework.Mock` is what that looks like
+in practice, and it is the wrong shape to ask anybody to write.
+
+**The goal: ONE vocabulary.** `CreateMap`, `CreateConversion`, `ForMember` and `AddProfile` mean the
+same thing and are written the same way whether the code is compiled into the application or into a
+package, and an application registers a package's profile with the ordinary
+`AddProfile<ShiftEntityProfile>()` and nothing else.
+
+**The mechanism: a second generator output, produced in the DECLARING assembly.** A package that
+wants to contribute mapping references the ShiftMapper generator, exactly as an application does.
+When the package compiles, the generator sees its OWN source — including the `CreateMap` and
+`CreateConversion` calls inside its profile constructors — and emits, alongside anything else,
+a description of those declarations as ASSEMBLY ATTRIBUTES. Attributes survive into the DLL, so the
+application's generator can read them.
+
+```csharp
+// hand-written, in ShiftFramework — the SAME api an application uses
+public class ShiftEntityProfile : ShiftMapperProfile
+{
+    public ShiftEntityProfile()
+    {
+        CreateConversion<long, string>(id => "H" + id, id => "H" + id);
+        CreateMap<ShiftFileDTO, ShiftFileSummary>()
+            .ForMember(d => d.Name, opt => opt.MapFrom(s => s.Name.Trim()));
+    }
+}
+
+// GENERATED into ShiftFramework.dll by the same generator, and never seen by anyone
+[assembly: ShiftMapperDeclaration(typeof(ShiftEntityProfile), Conversion = "System.Int64->System.String", Query = true)]
+[assembly: ShiftMapperDeclaration(typeof(ShiftEntityProfile), Map = "ShiftFramework.ShiftFileDTO->ShiftFramework.ShiftFileSummary")]
+[assembly: ShiftMapperDeclaration(typeof(ShiftEntityProfile), Member = "Name", Of = "...", Kind = MapFrom)]
+```
+
+```csharp
+// in the application — ordinary, and all of it
+public AppMapper() => AddProfile<ShiftEntityProfile>();
+```
+
+**WHAT TRAVELS, AND HOW.** Two different things, and keeping them apart is what makes the step
+work:
+
+- the **SHAPE** — which pairs, which members, which kind of customization, whether a query form
+  exists — is what the application's generator needs, and it is exactly what fits in an attribute.
+  It is ALWAYS compile-time. Most of the API is nothing but shape: `Include`, `As`, `IncludeBase`,
+  the open generic `CreateMap`, `Ignore`, every `MapOptions` setting.
+- the **EXPRESSION**, where there is one, travels one of two ways depending on what it captures.
+
+**A PURE LAMBDA IS LIFTED INTO A REAL METHOD, and nothing happens at run time.** The package's own
+generator has the package's source, so it can emit the lambda as a static member of the assembly it
+already belongs to:
+
+```csharp
+// hand-written
+CreateConversion<long, string>(id => "H" + id, id => "H" + id);
+
+// generated into the SAME assembly
+public static partial class ShiftEntityProfile__Generated
+{
+    public static string Conversion_0(long id) => "H" + id;
+    public static Expression<Func<long, string>> Conversion_0_Query => id => "H" + id;
+}
+```
+
+The application's generator then emits a DIRECT CALL to it — identical to what Step 13's
+hand-written route produces, and just as fast, with the collection element lambdas still `static`
+because nothing is captured. This is the common case: of the lambdas in the sample's own profiles,
+all but the DI ones are pure.
+
+**A CAPTURING LAMBDA CANNOT BE LIFTED**, because there is no instance for a static method to reach:
+
+```csharp
+CreateConversion<Invoice, string>(s => _numbering.Prefix + s.Number);   // captures a service
+```
+
+For those the shape still travels as metadata, and the EXPRESSION comes from the constructed profile
+at run time — which `AddProfile` already does. The application's generator emits
+`Customizations.Value<Source, Dest, T>("Member")`, character for character what an in-project
+`MapFrom` emits today.
+
+**So the fallback is never WORSE than writing the same code in your own project** — it is the same
+code path. Step 13 looked faster only because it forced the author to hand-write static methods,
+which is the unfriendly API this step exists to remove. **The generator chooses: lift when pure,
+fall back when capturing.** It is not a switch anybody sets.
+
+Either way nothing is copied that the compiler cannot check: a lifted lambda is emitted into its own
+assembly, alongside its own `using` directives, where every name it mentions is already in scope.
+
+**Requirements.**
+
+- The declaration emitter runs on any assembly that references the generator, and emits nothing at
+  all for an assembly that declares no maps, conversions or profiles.
+- The reader folds package declarations into the SAME tables that Steps 11—13 fill from source,
+  so everything downstream — conversions, nesting, projections, diagnostics — is unchanged.
+- **Precedence stays near-to-far**: a `ForMember` beats everything, then the application's own
+  declaration, then a package's, then the built-in table. Unchanged from Step 12/13, and it must be
+  the same rule in the generator and in the runtime merge.
+- **Contract versioning becomes load-bearing**, because this format is now a real protocol between
+  the generator that WROTE the metadata and the generator that READS it. An unknown version is
+  refused loudly and wholly (SM0033), never read in part.
+- SM0028 changes meaning: from "a profile in a referenced assembly cannot be read" to "this package
+  was not built with the ShiftMapper generator, so its declarations were not emitted" — which is a
+  problem with an owner and a fix.
+
+**What it refactors.**
+
+- **Step 11 (Profiles).** `AddProfile<T>()` starts working from a package. The runtime half is
+  already correct and unchanged; only the compile-time half is new. The asymmetry documented on
+  `ShiftMapperProfile` — invisible to the compiler, live at run time — goes away, and with it the
+  reason `ShiftFramework.Mock`'s profile has to declare something inert.
+- **Step 12 (Global conversions).** The in-project API is unchanged. What changes is that a
+  conversion declared in a package profile now reaches the application by the same route as one
+  declared in an application profile.
+- **Step 13 (Compile-time contract).** Largely SUPERSEDED as the thing a framework author writes.
+  The attribute types survive as the emitted format; the hand-written `[ShiftMapperConversions]`
+  holder class stops being the recommended way to say anything. Whether it stays as an escape hatch
+  is an open question below.
+- **Step 15 (Member conventions).** Should be built on this from the start, with the in-project
+  `CreateMemberConvention` API FIRST and the package route falling out of the emitter — rather
+  than the attribute-only shape the first attempt at it had.
+
+**Decisions.**
+
+1. **The hand-written `[ShiftMapperConversions]` route is DELETED**, not demoted. Exactly one way to
+   declare a conversion, and it is the same way in a project and in a package. Keeping an escape
+   hatch would cost a second code path that rots, and the reason to want one — a package that
+   cannot reference an analyzer — is not a real constraint for a package that wants to contribute
+   mapping in the first place.
+2. **Encoding: TYPED ATTRIBUTES, with `typeof()` for every type**, and strings only where the value
+   really is a string (a member name, a convention pattern). The deciding argument is TYPE IDENTITY:
+   `typeof(Brand)` is resolved by the compiler and is unambiguously that type in that assembly,
+   whereas a serialized `"ShiftFramework.Brand"` has to be re-resolved by name and can find the wrong
+   type, or none, when two assemblies share a namespace or a type moves. A blob wins only on
+   compactness and on versioning in one place; identity is worth more than both. Attributes are also
+   legible in a decompiler, which is what somebody will have the first time a package's rule does not
+   apply and nobody knows why.
+3. **Not a choice — the generator takes the fast path whenever the lambda allows it.** Lift a pure
+   lambda into a static member of its own assembly and emit a direct call; fall back to the runtime
+   lookup only when the lambda captures. Nobody configures this, and no API surface mentions it.
+4. **EVERYTHING goes through the metadata**, not a chosen subset. Most of the API is pure shape and
+   is trivially encodable — `Include`, `As`, `IncludeBase`, the open generic `CreateMap`, `Ignore`,
+   `MapOptions`, `ReverseMap`. The ones carrying an expression (`MapFrom`, `Condition`,
+   `ConstructUsing`, `BeforeMap`/`AfterMap`, `ConvertUsing`) split by the lift-or-runtime rule above.
+   The bar for each: it works, or the build says it does not. Never silently nothing — which is the
+   exact failure this step is removing.
+
+**Done when** a profile in `ShiftFramework.Mock` declares a `CreateMap` with a `ForMember`, a
+`CreateConversion` with both forms, and is registered in the sample with a bare
+`AddProfile<ShiftEntityProfile>()` — and the generated code in the sample is IDENTICAL to what the
+same profile compiled into the sample would produce, with no attribute written by hand anywhere.
+
+### ⬜ Step 15 — Declarative member conventions
 
 Type-pair conversions (Steps 12 and 13) handle "this type becomes that type". They cannot
 express ShiftFramework's select-DTO rule, which is member-SHAPED:
@@ -1216,14 +1403,41 @@ The pieces the vocabulary needs, and no more:
   (`ForMember` always wins)
 
 Keep this deliberately small. If a rule cannot be expressed here, the framework writes a
-`ForMember` in a profile, or contributes generated source (Step 11). The vocabulary is for the
-rules that must apply to types the framework has never seen.
+`ForMember` in a profile. The vocabulary is for the rules that must apply to types the framework
+has never seen.
+
+**IN-PROJECT FIRST, and this is a correction.** A first attempt at this step shipped the attribute
+and nothing else, which made member conventions the only feature in the library with no in-project
+spelling — you could declare one from a package and not from your own mapper. Build the ordinary
+API first, and let Step 14's emitter carry it into packages like everything else:
+
+```csharp
+CreateMemberConvention<ShiftEntitySelectDTO>()
+    .Fill(d => d.Value, "{Member}ID")
+    .Fill(d => d.Text,  "{Member}.{NameOf}");
+```
+
+The target is a SELECTOR rather than a string, so renaming `Value` is a compile error instead of a
+build warning. The path stays a string, because it names source members that are not symbols until
+a map is declared. The attribute keeps the flat `Fill = "..."` spelling, since an attribute cannot
+hold a lambda.
+
+**And make it more than one rule.** The first attempt hard-coded two placeholders for exactly
+ShiftEntity's case. `{Member}` and `{NameOf}` are the right primitives, but the vocabulary should be
+able to express rules nobody has thought of yet — several conventions coexisting, a filter on the
+DESTINATION type as well as the member type, and paths that walk more than one level. If a rule can
+only serve the case it was written for, it is a hard-coded special case with an attribute on it.
+
+**One thing worth keeping from the first attempt**, because it was measured rather than guessed: a
+convention path must resolve EXACT first and then by the mapper's own case rule. ShiftEntity's
+pattern is `{Member}ID` and real entities spell it `BrandId` about as often; a convention that only
+works when the application already agreed on casing is not a convention.
 
 **Done when** an application declares `CreateMap<Brand, BrandListDTO>()` and the generated
 projection contains an inline `Brand = new ShiftEntitySelectDTO { Value = ..., Text = ... }`
 member-init that SQL translates, with nothing written in the application.
 
-### ⬜ Step 15 — What ShiftFramework then builds (checklist, not ShiftMapper work)
+### ⬜ Step 16 — What ShiftFramework then builds (checklist, not ShiftMapper work)
 
 Tracked here so Phase 3 can be validated against a real consumer. All of it lives in the
 ShiftEntity repository, none of it in ShiftMapper.
@@ -1265,7 +1479,7 @@ ShiftEntity repository, none of it in ShiftMapper.
 
 ## Phase 4 — Finish
 
-### ⬜ Step 16 — Diagnostics and analyzer completeness
+### ⬜ Step 17 — Diagnostics and analyzer completeness
 
 - `CreateMap` called somewhere the generator cannot read it (inside an `if`, a loop, a ternary,
   a helper method) currently generates NOTHING and says nothing. ShiftEntity's generator
@@ -1283,7 +1497,7 @@ ShiftEntity repository, none of it in ShiftMapper.
   second assembly under `analyzers/dotnet/cs`, since a code-fix provider must not be loaded into
   the compiler's own analyzer context.
 
-### ⬜ Step 17 — Docs and sample
+### ⬜ Step 18 — Docs and sample
 
 - `README.md`, plus a `docs/` folder: getting started, the conversion table, the diagnostics
   reference (one page per SM id, which is what people search for), and the extension-points
@@ -1295,7 +1509,7 @@ ShiftEntity repository, none of it in ShiftMapper.
   framework" project that registers a global conversion through Step 13 — so the extension
   contract is exercised by the sample, not only by the tests.
 
-### ⬜ Step 18 — Benchmarks
+### ⬜ Step 19 — Benchmarks
 
 BenchmarkDotNet against AutoMapper and Mapperly: single map, nested graph, 10k collection, and
 a `ProjectTo` query-shape comparison. Publish the numbers in the README. A source-generated
@@ -1309,14 +1523,14 @@ mapper that cannot show its numbers has given up its main argument.
 |---|---|---|---|
 | 1 — Trust | 1 Tests, 2 Runtime cost, 3 Packaging, 4 `IShiftMapper` | ✅ done | Everything depended on 1 and 4 |
 | 2 — Gaps | ~~5 Collections~~, ~~6 Constructors/records~~, ~~7 Member options~~, ~~8 Map hooks~~, ~~9 Flattening~~, ~~10 Inheritance/generics~~ | ✅ done | Unblocked Phase 3 |
-| 3 — General layer | ~~11 Profiles~~, ~~12 Global conversions~~, ~~13 Compile-time contract~~, 14 Member conventions, 15 ShiftFramework port | ⬜ 11—13 done | The goal |
-| 4 — Finish | 16 Diagnostics, 17 Docs, 18 Benchmarks | ⬜ pending | Can run alongside 2 and 3 |
+| 3 — General layer | ~~11 Profiles~~, ~~12 Global conversions~~, ~~13 Compile-time contract~~, 14 Declaration metadata, 15 Member conventions, 16 ShiftFramework port | ⬜ 11—13 done, 14 refactors them | The goal |
+| 4 — Finish | 17 Diagnostics, 18 Docs, 19 Benchmarks | ⬜ pending | Can run alongside 2 and 3 |
 
 The shortest path to ShiftFramework being able to adopt this is
-**1 → 4 → 8 → 10 → 11 → 12 → 13 → 14 → 15**; with 1 and 4 done, it starts at **8**. Steps 5, 6, 7
-and 9 are needed for ShiftMapper to be a good general-purpose mapper, but they are not on
-ShiftFramework's critical path. **Phase 2 is now complete, so the path is
-11 → 12 → 13 → 14 → 15.** Everything in Phase 2 is done: 5, 6 and 7 because every
+**1 → 4 → 8 → 10 → 11 → 12 → 13 → 14 → 15 → 16**; with 1 and 4 done, it starts at **8**. Steps 5, 6,
+7 and 9 are needed for ShiftMapper to be a good general-purpose mapper, but they are not on
+ShiftFramework's critical path. **Phase 2 and Steps 11—13 are complete, so the path is
+14 → 15 → 16.** Everything in Phase 2 is done: 5, 6 and 7 because every
 application hits them on its first day (a list endpoint, a DTO that is a record, a PATCH), 8
 because it was the other Phase 3 blocker, and 9 because it is the one every DTO that is a grid row
 hits.
