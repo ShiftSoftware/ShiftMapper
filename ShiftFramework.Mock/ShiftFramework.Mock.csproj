@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <!--
     A STAND-IN FOR SHIFTFRAMEWORK, and the point of it is what it does NOT reference.
@@ -13,12 +13,23 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>ShiftFramework</RootNamespace>
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+    <CompilerGeneratedFilesOutputPath>Generated</CompilerGeneratedFilesOutputPath>
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- The RUNTIME library only. No OutputItemType="Analyzer": this project declares rules,
-         it does not generate mappers. -->
+    <Compile Remove="Generated/**" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\ShiftMapper\ShiftMapper.csproj" />
+
+    <!-- THE GENERATOR, referenced as an analyzer exactly as an application does. It does not write
+         a mapper for this project - there is none - it writes this project's DECLARATIONS into the
+         assembly as metadata, which is the only thing a generator compiling a CONSUMER can read. -->
+    <ProjectReference Include="..\ShiftMapper.Generator\ShiftMapper.Generator.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
   </ItemGroup>
 
 </Project>

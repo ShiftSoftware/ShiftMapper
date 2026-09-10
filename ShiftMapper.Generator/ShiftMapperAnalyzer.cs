@@ -193,6 +193,9 @@ public sealed class ShiftMapperAnalyzer : DiagnosticAnalyzer
 
             DiagnosticDescriptor? descriptor = problem.Substring(0, split) switch
             {
+                // SM0028 arrives on this list too now: "the package said nothing" is discovered
+                // while reading declarations, not while walking profile syntax.
+                "SM0028" => DiagnosticDescriptors.ProfileNotInSource,
                 "SM0031" => DiagnosticDescriptors.DeclaredConversionConflict,
                 "SM0032" => DiagnosticDescriptors.DeclaredConversionMalformed,
                 "SM0033" => DiagnosticDescriptors.DeclaredContractTooNew,

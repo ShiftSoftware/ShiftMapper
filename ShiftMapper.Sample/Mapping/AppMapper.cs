@@ -556,21 +556,20 @@ public partial class AppMapper : ShiftMapperBase
         // have both forms, and it projects.
         CreateMap<Brand, BrandHashDto>();
 
-        // AND THE ROUTE THAT DOES NOT CROSS AN ASSEMBLY, registered on purpose so the build says so:
+        // A PACKAGE'S PROFILE, ADDED WITH THE ORDINARY LINE. ShiftFramework.Mock is referenced the
+        // way a NuGet package would be — a compiled assembly, no source — and this is the whole
+        // of what it takes to use its maps and conversions:
         //
-        //   warning SM0028: the profile 'ShiftFileProfile' is compiled into a referenced assembly,
-        //                   so its CreateConversion calls cannot be read and none of its maps were
-        //                   generated
+        //     AddProfile<ShiftEntityProfile>();
         //
-        // A profile is read as SOURCE. From a package there is no source to read — a generator
-        // sees a reference as metadata, and metadata has no method bodies. ShiftFileProfile is the
-        // obvious thing for a package author to write, and it is why the attribute contract exists.
+        // Identical to adding a profile from this project. It works because ShiftFramework's OWN
+        // build wrote what its profile declares into its assembly as metadata: a generator sees a
+        // reference as metadata and no method bodies, so the CreateMap calls themselves are
+        // invisible, and something has to say what they were.
         //
-        // Registering it is harmless BECAUSE OF WHAT IT DECLARES: a map between two of the
-        // framework's own types, which nothing here asks for. An earlier version declared a
-        // conversion instead, and this sample caught what that costs — invisible to the compiler,
-        // live at run time, quietly replacing the framework's own query form. See ShiftFileProfile.
-        AddProfile<ShiftFileProfile>();
+        // Note it is OPT-IN. Referencing the package changes nothing until this line asks for it,
+        // so a package cannot quietly alter how your maps behave.
+        AddProfile<ShiftEntityProfile>();
     }
 
     /// <summary>Proof that constructor injection works on this class.</summary>

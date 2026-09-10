@@ -34,7 +34,7 @@ namespace ShiftMapper.Generator;
 /// (<see cref="MapModel"/>) instead of Roslyn objects.
 /// </summary>
 [Generator]
-public sealed class ShiftMapperGenerator : IIncrementalGenerator
+public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
 {
     /// <summary>Full name of the base class a mapper must derive from.</summary>
     internal const string BaseClassMetadataName = "ShiftMapper.ShiftMapperBase";
@@ -111,6 +111,20 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         // declarations would fight over the same generated file name — which makes Roslyn
         // drop the generator's entire output, not just that one file.
         context.RegisterSourceOutput(declarations.Collect(), static (spc, models) => EmitAll(spc, models));
+
+        // THE SECOND OUTPUT, and the one that makes a package able to declare anything. It runs on
+        // the DECLARING assembly and writes what its profiles declare into metadata, because that
+        // is all a generator compiling a consumer will ever be able to see. See
+        // ShiftMapperGenerator.Declarations.cs.
+        IncrementalValuesProvider<ProfileDeclarationModel> profiles = context.SyntaxProvider
+            .CreateSyntaxProvider(
+                predicate: static (node, _) => IsCandidateClass(node),
+                transform: static (ctx, ct) => BuildProfileDeclaration(
+                    ctx.SemanticModel, (ClassDeclarationSyntax)ctx.Node, ct))
+            .Where(static model => model is not null)
+            .Select(static (model, _) => model!);
+
+        context.RegisterSourceOutput(profiles.Collect(), static (spc, models) => EmitDeclarations(spc, models));
     }
 
     // ---------------------------------------------------------------------
@@ -231,6 +245,35 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         ConversionTable conversions = ReadConversions(
             semanticModel.Compilation, classSymbol, baseClass, profileBase, declaredProblems,
             cancellationToken);
+
+        // PROFILES THAT ARRIVED AS METADATA. Their own build wrote down what they declare,
+        // because a generator compiling this assembly sees a reference as metadata and no method
+        // bodies. What comes back is the same shape the source path produces, so everything below
+        // treats a package's map as an ordinary map.
+        var metadataProfiles = new List<INamedTypeSymbol>();
+
+        CollectProfileParts(
+            semanticModel.Compilation,
+            classDeclaration,
+            profileBase,
+            new List<ClassDeclarationSyntax>(),
+            new HashSet<string>(StringComparer.Ordinal),
+            metadataProfiles,
+            cancellationToken);
+
+        DeclaredProfiles.Recovered recovered = DeclaredProfiles.Read(
+            semanticModel.Compilation, metadataProfiles, conversions, declaredProblems);
+
+        foreach (INamedTypeSymbol silent in metadataProfiles)
+        {
+            if (recovered.Found.Contains(silent.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)))
+                continue;
+
+            declaredProblems.Add(
+                $"SM0028|the profile '{silent.Name}' is in a referenced assembly that carries no " +
+                "ShiftMapper declaration metadata, so nothing it declares could be read. That " +
+                "package has to be built with the ShiftMapper generator referenced as an analyzer.");
+        }
 
         var maps = ImmutableArray.CreateBuilder<MapModel>();
         var seen = new HashSet<string>();
@@ -359,6 +402,18 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             }
         }
 
+        // THE PACKAGE'S MAPS, built from metadata and merged after this declaration's own — so
+        // a pair written here still wins, exactly as it does over a profile in this project.
+        foreach (MapModel recoveredMap in RecoverMaps(
+                     semanticModel.Compilation, recovered, classDefaultCaseSensitive,
+                     classDefaultAllowNullCollections, classDefaultFlattening, classDefaultNaming,
+                     conversions,
+                     LocationInfo.CreateFrom(classDeclaration.Identifier.Parent ?? classDeclaration)))
+        {
+            if (seen.Add(recoveredMap.Key))
+                maps.Add(recoveredMap);
+        }
+
         // OPEN GENERIC MAPS, closed last — after every explicit map has been added, so an
         // explicit CreateMap<Wrapper<Brand>, WrapperDto<BrandDto>> always wins over the one this
         // would have generated for the same pair.
@@ -430,30 +485,6 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                         maps.Add(closed);
                 }
             }
-        }
-
-        // PROFILES THAT ARE NOT SOURCE. A profile compiled into a referenced package cannot be
-        // read: a generator sees a referenced assembly as metadata, and metadata has no method
-        // bodies, so its CreateMap calls are not there to find. Mapping nothing and saying nothing
-        // is the one outcome this library never wants.
-        var unreadableProfiles = new List<string>();
-
-        CollectProfileParts(
-            semanticModel.Compilation,
-            classDeclaration,
-            profileBase,
-            new List<ClassDeclarationSyntax>(),
-            new HashSet<string>(StringComparer.Ordinal),
-            unreadableProfiles,
-            cancellationToken);
-
-        foreach (string profile in unreadableProfiles)
-        {
-            profileProblems.Add(
-                $"SM0028|the profile '{profile}' is compiled into a referenced assembly, so its " +
-                "CreateMap calls cannot be read and none of its maps were generated. A generator " +
-                "sees a referenced assembly as metadata, which has no method bodies. Declare the " +
-                "maps in this project, or ship the profile as source.");
         }
 
         // Containing types, outermost first, so the emitted part can reproduce the nesting.
@@ -715,9 +746,10 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
             }
         }
 
-        // THE REFERENCED ASSEMBLIES, read LAST so a conversion declared in this project's own
-        // source keeps the pair. Near beats far, and the runtime merge applies the same order.
-        DeclaredConversions.Read(compilation, table, declaredProblems);
+        // A REFERENCED ASSEMBLY'S conversions are NOT read here. They arrive through the profile
+        // that declared them, when a mapper adds it — which is what makes them opt-in rather than
+        // something a reference imposes. See DeclaredProfiles.
+        _ = declaredProblems;
 
         return table;
     }
@@ -740,7 +772,7 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
         INamedTypeSymbol? profileBase,
         List<ClassDeclarationSyntax> parts,
         HashSet<string> visited,
-        List<string>? unreadable,
+        List<INamedTypeSymbol>? unreadable,
         CancellationToken cancellationToken)
     {
         if (profileBase is null)
@@ -788,8 +820,11 @@ public sealed class ShiftMapperGenerator : IIncrementalGenerator
                     compilation, part, profileBase, parts, visited, unreadable, cancellationToken);
             }
 
+            // NO SYNTAX means the profile is compiled into a referenced assembly. That is no
+            // longer the end of the story: its own build wrote its declarations into metadata, and
+            // the SYMBOL is what the reader needs to find them.
             if (!anySyntax)
-                unreadable?.Add(profile.Name);
+                unreadable?.Add(profile);
         }
     }
 

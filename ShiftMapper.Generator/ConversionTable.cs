@@ -70,12 +70,22 @@ internal sealed class ConversionTable
     /// <summary>
     /// Adds a conversion DECLARED BY A REFERENCED ASSEMBLY, whose members the generator can name.
     /// </summary>
+    /// <summary>
+    /// Adds a conversion a PROFILE declared, recovered from metadata.
+    ///
+    /// <para><paramref name="hasQueryForm"/> is separate from <paramref name="queryAccess"/> on
+    /// purpose. A profile's query expression is not a named member anywhere — it is a lambda that
+    /// its constructor registers at run time, which <c>AddProfile</c> already runs — so the pair
+    /// projects with nothing to name. Deriving "has a query form" from "has a member to call" would
+    /// declare every profile conversion unprojectable.</para>
+    /// </summary>
     public void AddDeclared(
         ITypeSymbol source,
         ITypeSymbol destination,
-        string memoryCall,
-        string? queryAccess) =>
-        _entries.Add(new Entry(source, destination, queryAccess is not null, memoryCall, queryAccess));
+        bool hasQueryForm,
+        string? memoryCall = null,
+        string? queryAccess = null) =>
+        _entries.Add(new Entry(source, destination, hasQueryForm, memoryCall, queryAccess));
 
     /// <summary>
     /// The lines the generated mapper needs so a projection can splice the query forms — one per

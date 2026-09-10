@@ -1,12 +1,13 @@
-using ShiftFramework;
+﻿using ShiftFramework;
 
 namespace ShiftMapper.Tests.Model;
 
 // ---------------------------------------------------------------------------------------------
 // THE COMPILE-TIME EXTENSION CONTRACT, exercised across a REAL assembly boundary.
 //
-// ShiftFramework.Mock is referenced as a compiled library with no analyzer and no source. Nothing
-// in this file declares a conversion; both arrive through two assembly attributes over there.
+// ShiftFramework.Mock is referenced as a compiled library with no source here. Nothing in this file
+// declares a conversion or that map; they arrive from the profile added below, whose declarations
+// its OWN build wrote into its assembly as metadata.
 // ---------------------------------------------------------------------------------------------
 
 public class Document
@@ -43,6 +44,10 @@ public partial class DeclaredMapper : ShiftMapperBase
 {
     public DeclaredMapper()
     {
+        // THE ONE LINE. ShiftFramework.Mock is a compiled assembly with no source here, and this is
+        // identical to adding a profile from this project — which is the whole of Step 14.
+        AddProfile<ShiftEntityProfile>();
+
         CreateMap<Document, DocumentDto>();
         CreateMap<Document, DocumentIdDto>();
     }

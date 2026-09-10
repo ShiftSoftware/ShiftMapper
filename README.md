@@ -399,6 +399,61 @@ invisible to the compiler but still LIVE at run time, so one that declares a con
 quietly override what the build described. Declare rules through the attributes; keep profiles for
 the same compilation.
 
+### Rules from a referenced assembly
+
+**One vocabulary.** A package writes the same `CreateMap`, `CreateConversion` and `ForMember` an
+application writes, in an ordinary profile:
+
+```csharp
+// in ShiftFramework
+public class ShiftEntityProfile : ShiftMapperProfile
+{
+    public ShiftEntityProfile()
+    {
+        CreateConversion<long, string>(id => "H" + id, id => "H" + id);
+
+        CreateMap<ShiftFileDTO, ShiftFileSummary>()
+            .ForMember(d => d.Name, opt => opt.MapFrom(s => s.Name.Trim()));
+    }
+}
+```
+
+and an application adds it with the line it would use for a profile of its own:
+
+```csharp
+public AppMapper() => AddProfile<ShiftEntityProfile>();
+```
+
+That is the whole of it. No attributes written by hand, no second API, and nothing in the
+application naming the package's internals.
+
+**How it can work at all.** A source generator sees a referenced assembly as METADATA — type
+names, signatures, attributes — and never a method body. So a profile compiled into a package is,
+from the outside, a class with an empty constructor. The package's OWN build fixes that: the same
+generator runs there and writes what its profiles declare into the assembly as attributes, while the
+source is still in front of it. The application's generator reads those and produces exactly the
+code it would have produced from source.
+
+**No expression is ever copied.** The work splits cleanly:
+
+- the **shape** — which pairs, which members, which options — goes into the metadata;
+- the **expressions** arrive at run time, because `AddProfile` constructs the profile and its
+  constructor registers them, exactly as it does for a profile in your own project.
+
+So a package's `MapFrom` is emitted as `Customizations.Value<Source, Dest, T>("Member")` —
+character for character what an in-project `MapFrom` emits.
+
+**It is opt-in.** Declarations are keyed by their profile, so referencing a package changes nothing
+until an `AddProfile` asks for it. A package cannot quietly alter how your maps behave.
+
+**Precedence, near to far**: a `ForMember` beats everything, then your own declaration, then a
+package's, then the built-in table — the same order in the generator and in the runtime merge.
+
+**The package must be built with the ShiftMapper generator** referenced as an analyzer, or nothing
+is written down. That case is reported (SM0028) rather than mapping nothing in silence, and
+`[assembly: ShiftMapperContract(1)]` lets a package built against a newer ShiftMapper be refused
+whole (SM0033) instead of half-read.
+
 ### Global type-pair conversions
 
 Every other feature configures a MEMBER of a MAP. This configures a TYPE PAIR, once, for every map.
@@ -734,7 +789,7 @@ will not be mapped, or will be mapped in a way worth knowing about.
 | SM0025 | Warning | `As` names a type that is not assignable to the destination |
 | SM0026 | Warning | An open generic `CreateMap` was not closed (needs one type parameter a side) |
 | SM0027 | Warning | A pair is declared both in a profile and outside it |
-| SM0028 | Warning | A profile in a referenced assembly cannot be read |
+| SM0028 | Warning | A referenced assembly carries no ShiftMapper declaration metadata |
 | SM0029 | Warning | `ConfigureDefaults` on a profile has no effect |
 | SM0030 | Warning | A conversion has no query form, so `ProjectTo` cannot use the map |
 | SM0031 | **Error** | Two referenced assemblies declare a conversion for the same type pair |

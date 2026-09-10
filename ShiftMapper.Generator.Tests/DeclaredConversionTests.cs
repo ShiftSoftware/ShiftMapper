@@ -4,258 +4,233 @@ using Xunit;
 namespace ShiftMapper.Generator.Tests;
 
 /// <summary>
-/// THE COMPILE-TIME EXTENSION CONTRACT — conversions a package declares in metadata.
+/// THE EXTENSION CONTRACT — a package writes ORDINARY maps and conversions, and an application gets
+/// them with the ordinary <c>AddProfile</c>.
 ///
-/// <para>The harness compiles one snippet, so these declare the contract in the snippet's own
-/// assembly. That is the same code path a referenced assembly takes: the reader walks the
-/// compilation's own assembly and its references together, and reads both as symbols. What it can
-/// never do is read a method BODY, and nothing here asks it to — which is the whole design.</para>
+/// <para>Every test here compiles TWO assemblies, because nothing less would prove anything. The
+/// whole difficulty is that a profile compiled into a package is METADATA by the time a consumer
+/// sees it, with no method bodies; put the profile in the same snippet and the ordinary source path
+/// handles it and the interesting code never runs.</para>
+///
+/// <para>What the package writes is the same API an application writes. There is no second
+/// vocabulary, no hand-written attribute, and nothing in the application naming the package's
+/// internals.</para>
 /// </summary>
 public class DeclaredConversionTests
 {
-    private const string Framework =
+    /// <summary>A package: ordinary profile, ordinary API. Its build emits the metadata.</summary>
+    private const string Package =
         """
         using ShiftMapper;
         using System;
         using System.Collections.Generic;
-        using System.Linq.Expressions;
 
-        [assembly: ShiftMapperContract(1)]
-        [assembly: ShiftMapperConversions(typeof(FrameworkConversions))]
+        namespace Framework;
 
         public class FileDto { public string Name { get; set; } = ""; }
 
-        [ShiftMapperConversions]
-        public static class FrameworkConversions
+        public class FileSummary { public string Name { get; set; } = ""; }
+
+        public class FrameworkProfile : ShiftMapperProfile
         {
-            public static List<FileDto> ToFiles(string json) => new();
+            public FrameworkProfile()
+            {
+                CreateConversion<long, string>(id => "H" + id, id => "H" + id);
 
-            [ShiftMapperQueryForm]
-            public static Expression<Func<string, List<FileDto>>> ToFilesQuery => json => new List<FileDto>();
-
-            public static string ToHashId(long id) => "H" + id;
-
-            [ShiftMapperQueryForm]
-            public static Expression<Func<long, string>> ToHashIdQuery => id => "H" + id;
+                CreateMap<FileDto, FileSummary>()
+                    .ForMember(d => d.Name, opt => opt.MapFrom(s => s.Name.Trim()));
+            }
         }
-
-        public class Entity { public string Files { get; set; } = ""; public long Id { get; set; } }
-        public class EntityDto { public List<FileDto> Files { get; set; } = new(); public string Id { get; set; } = ""; }
         """;
 
-    private static GeneratorRun Run(string body) => GeneratorHarness.Run(Framework + "\n" + body);
-
-    private const string Mapper =
+    private const string Application =
         """
+        using ShiftMapper;
+        using System.Collections.Generic;
+        using Framework;
+
+        public class Entity { public long Id { get; set; } }
+        public class EntityDto { public string Id { get; set; } = ""; }
+
         public partial class TestMapper : ShiftMapperBase
         {
-            public TestMapper() => CreateMap<Entity, EntityDto>();
+            public TestMapper()
+            {
+                AddProfile<FrameworkProfile>();
+                CreateMap<Entity, EntityDto>();
+            }
         }
         """;
+
+    private static GeneratorRun Run(string application) =>
+        GeneratorHarness.RunWithPackage(Package, application);
 
     // -----------------------------------------------------------------
     // THE CORE.
     // -----------------------------------------------------------------
 
     /// <summary>
-    /// THE TEST THAT MATTERS: a declared conversion becomes a DIRECT CALL, not a lookup.
-    ///
-    /// That is what metadata buys over the in-source route. A <c>CreateConversion</c> lambda can
-    /// only ever be looked up on the mapper at run time; a declared one has a NAME, and the
-    /// generated code says it.
+    /// THE TEST THAT MATTERS: a MAP declared in a package is generated into the application. This
+    /// is the thing that could not be done at all before — a profile from a package compiled and
+    /// contributed nothing.
     /// </summary>
     [Fact]
-    public void A_declared_conversion_becomes_a_direct_call()
+    public void A_map_declared_in_a_package_is_generated_into_the_application()
     {
-        GeneratorRun run = Run(Mapper);
+        GeneratorRun run = Run(Application);
 
         run.Compiles()
-           .Emits("global::FrameworkConversions.ToFiles(source.Files)")
-           .Emits("global::FrameworkConversions.ToHashId(source.Id)")
-           // Nothing is looked up on the mapper for these.
-           .DoesNotEmit("Customizations.Conversion<");
+           .Emits("global::Framework.FileSummary MapToFileSummary(global::Framework.FileDto source)");
+    }
 
+    /// <summary>
+    /// AND ITS ForMember COMES WITH IT, as the identical runtime lookup an in-project MapFrom
+    /// produces. The expression is not in the metadata and does not need to be: the profile's own
+    /// constructor puts it in the store, which AddProfile already runs.
+    /// </summary>
+    [Fact]
+    public void A_ForMember_declared_in_a_package_reaches_the_application()
+    {
+        Run(Application).Compiles()
+           .Emits("Customizations.Value<global::Framework.FileDto, global::Framework.FileSummary, string>(\"Name\")");
+    }
+
+    /// <summary>A CONVERSION declared in a package applies to the application's own maps.</summary>
+    [Fact]
+    public void A_conversion_declared_in_a_package_applies_to_the_applications_maps()
+    {
+        GeneratorRun run = Run(Application);
+
+        run.Compiles().Emits("Customizations.Conversion<long, string>()");
         run.None("SM0002");
     }
 
     /// <summary>
-    /// A DECLARED PAIR BEATS THE BUILT-IN TABLE, exactly as an in-source one does. <c>long</c> to
-    /// <c>string</c> already converts, so a framework's hash-id rule would be ignored in silence
-    /// under any other ordering.
+    /// It BEATS the built-in table, exactly as an in-project conversion does. <c>long</c> to
+    /// <c>string</c> already converts, so a framework's hash-id rule would otherwise be ignored in
+    /// silence.
     /// </summary>
     [Fact]
-    public void A_declared_pair_beats_the_built_in_conversion()
+    public void A_packages_conversion_beats_the_built_in_one()
     {
-        Run(Mapper).Compiles().DoesNotEmit("ToInvariantString(source.Id)");
+        Run(Application).Compiles().DoesNotEmit("ToInvariantString(source.Id)");
     }
+
+    // -----------------------------------------------------------------
+    // OPT-IN, AND PRECEDENCE.
+    // -----------------------------------------------------------------
 
     /// <summary>
-    /// The query forms are REGISTERED by the generated mapper, which is the one thing a name cannot
-    /// stand in for: the projection needs a tree to splice.
+    /// REFERENCING THE PACKAGE IS NOT ENOUGH — the mapper must ASK. That is the difference between
+    /// a rule you opted into and one a reference imposed on you, and it is why declarations are
+    /// keyed by profile.
     /// </summary>
     [Fact]
-    public void The_query_forms_are_registered_for_the_projection()
-    {
-        GeneratorRun run = Run(Mapper);
-
-        run.Compiles()
-           .Emits("protected override void RegisterDeclaredConversions")
-           .Emits("customizations.RegisterQueryConversion(typeof(string)")
-           .Emits("global::FrameworkConversions.ToFilesQuery")
-           .Emits("global::ShiftMapper.MapCustomizations.Splice<string,");
-    }
-
-    /// <summary>
-    /// The element lambda of a collection stays <c>static</c>, because a declared conversion
-    /// captures nothing. An in-source conversion cannot manage that — it has to reach the mapper
-    /// instance — so this is a real difference rather than a cosmetic one.
-    /// </summary>
-    [Fact]
-    public void A_declared_conversion_keeps_collection_lambdas_static()
-    {
-        GeneratorRun run = GeneratorHarness.Run(Framework +
-            """
-
-            public class Bag { public List<long> Ids { get; set; } = new(); }
-            public class BagDto { public List<string> Ids { get; set; } = new(); }
-
-            public partial class TestMapper : ShiftMapperBase
-            {
-                public TestMapper() => CreateMap<Bag, BagDto>();
-            }
-            """);
-
-        run.Compiles().Emits("static item => global::FrameworkConversions.ToHashId(item)");
-    }
-
-    /// <summary>A conversion the PROJECT declares wins over one a package declares.</summary>
-    [Fact]
-    public void A_source_declared_conversion_wins_over_a_declared_one()
+    public void A_package_that_is_referenced_but_not_added_changes_nothing()
     {
         GeneratorRun run = Run(
             """
+            using ShiftMapper;
+            using Framework;
+
+            public class Entity { public long Id { get; set; } }
+            public class EntityDto { public string Id { get; set; } = ""; }
+
+            public partial class TestMapper : ShiftMapperBase
+            {
+                // No AddProfile: the package is referenced and says nothing.
+                public TestMapper() => CreateMap<Entity, EntityDto>();
+            }
+            """);
+
+        run.Compiles()
+           .DoesNotEmit("Customizations.Conversion<long, string>()")
+           .DoesNotEmit("MapToFileSummary")
+           // The built-in conversion is what fills it, because nothing overrode it.
+           .Emits("ToInvariantString(source.Id)");
+    }
+
+    /// <summary>A conversion the APPLICATION declares wins over the package's.</summary>
+    [Fact]
+    public void An_applications_own_conversion_wins_over_the_packages()
+    {
+        GeneratorRun run = Run(
+            """
+            using ShiftMapper;
+            using Framework;
+
+            public class Entity { public long Id { get; set; } }
+            public class EntityDto { public string Id { get; set; } = ""; }
+
             public partial class TestMapper : ShiftMapperBase
             {
                 public TestMapper()
                 {
+                    AddProfile<FrameworkProfile>();
                     CreateConversion<long, string>(id => "LOCAL" + id, id => "LOCAL" + id);
                     CreateMap<Entity, EntityDto>();
                 }
             }
             """);
 
+        // Both routes emit the same lookup shape; what matters is that the map still resolves and
+        // the application's registration is the one in the store at run time.
+        run.Compiles().Emits("Customizations.Conversion<long, string>()");
+        run.None("SM0002");
+    }
+
+    /// <summary>
+    /// A map the APPLICATION declares for the same pair wins over the package's, so an application
+    /// can always override what a package said.
+    /// </summary>
+    [Fact]
+    public void An_applications_own_map_wins_over_the_packages()
+    {
+        GeneratorRun run = Run(
+            """
+            using ShiftMapper;
+            using Framework;
+
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+                    CreateMap<FileDto, FileSummary>().ForMember(d => d.Name, opt => opt.Ignore());
+                    AddProfile<FrameworkProfile>();
+                }
+            }
+            """);
+
+        // Ignored here, so the package's MapFrom lookup is not emitted for it.
         run.Compiles()
-           .Emits("Customizations.Conversion<long, string>()")
-           // The registration line still mentions ToHashIdQuery, which is why this names the CALL
-           // rather than the method: query forms are registered whether or not anything uses them.
-           .DoesNotEmit("global::FrameworkConversions.ToHashId(source.Id)");
+           .DoesNotEmit("Customizations.Value<global::Framework.FileDto, global::Framework.FileSummary, string>(\"Name\")");
     }
 
     // -----------------------------------------------------------------
-    // THE DIAGNOSTICS.
+    // WHEN THE PACKAGE SAID NOTHING.
     // -----------------------------------------------------------------
 
     /// <summary>
-    /// SM0031 — two holders claiming one pair. An ERROR, because there is no answer to pick: half
-    /// the maps in the application would convert the other way and nobody could see why.
+    /// SM0028 — a package built WITHOUT the ShiftMapper generator wrote no metadata, so its profile
+    /// contributes nothing. That is a problem with an owner and a fix, and the message says so
+    /// rather than mapping nothing in silence.
     /// </summary>
     [Fact]
-    public void Two_holders_claiming_one_pair_is_an_error()
+    public void A_package_built_without_the_generator_is_reported()
     {
-        GeneratorRun run = GeneratorHarness.Run(
-            """
-            using ShiftMapper;
+        // Compiled with NO generator, so no declarations were written down.
+        GeneratorRun run = GeneratorHarness.RunWithPackage(
+            packageSource: Package,
+            applicationSource: Application,
+            runGeneratorOnPackage: false);
 
-            [assembly: ShiftMapperConversions(typeof(FirstConversions))]
-            [assembly: ShiftMapperConversions(typeof(SecondConversions))]
-
-            [ShiftMapperConversions]
-            public static class FirstConversions { public static string ToText(long id) => "A" + id; }
-
-            [ShiftMapperConversions]
-            public static class SecondConversions { public static string ToText(long id) => "B" + id; }
-
-            public class Entity { public long Id { get; set; } }
-            public class EntityDto { public string Id { get; set; } = ""; }
-
-            public partial class TestMapper : ShiftMapperBase
-            {
-                public TestMapper() => CreateMap<Entity, EntityDto>();
-            }
-            """);
-
-        string message = run.Single("SM0031").GetMessage();
-
-        Assert.Contains("FirstConversions", message);
-        Assert.Contains("SecondConversions", message);
-    }
-
-    /// <summary>SM0032 — a query form whose pair nothing declares.</summary>
-    [Fact]
-    public void An_orphan_query_form_is_reported()
-    {
-        GeneratorRun run = GeneratorHarness.Run(
-            """
-            using ShiftMapper;
-            using System;
-            using System.Linq.Expressions;
-
-            [assembly: ShiftMapperConversions(typeof(FrameworkConversions))]
-
-            [ShiftMapperConversions]
-            public static class FrameworkConversions
-            {
-                public static string ToText(long id) => "H" + id;
-
-                // For a pair nothing declares a memory form for.
-                [ShiftMapperQueryForm]
-                public static Expression<Func<int, string>> Orphan => id => "X" + id;
-            }
-
-            public class Entity { public long Id { get; set; } }
-            public class EntityDto { public string Id { get; set; } = ""; }
-
-            public partial class TestMapper : ShiftMapperBase
-            {
-                public TestMapper() => CreateMap<Entity, EntityDto>();
-            }
-            """);
-
-        Assert.Contains("Orphan", run.Single("SM0032").GetMessage());
-    }
-
-    /// <summary>SM0033 — a package built against a contract this generator does not know.</summary>
-    [Fact]
-    public void A_newer_contract_is_refused_and_its_conversions_ignored()
-    {
-        GeneratorRun run = GeneratorHarness.Run(
-            """
-            using ShiftMapper;
-
-            [assembly: ShiftMapperContract(99)]
-            [assembly: ShiftMapperConversions(typeof(FrameworkConversions))]
-
-            [ShiftMapperConversions]
-            public static class FrameworkConversions { public static string ToText(long id) => "H" + id; }
-
-            public class Entity { public long Id { get; set; } }
-            public class EntityDto { public string Id { get; set; } = ""; }
-
-            public partial class TestMapper : ShiftMapperBase
-            {
-                public TestMapper() => CreateMap<Entity, EntityDto>();
-            }
-            """);
-
-        Assert.Contains("99", run.Single("SM0033").GetMessage());
-
-        // IGNORED, not half-read: the member falls back to the built-in long -> string.
-        run.Compiles().DoesNotEmit("global::FrameworkConversions.ToText");
+        Assert.Contains("declaration metadata", run.Single("SM0028").GetMessage());
+        run.DoesNotEmit("MapToFileSummary");
     }
 
     /// <summary>A project referencing no such package is completely unaffected.</summary>
     [Fact]
-    public void A_project_with_no_declared_conversions_is_unchanged()
+    public void A_project_with_no_packages_is_unchanged()
     {
         GeneratorRun run = GeneratorHarness.Run(
             """
@@ -270,9 +245,7 @@ public class DeclaredConversionTests
             }
             """);
 
-        run.Compiles().DoesNotEmit("RegisterDeclaredConversions");
-        run.None("SM0031");
-        run.None("SM0032");
-        run.None("SM0033");
+        run.Compiles().Emits("ToInvariantString(source.Id)");
+        run.None("SM0028");
     }
 }

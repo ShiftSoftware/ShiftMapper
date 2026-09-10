@@ -1,17 +1,4 @@
-﻿using System.Linq.Expressions;
-using System.Text.Json;
-using ShiftMapper;
-
-// ---------------------------------------------------------------------------------------------
-// THE CONTRACT, declared once for the whole assembly.
-//
-// These two lines are the entire public surface of the arrangement. Everything else in this file
-// is ordinary C# that the generator reads through METADATA — attributes, signatures, names — none
-// of which needs the generator to see a method body, because it cannot.
-// ---------------------------------------------------------------------------------------------
-
-[assembly: ShiftMapperContract(1)]
-[assembly: ShiftMapperConversions(typeof(ShiftFramework.ShiftEntityConversions))]
+﻿using System.Text.Json;
 
 namespace ShiftFramework;
 
@@ -36,7 +23,6 @@ namespace ShiftFramework;
 /// in-project route rather than a degraded version of it, because a name is something metadata
 /// carries and a lambda is not.</para>
 /// </summary>
-[ShiftMapperConversions]
 public static class ShiftEntityConversions
 {
     private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web);
@@ -88,18 +74,7 @@ public static class ShiftEntityConversions
     /// </summary>
     public static string ToHashId(long id) => "H" + id;
 
-    /// <summary>
-    /// The query form, and it MUST produce the same string as the memory form above.
-    ///
-    /// <para>This one started out as <c>"H" + id.ToString("D6")</c> in memory and <c>"H" + id</c>
-    /// here, which is a bug a package author would ship without noticing: the same brand comes back
-    /// as <c>H010010</c> from a Map and <c>H10010</c> from a ProjectTo. Nothing in the contract can
-    /// catch that — both forms are well-typed and both translate — so it is the one thing a
-    /// framework author has to check by looking, and the reason the sample shows both backends of
-    /// the same map side by side.</para>
-    /// </summary>
-    [ShiftMapperQueryForm]
-    public static Expression<Func<long, string>> ToHashIdQuery => id => "H" + id;
+
 }
 
 /// <summary>A file reference stored as JSON in one column — ShiftFramework's real shape.</summary>

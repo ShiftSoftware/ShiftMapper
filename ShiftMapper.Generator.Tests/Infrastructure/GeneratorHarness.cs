@@ -1,4 +1,5 @@
 ﻿using System.Collections.Immutable;
+using System.Linq;
 using System.Text;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -45,7 +46,10 @@ public static class GeneratorHarness
     /// `dotnet_diagnostic.SM0001.severity = ...` entries and hands to the analyzer host, so a
     /// test that goes through here is testing the real retuning path rather than a mock of it.
     /// </param>
-    public static GeneratorRun Run(string source, SyntaxTreeOptionsProvider? diagnosticOptions = null)
+    public static GeneratorRun Run(
+        string source,
+        SyntaxTreeOptionsProvider? diagnosticOptions = null,
+        ImmutableArray<MetadataReference> extraReferences = default)
     {
         SyntaxTree tree = CSharpSyntaxTree.ParseText(
             SourceText.From(source, Encoding.UTF8), ParseOptions, path: FileName);
@@ -53,7 +57,7 @@ public static class GeneratorHarness
         var compilation = CSharpCompilation.Create(
             assemblyName: "ShiftMapperSnippet",
             syntaxTrees: new[] { tree },
-            references: References,
+            references: extraReferences.IsDefaultOrEmpty ? References : References.AddRange(extraReferences),
             options: new CSharpCompilationOptions(
                 OutputKind.DynamicallyLinkedLibrary,
                 nullableContextOptions: NullableContextOptions.Enable)
@@ -96,6 +100,71 @@ public static class GeneratorHarness
             .GetAnalyzerDiagnosticsAsync()
             .GetAwaiter()
             .GetResult();
+    }
+
+    /// <summary>
+    /// Compiles a PACKAGE, then compiles an APPLICATION that references it — the only honest way
+    /// to test the extension contract.
+    ///
+    /// <para>A single snippet cannot exercise it. The whole point is that a profile compiled into
+    /// another assembly is METADATA by the time a consumer sees it, with no method bodies; put the
+    /// profile in the same snippet and the ordinary source path handles it and the metadata path
+    /// never runs. So this really does emit an assembly and reference it.</para>
+    ///
+    /// <para>The generator runs over BOTH compilations, exactly as a real build does: on the
+    /// package it writes declaration metadata, on the application it writes the mapper.</para>
+    /// </summary>
+    /// <param name="runGeneratorOnPackage">
+    /// Whether the PACKAGE is built with the generator. False stands for a package built without it
+    /// — which writes no declaration metadata, and is the case SM0028 exists for.
+    /// </param>
+    public static GeneratorRun RunWithPackage(
+        string packageSource,
+        string applicationSource,
+        bool runGeneratorOnPackage = true)
+    {
+        var package = CSharpCompilation.Create(
+            assemblyName: "ShiftMapperPackage",
+            syntaxTrees: new[]
+            {
+                CSharpSyntaxTree.ParseText(
+                    SourceText.From(packageSource, Encoding.UTF8), ParseOptions, path: "Package.cs"),
+            },
+            references: References,
+            options: new CSharpCompilationOptions(
+                OutputKind.DynamicallyLinkedLibrary,
+                nullableContextOptions: NullableContextOptions.Enable));
+
+        GeneratorDriver packageDriver = CSharpGeneratorDriver.Create(
+            new[] { new ShiftMapperGenerator().AsSourceGenerator() }, parseOptions: ParseOptions);
+
+        Compilation withMetadata = package;
+
+        if (runGeneratorOnPackage)
+            packageDriver.RunGeneratorsAndUpdateCompilation(package, out withMetadata, out _);
+
+        using var assembly = new System.IO.MemoryStream();
+
+        Microsoft.CodeAnalysis.Emit.EmitResult emitted = withMetadata.Emit(assembly);
+
+        if (!emitted.Success)
+        {
+            throw new System.InvalidOperationException(
+                "The package snippet did not compile, so nothing could be referenced:"
+                + System.Environment.NewLine
+                + string.Join(
+                    System.Environment.NewLine,
+                    emitted.Diagnostics
+                        .Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)
+                        .Select(diagnostic => diagnostic.ToString())));
+        }
+
+        assembly.Position = 0;
+
+        return Run(
+            applicationSource,
+            extraReferences: ImmutableArray.Create<MetadataReference>(
+                MetadataReference.CreateFromStream(assembly)));
     }
 
     private static ImmutableArray<MetadataReference> LoadReferences()

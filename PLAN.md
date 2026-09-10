@@ -44,7 +44,7 @@ Every step heading below carries the same marker: ✅ done, ⬜ pending.
 - [x] **Step 11** — Profiles: maps declared outside the mapper class
 - [x] **Step 12** — Global type-pair converters
 - [x] **Step 13** — The compile-time extension contract for referenced assemblies
-- [ ] **Step 14** — Declaration metadata: one API in a project and in a package
+- [x] **Step 14** — Declaration metadata: one API in a project and in a package
 - [ ] **Step 15** — Declarative member conventions
 - [ ] **Step 16** — What ShiftFramework then builds (ShiftEntity repository, not this one)
 
@@ -60,8 +60,8 @@ replaces them with one**, and Steps 11—13 are refactored onto it rather than l
 comes before member conventions on purpose: that step should be built on the single vocabulary from
 its first line, not retrofitted afterwards.
 
-Next on ShiftFramework's critical path is **Step 14**, then 14 → 15 → 16 (the summary at the
-foot of this file).
+Next on ShiftFramework's critical path is **Step 15**, then 15 → 16 (the summary at the foot of
+this file).
 
 ---
 
@@ -1202,7 +1202,7 @@ test would have:
 
 ---
 
-### ⬜ Step 14 — Declaration metadata: one API in a project and in a package
+### ✅ Step 14 — Declaration metadata: one API in a project and in a package
 
 **The problem Steps 11—13 left behind.** There are now two vocabularies for the same ideas, and
 which one you use depends on where your code will end up:
@@ -1365,6 +1365,52 @@ assembly, alongside its own `using` directives, where every name it mentions is 
 `AddProfile<ShiftEntityProfile>()` — and the generated code in the sample is IDENTICAL to what the
 same profile compiled into the sample would produce, with no attribute written by hand anywhere.
 
+**What landed, and the "done when" is met.** `ShiftFramework.Mock` has an ordinary
+`ShiftEntityProfile`; the sample adds it with one line; the generated mapper contains
+`MapToShiftFileSummary` and the package's conversions, and `/api/brands/hashed?sql=true` still shows
+the package's hash-id rule reaching SQL Server.
+
+- **A SECOND GENERATOR OUTPUT**, registered on the same syntax provider and running in the DECLARING
+  assembly: it finds `ShiftMapperProfile` subclasses and emits `[assembly: ShiftMapperDeclared*]`
+  attributes describing what they declare. A project with no profiles emits nothing at all.
+- **The shape/expression split is what made it small.** Every field of `Refinements` turned out to be
+  pure shape — names, flags, type names, and even `CustomProperty`'s conversion templates, which
+  are strings. So the metadata carries the shape and the runtime store carries the trees, and no
+  lambda text is copied anywhere.
+- **The reader rebuilds the same `Refinements`** and hands it to the same `BuildMapModel`. Nothing
+  downstream — property matching, conversions, nesting, projections, diagnostics — can tell a
+  package's map from a local one, and none of it needed changing.
+- **Keyed by PROFILE, so it is opt-in.** Referencing a package changes nothing until `AddProfile`
+  asks for it. This also removed the action-at-a-distance that Step 13's assembly-wide attributes
+  had, where referencing a package silently changed every map.
+- **Typed attributes with `typeof()`**, as decided: type identity is resolved by the compiler rather
+  than re-resolved from a string that could find the wrong type.
+- **Three-state options.** A map's `MapOptions` travel as "declared true / declared false / not
+  declared", because a profile's own `ConfigureDefaults` configures nothing (SM0029) and the
+  CONSUMING mapper supplies the defaults. A resolved `false` would have overwritten a setting the
+  application made.
+- **`HasQueryForm` is separate from "is there a member to call".** The first version derived one
+  from the other and declared every package conversion unprojectable — the query expression is a
+  lambda the profile registers, so it projects with nothing to name.
+- **A REAL two-compilation test harness.** `GeneratorHarness.RunWithPackage` compiles a package,
+  emits it, and compiles an application against it. A single snippet cannot test this at all: put
+  the profile in the same compilation and the ordinary source path handles it and the metadata path
+  never runs.
+
+**What Step 13 leaves behind.** The hand-written `[ShiftMapperConversions]` route is DELETED, along
+with `ShiftMapperQueryFormAttribute` and its reader. `ShiftMapperContractAttribute` survives as the
+format version of the generated metadata. SM0031/SM0032 remain for malformed or conflicting
+declarations; SM0028 changed meaning from "a profile in a package cannot be read" to "this package
+was not built with the ShiftMapper generator", which is a problem with an owner and a fix.
+
+**Known limitation, recorded rather than hidden.** `Refinements.Unconvertible` does not travel: a
+`MapFromSource` whose conversion the package could not resolve is reported in the PACKAGE's build
+(SM0002) and, in a consumer, that member falls through to ordinary name matching instead of staying
+unmapped. Carrying it would mean encoding `UnmappedProperty` in full for a case whose package
+already has a build warning telling its author to fix it.
+
+---
+
 ### ⬜ Step 15 — Declarative member conventions
 
 Type-pair conversions (Steps 12 and 13) handle "this type becomes that type". They cannot
@@ -1523,14 +1569,14 @@ mapper that cannot show its numbers has given up its main argument.
 |---|---|---|---|
 | 1 — Trust | 1 Tests, 2 Runtime cost, 3 Packaging, 4 `IShiftMapper` | ✅ done | Everything depended on 1 and 4 |
 | 2 — Gaps | ~~5 Collections~~, ~~6 Constructors/records~~, ~~7 Member options~~, ~~8 Map hooks~~, ~~9 Flattening~~, ~~10 Inheritance/generics~~ | ✅ done | Unblocked Phase 3 |
-| 3 — General layer | ~~11 Profiles~~, ~~12 Global conversions~~, ~~13 Compile-time contract~~, 14 Declaration metadata, 15 Member conventions, 16 ShiftFramework port | ⬜ 11—13 done, 14 refactors them | The goal |
+| 3 — General layer | ~~11 Profiles~~, ~~12 Global conversions~~, ~~13 Compile-time contract~~, ~~14 Declaration metadata~~, 15 Member conventions, 16 ShiftFramework port | ⬜ 11—14 done | The goal |
 | 4 — Finish | 17 Diagnostics, 18 Docs, 19 Benchmarks | ⬜ pending | Can run alongside 2 and 3 |
 
 The shortest path to ShiftFramework being able to adopt this is
 **1 → 4 → 8 → 10 → 11 → 12 → 13 → 14 → 15 → 16**; with 1 and 4 done, it starts at **8**. Steps 5, 6,
 7 and 9 are needed for ShiftMapper to be a good general-purpose mapper, but they are not on
-ShiftFramework's critical path. **Phase 2 and Steps 11—13 are complete, so the path is
-14 → 15 → 16.** Everything in Phase 2 is done: 5, 6 and 7 because every
+ShiftFramework's critical path. **Phase 2 and Steps 11—14 are complete, so the path is
+15 → 16.** Everything in Phase 2 is done: 5, 6 and 7 because every
 application hits them on its first day (a list endpoint, a DTO that is a record, a PATCH), 8
 because it was the other Phase 3 blocker, and 9 because it is the one every DTO that is a grid row
 hits.

@@ -628,13 +628,14 @@ internal static class DiagnosticDescriptors
     /// </summary>
     public static readonly DiagnosticDescriptor ProfileNotInSource = new(
         id: "SM0028",
-        title: "A profile in a referenced assembly cannot be read",
+        title: "A referenced assembly carries no ShiftMapper declaration metadata",
         messageFormat: "ShiftMapper: {0}",
         category: Category,
         defaultSeverity: DiagnosticSeverity.Warning,
         isEnabledByDefault: true,
-        description: "A source generator sees referenced assemblies as metadata, which carries no " +
-                     "method bodies, so CreateMap calls compiled into a package are unreadable.");
+        description: "A package that declares maps or conversions must be built with the " +
+                     "ShiftMapper generator referenced as an analyzer, which is what writes its " +
+                     "declarations into the assembly where a consuming generator can read them.");
 
     /// <summary>
     /// SM0029 — ConfigureDefaults overridden on a profile, where it configures nothing.
