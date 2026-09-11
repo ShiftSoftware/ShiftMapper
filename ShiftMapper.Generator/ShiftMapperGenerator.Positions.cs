@@ -1,4 +1,4 @@
-using System.Collections.Immutable;
+﻿using System.Collections.Immutable;
 using System.Linq;
 using System.Threading;
 using Microsoft.CodeAnalysis;
@@ -67,7 +67,7 @@ public sealed partial class ShiftMapperGenerator
         var problems = ImmutableArray.CreateBuilder<PositionedProblem>();
 
         foreach (InvocationExpressionSyntax invocation in
-                 classDeclaration.DescendantNodes().OfType<InvocationExpressionSyntax>())
+                 OwnInvocations(classDeclaration))
         {
             cancellationToken.ThrowIfCancellationRequested();
 

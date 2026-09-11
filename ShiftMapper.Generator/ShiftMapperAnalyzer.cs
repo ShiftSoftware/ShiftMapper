@@ -39,7 +39,7 @@ namespace ShiftMapper.Generator;
 /// Turning analyzers off in a project that uses ShiftMapper turns off ShiftMapper's safety net.
 /// </summary>
 [DiagnosticAnalyzer(LanguageNames.CSharp)]
-public sealed class ShiftMapperAnalyzer : DiagnosticAnalyzer
+public sealed partial class ShiftMapperAnalyzer : DiagnosticAnalyzer
 {
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics => DiagnosticDescriptors.All;
 
@@ -61,6 +61,11 @@ public sealed class ShiftMapperAnalyzer : DiagnosticAnalyzer
         // model — asking the compilation for one instead is RS1030, and in an IDE it means
         // re-binding the whole file on every keystroke), then report once at symbol end.
         context.RegisterSymbolStartAction(OnMapperStart, SymbolKind.NamedType);
+
+        // AND THE CALL SITES. Everything above describes a mapper where it is DECLARED; SM0037
+        // describes one where it is USED, which is usually a different file and often a different
+        // person. See ShiftMapperAnalyzer.ProjectToCallSites.
+        context.RegisterCompilationStartAction(OnCompilationStart);
     }
 
     private static void OnMapperStart(SymbolStartAnalysisContext context)
@@ -199,12 +204,23 @@ public sealed class ShiftMapperAnalyzer : DiagnosticAnalyzer
             }
         }
 
-        // SM0031 / SM0032 / SM0033 — the referenced-assembly contract. Reported once for the
-        // mapper rather than per part: the declarations are the same whichever file is being
-        // looked at, and repeating them per part would multiply one package's mistake by the
-        // number of files somebody happened to split their mapper across.
-        foreach (string problem in ordered[0].Model.DeclaredProblems)
+        // SM0028 / SM0031 / SM0032 / SM0033 / SM0034 — everything read from DECLARATIONS, whether
+        // a referenced assembly's or this project's.
+        //
+        // EVERY PART, DEDUPED BY MESSAGE, rather than only the first. Two different kinds of fact
+        // ride this one channel: a package carrying no metadata is true of the whole mapper and
+        // appears in every part that adds the profile, while an SM0034 is about ONE MAP and appears
+        // only in the part that declared it. Reading the first part alone silenced every convention
+        // failure written in a later file, and would have silenced a package problem too whenever
+        // the AddProfile happened to live in the second file. Deduping serves both: the
+        // whole-mapper facts are still said once, and the per-map ones are no longer lost.
+        var saidAlready = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (string problem in ordered.SelectMany(part => part.Model.DeclaredProblems))
         {
+            if (!saidAlready.Add(problem))
+                continue;
+
             int split = problem.IndexOf('|');
 
             if (split < 0)
@@ -219,11 +235,12 @@ public sealed class ShiftMapperAnalyzer : DiagnosticAnalyzer
                 "SM0032" => DiagnosticDescriptors.DeclaredConversionMalformed,
                 "SM0033" => DiagnosticDescriptors.DeclaredContractTooNew,
                 "SM0034" => DiagnosticDescriptors.MemberConventionFailed,
+                "SM0038" => DiagnosticDescriptors.MemberConventionIsEmpty,
                 _ => null,
             };
 
             if (descriptor is not null)
-                reporter.Report(descriptor, ordered[0].Model.Location, problem.Substring(split + 1));
+                reporter.Report(descriptor, first.Location, problem.Substring(split + 1));
         }
 
         // Merging and resolving is what raises SM0011 and SM0012; what comes back is the graph
@@ -341,6 +358,24 @@ public sealed class ShiftMapperAnalyzer : DiagnosticAnalyzer
                     $"the map from '{map.SourceName}' to '{map.DestinationName}' converts " +
                     $"{pair} with a conversion that has no query form, so ProjectTo cannot use it; " +
                     "Map is unaffected");
+            }
+
+            // SM0036 — the refusal it inherited from something it nests. Reported beside SM0030
+            // rather than instead of it: the child gets its own message about its own cause, and
+            // this one tells whoever wrote the parent why their projection is gone too.
+            // NOT for a closure of an open generic. One
+            // `CreateMap(typeof(Page<>), typeof(PageDto<>))` closes over every pair the mapper has,
+            // so reporting here means N messages on one line about maps nobody wrote — and each
+            // one is derivable from the child's own message, which already fired. The same
+            // reasoning already skips closing over interface and abstract elements.
+            foreach (string pair in map.IsOpenGenericClosure ? [] : map.NestedProjectionRefusals)
+            {
+                report.Report(
+                    DiagnosticDescriptors.NestedMapIsNotProjectable,
+                    location,
+                    $"the map from '{map.SourceName}' to '{map.DestinationName}' nests the map " +
+                    $"from {pair}, which cannot be projected, so ProjectTo cannot use this one " +
+                    "either; Map is unaffected");
             }
 
             // SM0025 — an As that cannot stand in, either because the type does not fit or

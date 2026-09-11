@@ -77,7 +77,7 @@ public sealed partial class ShiftMapperGenerator
             semanticModel.Compilation.GetTypeByMetadataName(MemberConventionMetadataName);
 
         foreach (InvocationExpressionSyntax invocation in
-                 classDeclaration.DescendantNodes().OfType<InvocationExpressionSyntax>())
+                 OwnInvocations(classDeclaration))
         {
             // ---- CreateMap<A, B>(), and the reverse when one is chained on.
             if (GetCreateMapName(semanticModel, invocation, baseClass, cancellationToken) is { } createMap)

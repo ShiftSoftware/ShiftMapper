@@ -143,7 +143,9 @@ public class MapHookTests
         using TestDbContext context = _fixture.CreateContext();
 
         InvalidOperationException error = Assert.Throws<InvalidOperationException>(
+            #pragma warning disable SM0037 // the throw is exactly what this test asserts
             () => _fixture.Mapper.ProjectTo<StockAuditDto>(context.Stocks));
+            #pragma warning restore SM0037
 
         Assert.Contains("BeforeMap and AfterMap", error.Message);
         Assert.Contains("ForMember, which projects", error.Message);

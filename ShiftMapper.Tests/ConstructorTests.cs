@@ -208,7 +208,9 @@ public class ConstructorTests
         using TestDbContext context = _fixture.CreateContext();
 
         InvalidOperationException error = Assert.Throws<InvalidOperationException>(
+            #pragma warning disable SM0037 // the throw is exactly what this test asserts
             () => _fixture.Mapper.ProjectTo<CatalogSummaryDto>(Array.Empty<Catalog>().AsQueryable()));
+            #pragma warning restore SM0037
 
         Assert.Contains("builds its destination with ConstructUsing", error.Message);
         Assert.Contains("Use Map instead", error.Message);

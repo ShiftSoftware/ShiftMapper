@@ -48,8 +48,16 @@ internal sealed class MapModel
         ImmutableArray<DerivedPair> includedDerived,
         string? asConcrete,
         string? asConcreteRejected,
-        ImmutableArray<string> projectionRefusals = default)
+        ImmutableArray<string> projectionRefusals = default,
+        ImmutableArray<string> nestedProjectionRefusals = default,
+        bool isOpenGenericClosure = false)
     {
+        IsOpenGenericClosure = isOpenGenericClosure;
+
+        NestedProjectionRefusals = nestedProjectionRefusals.IsDefault
+            ? ImmutableArray<string>.Empty
+            : nestedProjectionRefusals;
+
         ProjectionRefusals = projectionRefusals.IsDefault
             ? ImmutableArray<string>.Empty
             : projectionRefusals;
@@ -298,10 +306,14 @@ internal sealed class MapModel
     /// projects unchanged.
     /// </summary>
     public bool IsProjectable =>
-        ConvertsWithExpression
-        || AsConcrete is not null
-        || (!ConstructsWithFactory && ConditionedMembers.Length == 0 && !HasHooks
-            && IncludedDerived.IsEmpty && ProjectionRefusals.IsEmpty);
+        // A MAP IS ONLY AS PROJECTABLE AS WHAT IT NESTS. This leads the condition rather than
+        // joining the list below because it overrides BOTH shortcuts: an `As` redirection is its
+        // concrete map's projection, and inherits its verdict with it.
+        NestedProjectionRefusals.IsEmpty
+        && (ConvertsWithExpression
+            || AsConcrete is not null
+            || (!ConstructsWithFactory && ConditionedMembers.Length == 0 && !HasHooks
+                && IncludedDerived.IsEmpty && ProjectionRefusals.IsEmpty));
 
     /// <summary>
     /// The global conversions this map uses that were registered WITHOUT a query form, worded for
@@ -313,6 +325,32 @@ internal sealed class MapModel
     /// discover.</para>
     /// </summary>
     public ImmutableArray<string> ProjectionRefusals { get; }
+
+    /// <summary>
+    /// The maps THIS ONE NESTS that cannot be projected, worded as pairs — <c>'Inner' to
+    /// 'InnerDto'</c> — for SM0036.
+    ///
+    /// <para><b>Why this is not folded into <see cref="ProjectionRefusals"/>.</b> That one carries
+    /// conversion pairs and SM0030 wraps them in a sentence about query forms, which is not what
+    /// happened here. More importantly the two want different fixes: a conversion needs a query
+    /// expression, while this needs the CHILD map fixed — so naming the child is the whole value of
+    /// the message.</para>
+    ///
+    /// <para>Filled by the closure pass after every map is known, because a map cannot answer this
+    /// about itself: whether it nests a broken map is a fact about the graph.</para>
+    /// </summary>
+    public ImmutableArray<string> NestedProjectionRefusals { get; }
+
+    /// <summary>
+    /// Whether this map was produced by closing an open generic rather than written by hand.
+    ///
+    /// <para>It changes what is worth SAYING about the map, not what is generated. One
+    /// <c>CreateMap(typeof(Page&lt;&gt;), typeof(PageDto&lt;&gt;))</c> closes over every pair the
+    /// mapper has, so a message about a closure is a message about a map nobody wrote — repeated
+    /// once per pair, all pointing at the same line. The same reasoning already skips closures over
+    /// interface and abstract elements rather than emitting an SM0002 for each.</para>
+    /// </summary>
+    public bool IsOpenGenericClosure { get; }
 
     /// <summary>
     /// Whether the map is a REDIRECTION to another map rather than a mapping of its own — what
@@ -453,7 +491,7 @@ internal sealed class MapModel
             // CARRIED, like every other field. The resolve pass rebuilds a model to settle its
             // nested members; anything it forgets to copy is silently lost, which is what happened
             // to this one the first time and is why the sample was the test that caught it.
-            AsConcreteRejected, ProjectionRefusals);
+            AsConcreteRejected, ProjectionRefusals, NestedProjectionRefusals, IsOpenGenericClosure);
 
     /// <summary>
     /// The same map with a constructor argument's nested value settled, produced by the resolve
@@ -474,5 +512,22 @@ internal sealed class MapModel
             // CARRIED, like every other field. The resolve pass rebuilds a model to settle its
             // nested members; anything it forgets to copy is silently lost, which is what happened
             // to this one the first time and is why the sample was the test that caught it.
-            AsConcreteRejected, ProjectionRefusals);
+            AsConcreteRejected, ProjectionRefusals, NestedProjectionRefusals, IsOpenGenericClosure);
+
+    /// <summary>
+    /// The same map, told that something it nests cannot be projected.
+    ///
+    /// <para>The third rebuild beside <see cref="WithNested"/> and <see cref="WithConstructor"/>,
+    /// and it carries every field for the same reason they do: this pass runs LAST, so anything it
+    /// forgot to copy would be lost from the model that actually gets emitted.</para>
+    /// </summary>
+    public MapModel WithNestedProjectionRefusals(ImmutableArray<string> nestedProjectionRefusals) =>
+        new(SourceType, DestinationType, SourceName, IsSourcePublic, IsDestinationPublic,
+            IsSourceValueType, IsDestinationValueType, CanConstructDestination, PropertyNames,
+            WritablePropertyNames, UnmappedProperties, ConvertedProperties, CustomProperties,
+            NestedProperties, DestinationName, Location, IsReverse, AllowNullCollections,
+            Constructor, ConstructionProblems, ConstructsWithFactory, ConditionedMembers,
+            RefusedConditions, ConvertsWithExpression, HasBeforeMap, HasAfterMap, DeadConfiguration,
+            FlattenedMembers, AmbiguousFlattening, UnresolvedBases, IncludedDerived, AsConcrete,
+            AsConcreteRejected, ProjectionRefusals, nestedProjectionRefusals, IsOpenGenericClosure);
 }

@@ -744,6 +744,70 @@ internal static class DiagnosticDescriptors
                      "ForMember for this member, which always wins over a convention.");
 
     /// <summary>
+    /// SM0038 — a member convention that fills nothing.
+    ///
+    /// <para>A WARNING that exists to stop a LIE. A convention with no readable <c>Fill</c> does
+    /// nothing, the members it was written for fall through to ordinary name matching, and the build
+    /// then reports SM0001 — "'Source' has no readable property named 'Brand'" — about the very
+    /// member somebody wrote a convention for. Naming the real cause is also what makes SM0001's
+    /// code fix safe: without it, one click would Ignore the member and cement the wrong answer.</para>
+    /// </summary>
+    public static readonly DiagnosticDescriptor MemberConventionIsEmpty = new(
+        id: "SM0038",
+        title: "This member convention fills nothing",
+        messageFormat: "ShiftMapper: {0}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "A member convention is a rule about how to fill a member. One with no Fill " +
+                     "entries has nothing to say, so the members it claims are matched by name " +
+                     "instead - which is what the convention existed to override.");
+
+
+    /// <summary>
+    /// SM0037 — ProjectTo called on a pair that cannot be projected.
+    ///
+    /// <para>A WARNING rather than an error, because the call is not wrong in itself — it is a
+    /// query that will throw when it runs. Reported at the CALL, which is the one place the other
+    /// projection rules cannot reach: they describe a mapper where it is declared, and whoever
+    /// writes the query is usually looking at a different file.</para>
+    ///
+    /// <para>It reasons from positive evidence only. A pair naming a type PARAMETER says nothing
+    /// about which map is meant, so nothing is said about it — which is what keeps a generic
+    /// repository from being accused of a mistake it has not made.</para>
+    /// </summary>
+    public static readonly DiagnosticDescriptor ProjectToIsNotSupported = new(
+        id: "SM0037",
+        title: "ProjectTo cannot be used for this pair",
+        messageFormat: "ShiftMapper: {0}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "The map exists and Map works, but it needs a statement that no projection can " +
+                     "hold, so this query would throw when it runs.");
+
+
+    /// <summary>
+    /// SM0036 — a map that cannot be projected because something it NESTS cannot.
+    ///
+    /// <para>A warning, like the other projection refusals, and worded to name the CHILD: that is
+    /// the map somebody has to go and fix, and naming the parent would describe the symptom. Until
+    /// this existed a parent inherited the hole in silence, emitted a projection anyway, and the
+    /// query failed at run time naming a pair nobody had asked about.</para>
+    /// </summary>
+    public static readonly DiagnosticDescriptor NestedMapIsNotProjectable = new(
+        id: "SM0036",
+        title: "Map cannot be projected because a map it nests cannot",
+        messageFormat: "ShiftMapper: {0}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "A projection is one expression, built from the projections of the maps it " +
+                     "nests. If one of those cannot be expressed as an expression, neither can this " +
+                     "one. Map is unaffected.");
+
+
+    /// <summary>
     /// SM0035 — a declaration written somewhere its position cannot be honoured.
     ///
     /// <para>AN ERROR, and the only sensible severity. The generator reads declarations from syntax
@@ -824,6 +888,9 @@ internal static class DiagnosticDescriptors
         DeclaredConversionMalformed,
         DeclaredContractTooNew,
         MemberConventionFailed,
-        DeclarationNotBakeable);
+        DeclarationNotBakeable,
+        NestedMapIsNotProjectable,
+        ProjectToIsNotSupported,
+        MemberConventionIsEmpty);
 }
 

@@ -1,4 +1,4 @@
-namespace ShiftMapper.Generator;
+﻿namespace ShiftMapper.Generator;
 
 /// <summary>
 /// The keys a diagnostic carries alongside its message, for the code fixes to read.
@@ -19,4 +19,10 @@ internal static class DiagnosticProperties
     /// silently stop offering itself the first time somebody improved it.</para>
     /// </summary>
     public const string MemberName = "ShiftMapper.MemberName";
+
+    /// <summary>The source type of a nested pair that has no map — half of what SM0011's fix writes.</summary>
+    public const string NestedSource = "ShiftMapper.NestedSource";
+
+    /// <summary>And its destination type.</summary>
+    public const string NestedDestination = "ShiftMapper.NestedDestination";
 }

@@ -73,7 +73,9 @@ public static class FrameworkEndpoints
             {
                 try
                 {
+                    #pragma warning disable SM0037 // the refusal IS the demonstration here — this endpoint exists to show what a non-projectable map does
                     return Results.Ok(db.Brands.AsNoTracking().ProjectTo<BrandFilesDto>(mapper).ToList());
+                    #pragma warning restore SM0037
                 }
                 catch (InvalidOperationException error)
                 {

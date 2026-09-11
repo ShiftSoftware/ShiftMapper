@@ -129,7 +129,9 @@ public class InheritanceTests
     public void A_dispatching_map_cannot_be_projected_and_says_so()
     {
         InvalidOperationException error = Assert.Throws<InvalidOperationException>(
+            #pragma warning disable SM0037 // the throw is exactly what this test asserts
             () => _fixture.Mapper.ProjectTo<ShapeDto>(Array.Empty<Shape>().AsQueryable()));
+            #pragma warning restore SM0037
 
         Assert.Contains("dispatches on the source's runtime type", error.Message);
         Assert.Contains("OfType<Cone>()", error.Message);

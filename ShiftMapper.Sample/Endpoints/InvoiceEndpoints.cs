@@ -197,7 +197,9 @@ public static class InvoiceEndpoints
             {
                 try
                 {
+                    #pragma warning disable SM0037 // the refusal IS the demonstration here — this endpoint exists to show what a non-projectable map does
                     return Results.Ok(mapper.ProjectTo<InvoiceLabelDto>(db.Invoices).ToList());
+                    #pragma warning restore SM0037
                 }
                 catch (InvalidOperationException error)
                 {

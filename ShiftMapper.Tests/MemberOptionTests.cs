@@ -171,7 +171,9 @@ public class MemberOptionTests
     public void A_conditioned_map_cannot_be_projected_and_says_so()
     {
         InvalidOperationException error = Assert.Throws<InvalidOperationException>(
+            #pragma warning disable SM0037 // the throw is exactly what this test asserts
             () => _fixture.Mapper.ProjectTo<Profile>(Array.Empty<ProfileUpdate>().AsQueryable()));
+            #pragma warning restore SM0037
 
         Assert.Contains("behind a Condition", error.Message);
         Assert.Contains("drop the Condition", error.Message);

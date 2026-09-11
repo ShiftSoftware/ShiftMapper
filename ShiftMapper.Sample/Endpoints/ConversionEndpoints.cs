@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using ShiftMapper.Sample.Data;
 using ShiftMapper.Sample.Dtos;
 using ShiftMapper.Sample.Mapping;
@@ -80,7 +80,9 @@ public static class ConversionEndpoints
 
             try
             {
+                #pragma warning disable SM0037 // the refusal IS the demonstration here — this endpoint exists to show what a non-projectable map does
                 return Results.Ok(db.Products.AsNoTracking().ProjectTo<ProductFingerprintDto>(mapper).ToList());
+                #pragma warning restore SM0037
             }
             catch (InvalidOperationException error)
             {

@@ -1,4 +1,4 @@
-using ShiftFramework;
+﻿using ShiftFramework;
 using ShiftMapper.Tests.Model;
 using Xunit;
 
@@ -100,7 +100,9 @@ public class DeclaredConversionTests
     public void A_declared_pair_with_no_query_form_refuses_to_project()
     {
         InvalidOperationException error = Assert.Throws<InvalidOperationException>(
+            #pragma warning disable SM0037 // the throw is exactly what this test asserts
             () => Mapper.ProjectTo<DocumentDto>(Array.Empty<Document>().AsQueryable()));
+            #pragma warning restore SM0037
 
         Assert.Contains("no query form", error.Message);
         Assert.Contains("ShiftFileDTO", error.Message);

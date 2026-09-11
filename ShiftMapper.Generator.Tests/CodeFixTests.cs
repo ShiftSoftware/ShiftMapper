@@ -127,4 +127,105 @@ public class CodeFixTests
     {
         Assert.Equal(["SM0001"], new IgnoreMemberCodeFix().FixableDiagnosticIds.ToArray());
     }
+
+    // -----------------------------------------------------------------
+    // SM0011 — the one that had to wait.
+    // -----------------------------------------------------------------
+
+    private const string MissingNestedMap =
+        """
+        using ShiftMapper;
+
+        public class Line { public string Sku { get; set; } = ""; }
+        public class LineDto { public string Sku { get; set; } = ""; }
+
+        public class Order { public Line Line { get; set; } = new(); }
+        public class OrderDto { public LineDto Line { get; set; } = new(); }
+
+        public partial class TestMapper : ShiftMapperBase
+        {
+            public TestMapper()
+            {
+                CreateMap<Order, OrderDto>();
+            }
+        }
+        """;
+
+    /// <summary>
+    /// It writes the missing declaration beside the one that needed it, and the result builds with
+    /// the error gone.
+    /// </summary>
+    [Fact]
+    public void It_adds_the_missing_CreateMap()
+    {
+        string fixedSource = CodeFixHarness.Fix(new AddMissingMapCodeFix(), MissingNestedMap, "SM0011");
+
+        Assert.Contains("CreateMap<Line, LineDto>()", fixedSource);
+
+        GeneratorRun after = GeneratorHarness.Run(fixedSource);
+
+        after.Compiles();
+        after.None("SM0011");
+
+        // And the nested member is actually mapped now, not merely un-complained-about.
+        after.Emits("MapToLineDto(source.Line)");
+    }
+
+    /// <summary>
+    /// THE REASON THIS SHIPPED SECOND. SM0011 can be the symptom of a member convention that was
+    /// silently dropped — and then the missing map is not missing at all, it is a rule that did not
+    /// apply. Writing a CreateMap there would cement the wrong answer with one click.
+    ///
+    /// <para>SM0038 now names that cause where it happens, so the two cases are told apart before
+    /// anybody reaches for a lightbulb. This test pins the diagnosis, which is the part that makes
+    /// the fix safe rather than the fix itself.</para>
+    /// </summary>
+    [Fact]
+    public void A_dropped_convention_is_diagnosed_rather_than_mistaken_for_a_missing_map()
+    {
+        GeneratorRun run = GeneratorHarness.Run(
+            """
+            using ShiftMapper;
+
+            public class Wrapper { public string Value { get; set; } = ""; }
+
+            public class Source { public long BrandId { get; set; } }
+            public class Destination { public Wrapper Brand { get; set; } = new(); }
+
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+                    // Declared, and nothing readable hangs off it.
+                    CreateMemberConvention<Wrapper>();
+                    CreateMap<Source, Destination>();
+                }
+            }
+            """);
+
+        run.Compiles();
+
+        // The REAL cause, named where it happened.
+        string empty = run.Single("SM0038").GetMessage();
+
+        Assert.Contains("Wrapper", empty);
+        Assert.Contains("fills nothing", empty);
+    }
+
+    /// <summary>It fixes only what it claims.</summary>
+    [Fact]
+    public void The_missing_map_fix_claims_only_SM0011()
+    {
+        Assert.Equal(["SM0011"], new AddMissingMapCodeFix().FixableDiagnosticIds.ToArray());
+    }
+
+    /// <summary>
+    /// NO BATCH FIXER here either. Every missing map is a decision about a pair, and "fix all"
+    /// declaring a dozen of them from one gesture is how one wrong answer gets in unnoticed.
+    /// </summary>
+    [Fact]
+    public void The_missing_map_fix_has_no_batch_fixer()
+    {
+        Assert.Null(new AddMissingMapCodeFix().GetFixAllProvider());
+    }
 }

@@ -49,7 +49,7 @@ Every step heading below carries the same marker: ✅ done, ⬜ pending.
 
 **Phase 4 — Finish**
 
-- [~] **Step 16** — Diagnostics and analyzer completeness (SM0035, SM0031/32 wired, SM0001 code fix; ProjectTo call-site rule remains)
+- [x] **Step 16** — Diagnostics and analyzer completeness
 - [ ] **Step 17** — Docs and sample
 - [ ] **Step 18** — Benchmarks
 
@@ -1554,10 +1554,14 @@ the path.
 
 ## Phase 4 — Finish
 
-### 🟨 Step 16 — Diagnostics and analyzer completeness
+### ✅ Step 16 — Diagnostics and analyzer completeness
 
-**Partly done. The investigation overturned two of the four sub-parts, so what the step says below
-is the corrected version, not the original.**
+**Done. The investigation overturned two of the four sub-parts, so what the step says below is the
+corrected version, not the original.** SM0001—SM0038, and 669 tests.
+
+**The headline finding: the plan's premise for sub-part 1 was BACKWARDS**, and two of its four items
+could not be built as written. What replaced them is below, with what was measured rather than what
+was assumed.
 
 #### ✅ 1. Configuration the generator cannot bake is now an error — SM0035
 
@@ -1615,7 +1619,7 @@ around it says the case is handled.
 - The dead `"SM0028"` arm in the analyzer's profile-problem switch is deleted (SM0028 rides
   `declaredProblems` and is handled by the second switch).
 
-#### ⬜ 3. "only ever ProjectTo'd" — CUT as written, replaced
+#### ✅ 3. "only ever ProjectTo'd" — CUT as written, and replaced with SM0036 + SM0037
 
 **"And vice versa" has no referent.** Projections are emitted only over `creatable` maps, so no map
 can project without also mapping; and `CreateConversion`'s `memory` parameter is required while
@@ -1629,12 +1633,29 @@ type arguments are type PARAMETERS carrying no pair information. Every leak is a
 accusing correct code, and the only remedy would be `#pragma` — which teaches people to tune SM####
 out.
 
-**The sound replacement, still to build:** a positive-evidence rule at the CALL SITE. Register an
-operation action on invocations named `ProjectTo` and report when the named (source, destination)
-pair is known non-projectable, staying silent when either type argument is a type parameter. It needs
-transitive non-projectability first: `ProjectionRefusals` is set once and never merged from nested
-children, and `AsConcrete is not null` forces `IsProjectable` true, so today a parent gets no
-diagnostic and its projection throws naming the CHILD pair.
+**What was built instead, in two halves.**
+
+**SM0036 — projection is TRANSITIVE.** `IsProjectable` consulted a map's own facts only, so a parent
+nesting a broken child reported itself projectable, emitted a projection, and spliced in the child's
+— which is emitted as a THROW. The build warned about the child; the query failed at run time naming
+a pair the developer never asked about. `AsConcrete is not null` was worse: it forced the answer true
+without looking at the concrete map at all. A closure pass now runs after nesting is settled, to a
+fixpoint so a refusal three levels down still reaches the top.
+
+Measured on landing: nine warnings across the sample and the runtime suite, EVERY ONE of them a
+closure of an open generic — one `CreateMap(typeof(PagedResult<>), ...)` line each. True, and
+useless: derivable from the child's own message, about maps nobody wrote. Closures are exempt, which
+is the same call the generator already makes when it skips closing over interface and abstract
+elements.
+
+**SM0037 — reported at the CALL SITE.** The plan's version asked an analyzer to prove a negative
+over an open world; inverted to positive evidence it is decidable. Silent whenever either type
+argument is a type parameter, which is what keeps a generic repository from being accused. The reason
+travels from the mapper as `[ShiftMapperNotProjectable]` metadata — the same answer Step 14 reached
+for declarations — so it works across a package reference and costs no re-analysis.
+
+It found ten real call sites on landing: every deliberate demonstration in the sample and every test
+that ASSERTS the throw, and nothing else. All ten now carry a written-down `#pragma` saying so.
 
 #### ✅ 4a. Code fixes — SM0001's `Ignore`, shipping
 
@@ -1658,25 +1679,44 @@ them would look entirely normal.
   existing `ForMember` survived. `Microsoft.CodeAnalysis.Testing` was not taken — absent from the
   cache, and it cannot re-run the generator over the fixed text, which is the half that matters.
 
-#### ⬜ 4b. SM0011's fix — deliberately NOT shipped yet
+#### ✅ 4b. SM0011's fix — shipped, after its prerequisite
 
-**Sequencing is not optional here.** SM0011 is frequently the MISDIAGNOSIS of a silently-dropped
-member convention (an unreadable `Fill`, a chain broken over a local, a parenthesised chain), and in
-those cases the correct fix is to repair the convention. A one-click "add the missing `CreateMap`"
-would cement the wrong answer into somebody's source. It ships after the convention-readability
-errors, not before.
+**The sequencing held.** SM0011 is frequently the MISDIAGNOSIS of a silently-dropped member
+convention, so the readability work came first:
 
-#### ⬜ Also found, filed rather than fixed here
+- **Three chain spellings that used to be skipped without a word**, each measured failing before it
+  was fixed: `(CreateMap<A,B>()).ForMember(...Ignore())` emitted the member anyway,
+  `(CreateMap<A,B>()).ReverseMap()` produced no reverse map, and `d => d.Value!` was not read though
+  `(object)d.Value` was.
+- **SM0038 — a convention that fills nothing.** `MemberConventions.Read` returned NULL for one,
+  which is the silent give-up at its source: the rule vanished and the build then reported SM0001
+  — "'Source' has no readable property named 'Brand'" — about the very member somebody wrote a
+  convention for. One click of SM0001's Ignore fix would have cemented that. The decision now belongs
+  to the caller, which is the half that can say something.
 
-- **Parenthesising a chain silently breaks it.** `(CreateMap<A,B>()).ForMember(...Ignore())` emits
-  the member anyway; `(CreateMap<A,B>()).ReverseMap()` produces no reverse map. Measured twice.
-- **`d => d.Value!` is not read** by `MemberConventions.MemberName`, though `(object)d.Value` is.
-- **SM0034 rides a per-assembly channel read only from `ordered[0]`**, so a convention failure in a
-  non-first file of a partial mapper is dropped.
-- **Nested types are claimed by the outer mapper.** `DescendantNodes()` descends into nested type
-  declarations, so a nested mapper's `CreateMap` is read by both — and a nested profile makes
-  SM0027 fire on a map declared exactly once, the only actively FALSE message found.
-- **A nested `private` mapper emits five CS0122 errors** in a file the developer cannot edit.
+Only then the fix, and only the forward phrasing: `CreateMap<B, A>().ReverseMap()` is often better,
+but which reads better depends on what is already there — a judgement a lightbulb must not make
+silently, and the reason SM0011 is an error rather than a warning.
+
+#### ✅ Also found, and fixed
+
+Each was measured failing before being fixed, and each is pinned by its own test.
+
+- **Parenthesising a chain silently broke it** — both the map chain and the convention chain walk
+  outward by matching node SHAPES, and a bracket ended the walk.
+- **`d => d.Value!` was not read**, though `(object)d.Value` was. An IDE adds the `!` for you.
+- **SM0034 rode a per-assembly channel read only from the first part**, so a convention failure in a
+  later file of a partial mapper was dropped. Declared problems are now read from every part and
+  deduped by message, which fixes the same latent hole for SM0031—33.
+- **Nested types were claimed by the outer mapper.** `DescendantNodes()` descends into nested type
+  declarations, so a nested mapper's `CreateMap` was read twice — and a nested profile made SM0027
+  fire on a map declared exactly once, the only actively FALSE message found. All ten sweeps are now
+  scoped to their own declaration.
+
+**Still open, filed deliberately:**
+
+- **A nested `private` mapper emits five CS0122 errors** in a file the developer cannot edit. An emit
+  bug, not a diagnostics one.
 - **`MapCustomizations.Compose` silently omits a binding** where `Value` throws for the identical
   situation. The clearest two-backends breach found, but it is the only RUNTIME behaviour change
   proposed and its safety against `IncludeBase` chains and metadata-recovered maps is unproven.

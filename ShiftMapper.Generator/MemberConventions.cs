@@ -4,6 +4,7 @@ using System.Collections.Immutable;
 using System.Linq;
 using System.Threading;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace ShiftMapper.Generator;
@@ -140,8 +141,15 @@ internal static class MemberConventions
             if (node is not MemberAccessExpressionSyntax access
                 || access.Parent is not InvocationExpressionSyntax call)
             {
-                if (node is InvocationExpressionSyntax or MemberAccessExpressionSyntax)
+                // Parentheses are invisible here too: `(CreateMemberConvention<T>()).Fill(...)` is
+                // the same rule, and stopping at the bracket read it as claiming the member type
+                // and filling nothing — which then showed up as an unrelated SM0011.
+                if (node is InvocationExpressionSyntax
+                        or MemberAccessExpressionSyntax
+                        or ParenthesizedExpressionSyntax)
+                {
                     continue;
+                }
 
                 break;
             }
@@ -197,9 +205,13 @@ internal static class MemberConventions
             }
         }
 
-        return fill.Count == 0
-            ? null
-            : new Convention(memberType, fill, nameOfAttribute, nameOfProperty, destinations.ToImmutable(), direction);
+        // RETURNED EVEN WHEN IT FILLS NOTHING, and that is the point. Dropping an empty one here
+        // was a silent give-up: the rule vanished, its members fell through to name matching, and
+        // the build then reported SM0001 about the very member somebody wrote a convention for.
+        // Whether an empty rule is worth reporting is the CALLER's question — it is the one that
+        // can say so (SM0038) — so this no longer decides it by returning nothing.
+        return new Convention(
+            memberType, fill, nameOfAttribute, nameOfProperty, destinations.ToImmutable(), direction);
     }
 
     private static bool IsDeclaredOnConvention(
@@ -227,11 +239,33 @@ internal static class MemberConventions
             _ => expression,
         };
 
-        // A value-typed member under a Func<T, object> selector arrives boxed, so the cast has to
-        // be looked through or the name would be missed for exactly the members most likely to be
-        // ids.
-        while (body is CastExpressionSyntax cast)
-            body = cast.Expression;
+        // LOOK THROUGH THE NOISE AROUND THE MEMBER. A value-typed member under a
+        // Func<T, object> selector arrives boxed, so the cast has to be looked through or the name
+        // would be missed for exactly the members most likely to be ids. `!` and brackets are the
+        // same situation: they change nothing about WHICH member is named, and an IDE will add the
+        // first one for you, so missing them meant a rule silently filled nothing.
+        for (bool peeled = true; peeled;)
+        {
+            switch (body)
+            {
+                case CastExpressionSyntax cast:
+                    body = cast.Expression;
+                    break;
+
+                case ParenthesizedExpressionSyntax parenthesised:
+                    body = parenthesised.Expression;
+                    break;
+
+                // The null-forgiving operator, `d => d.Value!`.
+                case PostfixUnaryExpressionSyntax { RawKind: (int)SyntaxKind.SuppressNullableWarningExpression } suppressed:
+                    body = suppressed.Operand;
+                    break;
+
+                default:
+                    peeled = false;
+                    break;
+            }
+        }
 
         return body is MemberAccessExpressionSyntax access ? access.Name.Identifier.ValueText : null;
     }

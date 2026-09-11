@@ -252,7 +252,8 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         // MEMBER CONVENTIONS, read from the same declaration parts as the conversions. They hold
         // symbols and never outlive this method, exactly as the conversion table does.
         List<MemberConventions.Convention> memberConventions = ReadMemberConventions(
-            semanticModel.Compilation, classSymbol, baseClass, profileBase, cancellationToken);
+            semanticModel.Compilation, classSymbol, baseClass, profileBase, declaredProblems,
+            cancellationToken);
 
         ConversionTable conversions = ReadConversions(
             semanticModel.Compilation, classSymbol, baseClass, profileBase, declaredProblems,
@@ -327,7 +328,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
 
         // Every CreateMap<A, B>() written anywhere inside THIS declaration. Other parts of
         // the same class arrive as their own model and are merged later.
-        foreach (InvocationExpressionSyntax invocation in classDeclaration.DescendantNodes().OfType<InvocationExpressionSyntax>())
+        foreach (InvocationExpressionSyntax invocation in OwnInvocations(classDeclaration))
         {
             GenericNameSyntax? createMap = GetCreateMapName(
                 semanticModel, invocation, baseClass, cancellationToken);
@@ -387,7 +388,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             }
 
             foreach (InvocationExpressionSyntax invocation in
-                     profilePart.DescendantNodes().OfType<InvocationExpressionSyntax>())
+                     OwnInvocations(profilePart))
             {
                 GenericNameSyntax? createMap = GetCreateMapName(
                     profileModel, invocation, baseClass, cancellationToken);
@@ -454,7 +455,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         {
             SemanticModel openModel = semanticModel.Compilation.GetSemanticModel(openScope.SyntaxTree);
 
-            foreach (InvocationExpressionSyntax invocation in openScope.DescendantNodes().OfType<InvocationExpressionSyntax>())
+            foreach (InvocationExpressionSyntax invocation in OwnInvocations(openScope))
             {
                 if (!IsOpenCreateMap(openModel, invocation, baseClass, cancellationToken,
                         out INamedTypeSymbol? openSource, out INamedTypeSymbol? openDestination))
@@ -506,7 +507,8 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                         unresolvedBases: ImmutableArray<string>.Empty,
                         conversions: conversions,
                         memberConventions: memberConventions,
-                        declaredProblems: declaredProblems);
+                        declaredProblems: declaredProblems,
+                        isOpenGenericClosure: true);
 
                     if (seen.Add(closed.Key))
                         maps.Add(closed);
@@ -650,7 +652,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         {
             SemanticModel model = compilation.GetSemanticModel(part.SyntaxTree);
 
-            foreach (InvocationExpressionSyntax invocation in part.DescendantNodes().OfType<InvocationExpressionSyntax>())
+            foreach (InvocationExpressionSyntax invocation in OwnInvocations(part))
             {
                 GenericNameSyntax? createMap = GetCreateMapName(model, invocation, baseClass, cancellationToken);
 
@@ -734,6 +736,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         INamedTypeSymbol classSymbol,
         INamedTypeSymbol baseClass,
         INamedTypeSymbol? profileBase,
+        List<string> declaredProblems,
         CancellationToken cancellationToken)
     {
         var conventions = new List<MemberConventions.Convention>();
@@ -750,16 +753,34 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             SemanticModel model = compilation.GetSemanticModel(part.SyntaxTree);
 
             foreach (InvocationExpressionSyntax invocation in
-                     part.DescendantNodes().OfType<InvocationExpressionSyntax>())
+                     OwnInvocations(part))
             {
                 if (GetCreateMemberConventionName(model, invocation, baseClass, cancellationToken) is not { } name)
                     continue;
 
                 if (MemberConventions.Read(model, invocation, name, conventionExpression, cancellationToken)
-                        is { } convention)
+                        is not { } convention)
                 {
-                    conventions.Add(convention);
+                    continue;
                 }
+
+                // SM0038 — read, and empty. A convention that fills nothing does nothing, and the
+                // symptom is a LIE: the member falls through to name matching and the build says
+                // "'Source' has no readable property named 'Brand'" about the very member somebody
+                // wrote a convention for. Worse, SM0001's code fix then offers to Ignore it, which
+                // is one click from cementing the wrong answer. Naming the real cause here is what
+                // makes that fix safe to ship.
+                if (convention.Fill.Count == 0)
+                {
+                    declaredProblems.Add(
+                        $"SM0038|the member convention for '{convention.MemberType.Name}' fills " +
+                        "nothing, so it will not apply and members of that type fall through to " +
+                        "ordinary name matching. Chain a Fill or FillIfPossible onto it, or remove it.");
+
+                    continue;
+                }
+
+                conventions.Add(convention);
             }
         }
 
@@ -806,7 +827,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             SemanticModel model = compilation.GetSemanticModel(part.SyntaxTree);
 
             foreach (InvocationExpressionSyntax invocation in
-                     part.DescendantNodes().OfType<InvocationExpressionSyntax>())
+                     OwnInvocations(part))
             {
                 GenericNameSyntax? name = invocation.Expression switch
                 {
@@ -874,7 +895,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
 
         SemanticModel model = compilation.GetSemanticModel(scope.SyntaxTree);
 
-        foreach (InvocationExpressionSyntax invocation in scope.DescendantNodes().OfType<InvocationExpressionSyntax>())
+        foreach (InvocationExpressionSyntax invocation in OwnInvocations(scope))
         {
             GenericNameSyntax? name = invocation.Expression switch
             {
@@ -977,7 +998,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         {
             SemanticModel model = compilation.GetSemanticModel(part.SyntaxTree);
 
-            foreach (InvocationExpressionSyntax invocation in part.DescendantNodes().OfType<InvocationExpressionSyntax>())
+            foreach (InvocationExpressionSyntax invocation in OwnInvocations(part))
             {
                 GenericNameSyntax? createMap = GetCreateMapName(model, invocation, baseClass, cancellationToken);
 
@@ -1203,6 +1224,80 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     /// silently wrong code the developer never asked for. So the name is only a filter, and
     /// the answer comes from asking the compiler what the call actually binds to.
     /// </summary>
+    /// <summary>
+    /// Every invocation this declaration WROTE, which is not the same as every invocation below it.
+    ///
+    /// <para><c>DescendantNodes()</c> descends through everything, nested TYPE declarations included,
+    /// so a mapper or profile written inside another mapper had its declarations read twice: once by
+    /// its own sweep and once by its container's. The container silently grew maps it never wrote,
+    /// and a nested profile produced the only actively FALSE message in the set — SM0027, "this map
+    /// is declared twice", about a map declared exactly once.</para>
+    ///
+    /// <para>A nested type is its own declaration and gets its own sweep. This one stops at its
+    /// door.</para>
+    /// </summary>
+    private static global::System.Collections.Generic.IEnumerable<InvocationExpressionSyntax> OwnInvocations(
+        SyntaxNode declaration) =>
+        declaration
+            .DescendantNodes(node => node == declaration || node is not BaseTypeDeclarationSyntax)
+            .OfType<InvocationExpressionSyntax>();
+
+    /// <summary>
+    /// WHY this map cannot be projected, in one phrase that drops into a sentence.
+    ///
+    /// <para>ONE definition, used by the throw the projection member becomes, by SM0036, and by the
+    /// metadata a <c>ProjectTo</c> call site reads. Three sentences for one fact is how a build
+    /// starts contradicting itself.</para>
+    /// </summary>
+    private static string ProjectionRefusalReason(MapModel map) =>
+        !map.NestedProjectionRefusals.IsEmpty
+            ? $"nests the map from {string.Join(", ", map.NestedProjectionRefusals)}, which " +
+              "cannot be projected"
+            : !map.ProjectionRefusals.IsEmpty
+            ? $"converts {string.Join(", ", map.ProjectionRefusals)} with a conversion that " +
+              "has no query form"
+            : !map.IncludedDerived.IsEmpty
+            ? "dispatches on the source's runtime type through Include"
+            : map.HasHooks
+            ? $"runs {HookNames(map)} over its destination"
+            : map.ConstructsWithFactory
+                ? "builds its destination with ConstructUsing"
+                : $"assigns {string.Join(", ", map.ConditionedMembers)} behind a Condition";
+
+    /// <summary>
+    /// Records every map that cannot be projected on the generated part, so a <c>ProjectTo</c> call
+    /// site can be told WHERE IT IS WRITTEN rather than only where the map is declared.
+    ///
+    /// <para>A call site knows the pair and the mapper and nothing else; the configuration is in
+    /// another file, often another assembly. The shape travels instead — the same answer Step 14
+    /// reached for declarations.</para>
+    ///
+    /// <para>Nothing is written for a mapper whose maps all project, which is most of them.</para>
+    /// </summary>
+    private static void AppendProjectionMetadata(StringBuilder sb, string indent, MapperClassModel model)
+    {
+        foreach (MapModel map in model.Maps)
+        {
+            if (map.IsProjectable)
+                continue;
+
+            sb.AppendLine(
+                $"{indent}[global::ShiftMapper.ShiftMapperNotProjectable(" +
+                $"typeof({map.SourceType}), typeof({map.DestinationType}), " +
+                $"\"{Escape(ProjectionRefusalReason(map))}\")]");
+        }
+    }
+
+    /// <summary>A string literal's worth of escaping — quotes and backslashes, nothing exotic.</summary>
+    private static string Escape(string text) =>
+        text.Replace("\\", "\\\\").Replace("\"", "\\\"");
+
+    /// <summary>The missing pair, as diagnostic properties SM0011's code fix can act on.</summary>
+    private static ImmutableDictionary<string, string?> NestedPair(NestedProperty nested) =>
+        ImmutableDictionary<string, string?>.Empty
+            .Add(DiagnosticProperties.NestedSource, Readable(nested.SourceElementType))
+            .Add(DiagnosticProperties.NestedDestination, Readable(nested.DestinationElementType));
+
     private static GenericNameSyntax? GetCreateMapName(
         SemanticModel semanticModel,
         InvocationExpressionSyntax invocation,
@@ -1307,6 +1402,13 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
 
         for (SyntaxNode node = createMap; ;)
         {
+            // PARENTHESES ARE INVISIBLE. `(CreateMap<A, B>()).ForMember(...)` is the same
+            // declaration as the unbracketed form, but the walk below matches node SHAPES, so a
+            // bracket used to end the chain here — silently dropping every refinement after it.
+            // The Ignore went missing and the member was mapped anyway, with nothing reported.
+            while (node.Parent is ParenthesizedExpressionSyntax parenthesised)
+                node = parenthesised;
+
             // Each link of the chain looks like `<node>.Something(...)`. Anything else ends
             // it — including <node> being an ARGUMENT of the member access rather than its
             // target, which would be a different expression altogether.
@@ -2381,7 +2483,8 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         ImmutableArray<string> unresolvedBases,
         ConversionTable? conversions = null,
         List<MemberConventions.Convention>? memberConventions = null,
-        List<string>? declaredProblems = null)
+        List<string>? declaredProblems = null,
+        bool isOpenGenericClosure = false)
     {
         List<MemberConventions.Convention> conventionList =
             memberConventions ?? new List<MemberConventions.Convention>();
@@ -2445,7 +2548,8 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             includedDerived: refinements.IncludedDerived,
             asConcrete: refinements.AsConcrete,
             asConcreteRejected: refinements.AsConcreteRejected,
-            projectionRefusals: projectionRefusals);
+            projectionRefusals: projectionRefusals,
+            isOpenGenericClosure: isOpenGenericClosure);
     }
 
     /// <summary>The result of comparing one source type against one destination type.</summary>
@@ -2787,7 +2891,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     /// the convention rather than to name matching.
     ///
     /// <para>The reverse of a member convention fills the foreign key. The navigation beside it is
-    /// the related row, which is not rebuilt from a value and a label {D} and left to name matching
+    /// the related row, which is not rebuilt from a value and a label — and left to name matching
     /// it would demand a map from the select DTO to the entity, stopping the build.</para>
     /// </summary>
     private static bool ClaimedNavigation(
@@ -4052,6 +4156,9 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                 report?.Report(
                     DiagnosticDescriptors.NoMapForNestedProperty,
                     map.Location,
+                    // The pair, structurally, so the code fix can write the CreateMap without
+                    // reading it back out of the sentence.
+                    NestedPair(nested),
                     map.DestinationName,
                     nested.Destination,
                     ShortName(nested.SourceElementType),
@@ -4074,6 +4181,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                     report?.Report(
                         DiagnosticDescriptors.NoMapForNestedProperty,
                         current.Location,
+                        NestedPair(nested),
                         current.DestinationName,
                         nested.Destination,
                         ShortName(nested.SourceElementType),
@@ -4093,7 +4201,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             FindCycles(report, map, validated, new List<(string Key, NestedProperty Via)>(), cut, reported);
 
         if (cut.Count == 0)
-            return validated.Values.ToImmutableArray();
+            return PropagateProjectionRefusals(validated.Values.ToImmutableArray());
 
         var resolved = ImmutableArray.CreateBuilder<MapModel>(maps.Length);
 
@@ -4109,8 +4217,96 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                 current, nested => !cut.Contains(current.Key + "|" + nested.Destination)));
         }
 
-        return resolved.ToImmutable();
+        return PropagateProjectionRefusals(resolved.ToImmutable());
     }
+
+    /// <summary>
+    /// Spreads "cannot be projected" OUTWARD, from a map to everything that nests it.
+    ///
+    /// <para><b>The bug this fixes.</b> A map answered the projection question from its own facts
+    /// alone. So a parent nesting a child that could not project reported itself PROJECTABLE, emitted
+    /// a projection, and spliced the child's in — and the child's projection is emitted as a THROW.
+    /// The build said one thing, about the child, and the query failed at run time naming a pair the
+    /// developer had not asked for. An <c>As</c> redirection was worse: it forced the answer to true
+    /// without looking at the concrete map at all.</para>
+    ///
+    /// <para>Runs LAST, after nesting is settled, because the question is about the finished graph.
+    /// Iterates to a fixpoint so a refusal three levels down still reaches the top; SM0012 has
+    /// already cut every cycle by this point, so the walk terminates.</para>
+    /// </summary>
+    private static ImmutableArray<MapModel> PropagateProjectionRefusals(ImmutableArray<MapModel> maps)
+    {
+        if (maps.IsEmpty)
+            return maps;
+
+        var byKey = new Dictionary<string, MapModel>(StringComparer.Ordinal);
+
+        foreach (MapModel map in maps)
+            byKey[map.Key] = map;
+
+        // A fixpoint rather than one sweep: the order maps happen to be in says nothing about which
+        // nests which, so a single pass would carry a refusal up exactly one level.
+        for (bool changed = true; changed;)
+        {
+            changed = false;
+
+            foreach (string key in byKey.Keys.ToArray())
+            {
+                MapModel map = byKey[key];
+
+                var refused = new SortedSet<string>(map.NestedProjectionRefusals, StringComparer.Ordinal);
+
+                foreach (string nestedKey in NestedKeys(map))
+                {
+                    if (!byKey.TryGetValue(nestedKey, out MapModel child) || child.IsProjectable)
+                        continue;
+
+                    // The CHILD's pair, because that is the map somebody has to go and fix. Naming
+                    // the parent here would describe the symptom.
+                    refused.Add($"'{child.SourceName}' to '{child.DestinationName}'");
+                }
+
+                if (refused.Count == map.NestedProjectionRefusals.Length)
+                    continue;
+
+                byKey[key] = map.WithNestedProjectionRefusals(refused.ToImmutableArray());
+                changed = true;
+            }
+        }
+
+        // Rebuilt in the ORDER THEY CAME IN, so the generated file does not shuffle between builds.
+        var result = ImmutableArray.CreateBuilder<MapModel>(maps.Length);
+
+        foreach (MapModel map in maps)
+            result.Add(byKey[map.Key]);
+
+        return result.ToImmutable();
+    }
+
+    /// <summary>
+    /// Every map this one depends on for its own projection: nested properties, nested constructor
+    /// arguments, and the concrete map an <c>As</c> stands in for.
+    /// </summary>
+    private static IEnumerable<string> NestedKeys(MapModel map)
+    {
+        foreach (NestedProperty nested in map.NestedProperties)
+            yield return nested.Key;
+
+        if (map.Constructor.NeedsRuntimeArguments)
+        {
+            foreach (ConstructorArgument argument in map.Constructor.Arguments)
+            {
+                if (argument.Nested is { } nested)
+                    yield return nested.Key;
+            }
+        }
+
+        // An `As` map has no members of its own — it IS the concrete map's projection, widened —
+        // so it cannot be projectable when that one is not. Same key the emitter builds to find it.
+        if (map.AsConcrete is { } concrete)
+            yield return map.SourceType + "->" + concrete;
+    }
+
 
     /// <summary>
     /// Rebuilds a map's constructor plan, turning every nested argument the predicate refuses into
@@ -4306,6 +4502,8 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         // CLASS in only one part, but any part may add interfaces, so this is the one thing the
         // generated half can contribute to the type's shape without the hand-written half
         // repeating it.
+        AppendProjectionMetadata(sb, indent, model);
+
         sb.AppendLine($"{indent}partial class {model.ClassName} : {MapperInterfaceType}");
         sb.AppendLine($"{indent}{{");
 
@@ -5656,23 +5854,16 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         // instead of a sentence explaining which map cannot be projected and why.
         if (!map.IsProjectable)
         {
-            string cause = !map.ProjectionRefusals.IsEmpty
-                ? $"converts {string.Join(", ", map.ProjectionRefusals)} with a conversion that " +
-                  "has no query form"
-                : !map.IncludedDerived.IsEmpty
-                ? "dispatches on the source's runtime type through Include"
-                : map.HasHooks
-                ? $"runs {HookNames(map)} over its destination"
-                : map.ConstructsWithFactory
-                    ? "builds its destination with ConstructUsing"
-                    : $"assigns {string.Join(", ", map.ConditionedMembers)} behind a Condition";
+            string cause = ProjectionRefusalReason(map);
 
             // The example names the pair the dispatch would TEST FIRST, so the hint and the
             // generated code agree — and so the whole file stays independent of the order the
             // Include calls happened to be written in.
             DerivedPair? example = DeepestFirst(map).FirstOrDefault();
 
-            string fix = !map.ProjectionRefusals.IsEmpty
+            string fix = !map.NestedProjectionRefusals.IsEmpty
+                ? "Use Map instead, or make that map projectable — this one inherits its verdict."
+                : !map.ProjectionRefusals.IsEmpty
                 ? "Use Map instead, or give CreateConversion a query expression for that pair."
                 : example is not null
                 ? $"Use Map instead, or project the derived type directly: OfType<{example.SourceName}>().ProjectTo<{example.DestinationName}>(mapper)."

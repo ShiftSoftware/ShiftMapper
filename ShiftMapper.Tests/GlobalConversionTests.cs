@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using ShiftMapper.Tests.Model;
 using Xunit;
 
@@ -157,7 +157,9 @@ public class GlobalConversionTests
     public void A_memory_only_conversion_refuses_to_project()
     {
         InvalidOperationException error = Assert.Throws<InvalidOperationException>(
+            #pragma warning disable SM0037 // the throw is exactly what this test asserts
             () => Mapper.ProjectTo<VaultDto>(Array.Empty<Vault>().AsQueryable()));
+            #pragma warning restore SM0037
 
         Assert.Contains("no query form", error.Message);
     }

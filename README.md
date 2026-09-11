@@ -460,6 +460,39 @@ An explicit `ForMember` always wins. A convention that claims a member and canno
 **unmapped** and says why (SM0034), rather than quietly falling back to name matching and mapping it
 to the very thing the convention existed to override.
 
+### Projection is transitive
+
+A projection is one expression, assembled from the projections of the maps it nests. So a map is only
+as projectable as what it nests, all the way down:
+
+```csharp
+CreateMap<Inner, InnerDto>().AfterMap(...);   // SM0018 — needs a statement
+CreateMap<Outer, OuterDto>();                 // SM0036 — nests the above
+```
+
+> SM0036: the map from 'Outer' to 'OuterDto' nests the map from 'Inner' to 'InnerDto', which cannot
+> be projected, so ProjectTo cannot use this one either; Map is unaffected
+
+The message names the CHILD, because that is the map to go and fix. Closures of an open generic are
+exempt: one `CreateMap(typeof(Page<>), typeof(PageDto<>))` closes over every pair the mapper has, so
+reporting there is N messages about maps nobody wrote, each derivable from the child's own.
+
+### And it is reported where you call it
+
+The rules above describe a mapper where it is DECLARED. Whoever writes the query is usually looking
+at a different file:
+
+```csharp
+db.Invoices.ProjectTo<InvoiceLabelDto>(mapper);   // SM0037, right here
+```
+
+> SM0037: 'Invoice' to 'InvoiceLabelDto' cannot be projected: the map runs AfterMap over its
+> destination. Use Map instead.
+
+**It reasons only from what it can see.** A generic repository projecting `IQueryable<TEntity>` to
+`TDto` names no pair, so nothing is said about it — which is what keeps correct code from being
+accused. The reason travels from the mapper as metadata, so it works across a package reference too.
+
 ### Code fixes
 
 `SM0001` (— a destination member nothing fills) offers a lightbulb:
@@ -473,8 +506,18 @@ CreateMap<Brand, BrandDto>()
 mean to leave it"; `Ignore` is the second one written into the source, where the next reader sees a
 decision instead of an oversight. A `#pragma` or an `.editorconfig` severity tweak leaves neither.
 
-There is deliberately **no "fix all"** — bulk-ignoring every unmapped member in one gesture is
-exactly the review nobody would then do.
+`SM0011` (— a nested member whose pair has no map) offers the declaration it needs:
+
+```csharp
+CreateMap<Order, OrderDto>();
+CreateMap<Line, LineDto>();   // "Add CreateMap<Line, LineDto>()"
+```
+
+Only the forward phrasing is offered. `CreateMap<B, A>().ReverseMap()` is often better, but whether
+it reads better depends on what is already there — a judgement a lightbulb must not make silently.
+
+There is deliberately **no "fix all"** on either — bulk-ignoring every unmapped member, or declaring
+a dozen maps from one gesture, is exactly the review nobody would then do.
 
 The fixes ship in the same package, as a **second assembly** under `analyzers/dotnet/cs`. They have
 to: a code fix needs `Microsoft.CodeAnalysis.Workspaces`, which does not ship beside `csc`, so an
@@ -883,7 +926,7 @@ and think. Each is reported as SM0002 rather than skipped in silence.
 
 ## Diagnostics
 
-Thirty-five rules, `SM0001` to `SM0035`. Five stop the build; the rest describe something that
+Thirty-eight rules, `SM0001` to `SM0038`. Five stop the build; the rest describe something that
 will not be mapped, or will be mapped in a way worth knowing about.
 
 | Id | Default | What it means |
@@ -923,6 +966,9 @@ will not be mapped, or will be mapped in a way worth knowing about.
 | SM0033 | Warning | A referenced assembly declares a newer ShiftMapper contract |
 | SM0034 | Warning | A member convention could not fill the member it claimed |
 | SM0035 | **Error** | A declaration cannot be honoured where it is written |
+| SM0036 | Warning | Map cannot be projected because a map it nests cannot |
+| SM0037 | Warning | `ProjectTo` called on a pair that cannot be projected |
+| SM0038 | Warning | A member convention fills nothing |
 
 `SM0011` is an error because a null nested object in a response looks exactly like a null in the
 database. Two ways forward, both one line: declare the map, or `opt.Ignore()` the property.
