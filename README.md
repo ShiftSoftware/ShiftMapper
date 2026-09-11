@@ -348,56 +348,117 @@ The rules, briefly:
   update overload**. It would return the object it was handed having done nothing, and a compile
   error at the call site is the better answer.
 
-### Rules from a referenced assembly
+### Member conventions
 
-A profile is read as SOURCE, so a package cannot ship one: a generator sees a reference as
-METADATA, and metadata has no method bodies. Anything a package wants understood has to be
-expressed in what metadata does carry — attributes, signatures and names.
+A conversion answers "this type becomes that type". Some rules are MEMBER-shaped instead: which
+source members fill a destination member depends on that member's own NAME.
 
 ```csharp
-// in ShiftFramework, once
-[assembly: ShiftMapperContract(1)]
-[assembly: ShiftMapperConversions(typeof(ShiftEntityConversions))]
+CreateMemberConvention<ShiftEntitySelectDTO>()
+    .NameFrom<ShiftEntityKeyAndNameAttribute>(nameof(ShiftEntityKeyAndNameAttribute.Text))
+    .Fill(d => d.Value, "{Member}ID")
+    .FillIfPossible(d => d.Text, "{Member}.{NameOf}");
+```
 
-[ShiftMapperConversions]
-public static class ShiftEntityConversions
+Now any destination member of that type is filled, in any map:
+
+```csharp
+CreateMap<Product, ProductListDto>();     // the whole of the application's involvement
+```
+
+```csharp
+// what the generator writes
+Brand = new ShiftEntitySelectDTO
 {
-    // memory form: the SIGNATURE is the declaration — (long) to (string)
-    public static string ToHashId(long id) => "H" + id;
-
-    // query form for the same pair, matched by the types it returns rather than by name
-    [ShiftMapperQueryForm]
-    public static Expression<Func<long, string>> ToHashIdQuery => id => "H" + id;
+    Value = ValueConverter.ToInvariantString(source.BrandId),
+    Text  = (source.Brand is null ? default(string)! : source.Brand.Name),
 }
 ```
 
-Every application that references the package now converts that pair, everywhere, having written
-nothing. **And what it gets is BETTER than the in-project route rather than a degraded version of
-it**: a `CreateConversion` lambda can only be looked up on the mapper at run time, but a declared
-one has a NAME, so the generated code calls it directly — no dictionary, no delegate, and the
-element lambdas of a collection stay `static`.
+**The target is a selector, the path is a string.** `d => d.Value` is compile-checked, so renaming
+`Value` is a compile error rather than a build warning. The path has to stay text — it names source
+members that are not symbols anywhere until a map is declared.
 
-```csharp
-Files       = global::ShiftFramework.ShiftEntityConversions.ToFiles(source.Files),
-ExternalIds = ValueConverter.ToListOrEmpty<long, string>(
-                  source.ExternalIds, static item => ShiftEntityConversions.ToHashId(item)),
+Two placeholders, and no more. `{Member}` is the destination member's own name, so `{Member}ID` reads
+`source.BrandId`. `{NameOf}` is **the indirection that makes one rule serve types nobody listed**: it
+means "the member this type nominates in its own attribute", so an entity calling its display member
+`Title` is served by the same rule as one calling it `Name`.
+
+**It resolves to TEXT at compile time, which is why it reaches the projection.** The same rule as an
+`AfterMap` works in memory and cannot appear in a list query at all — which is why frameworks that
+reach for one end up maintaining a second, hand-inlined path for lists:
+
+```sql
+SELECT [p].[Id], [p].[Name], CONVERT(varchar(11), [p].[BrandId]) AS [Value], [b].[Name] AS [Text], ...
+FROM [Products] AS [p]
+INNER JOIN [Brands] AS [b] ON [p].[BrandId] = [b].[Id]
 ```
 
-Only the query form still travels as a tree, because an expression is the one thing a name cannot
-stand in for; the generated mapper registers those so a projection can splice them. In the sample
-that reaches SQL Server as `N'H' + CAST(...)`, from a rule in another assembly.
+**One rule, both shapes.** `FillIfPossible` is a `Fill` that is DROPPED when its path does not
+resolve, instead of failing the member. Often only the id is set and the label is filled in by
+whatever renders it — the source has a foreign key and no navigation to read a name from, or the
+related type nominates no display member at all:
 
-**Precedence, near to far:** a `ForMember` beats everything; a conversion this project declares
-beats one a package declares; a declared pair beats the built-in table. Two packages claiming one
-pair is an **error** (SM0031) rather than a coin toss.
+```csharp
+// Brand nominates a name; Stock does not. Same rule, nothing added:
+Brand = new ShiftEntitySelectDTO { Value = ..., Text = source.Brand!.Name },
+Stock = new ShiftEntitySelectDTO { Value = ... },
+```
 
-**Version it.** `[assembly: ShiftMapperContract(1)]` lets a newer package be refused with a
-sentence (SM0033) instead of being half-understood and emitted as code that will not compile.
+```sql
+-- and the id-only member costs no join, because nothing reads through it
+SELECT [p].[Id], [p].[Name], CONVERT(varchar(11), [p].[BrandId]), [b].[Name], CONVERT(varchar(11), [p].[StockId])
+FROM [Products] AS [p]
+INNER JOIN [Brands] AS [b] ON [p].[BrandId] = [b].[Id]
+```
 
-**A profile in a package is reported, not silently ignored** (SM0028). Worth knowing: it is
-invisible to the compiler but still LIVE at run time, so one that declares a conversion will
-quietly override what the build described. Declare rules through the attributes; keep profiles for
-the same compilation.
+With a required `Fill` that is SM0034 and an unmapped member, and a framework needs a SECOND rule for
+every entity that leaves its label to the UI — which is the thing conventions exist to avoid. It
+skips QUIETLY, and that is why it is a separate method rather than a flag: writing `FillIfPossible`
+IS the acknowledgement, exactly as `Ignore` is. A required `Fill` that cannot resolve is still
+reported.
+
+`NameFrom` is only needed by a path that uses `{NameOf}`. A rule that fills nothing but an id needs
+neither it nor the attribute.
+
+**It composes with everything else.** Each value goes through the ordinary conversion table, so a
+global conversion applies inside a shaped member — which is how hash ids reach a select DTO without
+either rule mentioning the other. Declared in a profile it crosses an assembly like everything else,
+so a framework ships the rule and an application's own DTOs are filled by something that names none
+of its types.
+
+**Narrowing.** `.WhenDestinationIs<T>()` limits a rule to maps whose destination fits, so a
+framework's rule cannot reach into unrelated application types that happen to use the same member
+type. Several conventions coexist, each claiming its own member type.
+
+**Paths resolve exact-first, then by the mapper's own case rule**, so a framework pattern of
+`{Member}ID` still finds an entity's `BrandId`. A convention that only worked when the application
+already agreed on casing would not be a convention.
+
+**The write direction is DERIVED, not declared.** A picker posts back what it was given, so the
+request carries a select DTO and the entity needs its foreign key set. The entry written for the
+response does it:
+
+```csharp
+CreateMap<ProductRequest, Product>();   // ProductRequest.Brand is a ShiftEntitySelectDTO
+```
+
+```csharp
+// what the generator writes
+BrandId = ValueConverter.Parse<int>((source.Brand is null ? default(string)! : source.Brand.Value), ...)
+```
+
+A `Fill` whose path is a plain member reverses on its own; entries that walk a navigation do not, and
+should not — a display name is read from the related row, never written back to it.
+
+And **the navigation beside the key is left alone**. `Product.Brand` name-matches the request's
+`Brand`, so without the convention claiming it the build would demand a map from
+`ShiftEntitySelectDTO` to `Brand` — an error on every write map a framework has. You set the key;
+the related row is the database's business.
+
+An explicit `ForMember` always wins. A convention that claims a member and cannot fill it leaves it
+**unmapped** and says why (SM0034), rather than quietly falling back to name matching and mapping it
+to the very thing the convention existed to override.
 
 ### Rules from a referenced assembly
 
@@ -757,7 +818,7 @@ and think. Each is reported as SM0002 rather than skipped in silence.
 
 ## Diagnostics
 
-Thirty-three rules, `SM0001` to `SM0033`. Four stop the build; the rest describe something that
+Thirty-four rules, `SM0001` to `SM0034`. Four stop the build; the rest describe something that
 will not be mapped, or will be mapped in a way worth knowing about.
 
 | Id | Default | What it means |
@@ -795,6 +856,7 @@ will not be mapped, or will be mapped in a way worth knowing about.
 | SM0031 | **Error** | Two referenced assemblies declare a conversion for the same type pair |
 | SM0032 | Warning | A declared conversion could not be read (bad signature, orphan query form) |
 | SM0033 | Warning | A referenced assembly declares a newer ShiftMapper contract |
+| SM0034 | Warning | A member convention could not fill the member it claimed |
 
 `SM0011` is an error because a null nested object in a response looks exactly like a null in the
 database. Two ways forward, both one line: declare the map, or `opt.Ignore()` the property.

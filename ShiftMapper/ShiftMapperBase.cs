@@ -121,39 +121,6 @@ public abstract class ShiftMapperBase
     protected ShiftMapperBase() => _customizations = new MapCustomizations(GetType());
 
     /// <summary>
-    /// Declares that this mapper also uses the maps written in a
-    /// <see cref="ShiftMapperProfile"/>. Call it from your constructor, like <c>CreateMap</c>.
-    ///
-    /// <code>
-    /// public partial class AppMapper : ShiftMapperBase
-    /// {
-    ///     public AppMapper()
-    ///     {
-    ///         AddProfile&lt;CatalogProfile&gt;();
-    ///         AddProfile&lt;InvoiceProfile&gt;();
-    ///     }
-    /// }
-    /// </code>
-    ///
-    /// <para>Nothing about the generated code changes. The profile's maps become THIS mapper's
-    /// maps — <c>mapper.Map&lt;BrandDto&gt;(brand)</c> and <c>ProjectTo</c> work exactly as if the
-    /// <c>CreateMap</c> had been written here. A profile is a place to write declarations, not a
-    /// second mapper, and it never gets Map methods of its own.</para>
-    ///
-    /// <para>UNLIKE the rest of the declaration API, this one does something at run time as well
-    /// as at compile time. The generator reads it to find the maps; the call itself records the
-    /// type so the profile can be CONSTRUCTED later — which is what puts its <c>MapFrom</c> trees
-    /// where the generated code looks for them.</para>
-    ///
-    /// <para>"Later" rather than "now" is deliberate: a profile may take constructor dependencies,
-    /// and this mapper's <see cref="Services"/> is not assigned until after its own constructor
-    /// returns. So profiles are built on first use — through DI when the mapper came from DI, and
-    /// through the parameterless constructor otherwise.</para>
-    ///
-    /// <para>A pair declared BOTH here and in a profile keeps the version written here, and the
-    /// build reports the clash (SM0027) rather than leaving you to find out which won.</para>
-    /// </summary>
-    /// <summary>
     /// Registers a conversion for a TYPE PAIR, applied to every member of those types in every
     /// map — including maps written in code that has never heard of it.
     ///
@@ -204,6 +171,64 @@ public abstract class ShiftMapperBase
         _customizations.RegisterConversion(typeof(TSource), typeof(TDestination), memory, query);
     }
 
+    /// <summary>
+    /// Declares a MEMBER-SHAPED rule: how to fill any destination member of
+    /// <typeparamref name="TMember"/>, from source members the destination member's own NAME picks
+    /// out.
+    ///
+    /// <code>
+    /// CreateMemberConvention&lt;ShiftEntitySelectDTO&gt;()
+    ///     .NameFrom&lt;ShiftEntityKeyAndNameAttribute&gt;("Text")
+    ///     .Fill(d =&gt; d.Value, "{Member}ID")
+    ///     .Fill(d =&gt; d.Text,  "{Member}.{NameOf}");
+    /// </code>
+    ///
+    /// <para>It answers a question <c>CreateConversion</c> cannot. A conversion is handed ONE value;
+    /// this needs two source members, and which two depends on the member's name. See
+    /// <see cref="MemberConventionExpression{TMember}"/> for what the vocabulary is and why it is
+    /// deliberately small.</para>
+    ///
+    /// <para>Declare it here or in a <see cref="ShiftMapperProfile"/>, which carries it across an
+    /// assembly like everything else. An explicit <c>ForMember</c> always wins over it.</para>
+    ///
+    /// <para>Compile-time only, like <c>CreateMap</c> — the generator reads the chain and the
+    /// calls do nothing.</para>
+    /// </summary>
+    protected MemberConventionExpression<TMember> CreateMemberConvention<TMember>() => new();
+
+    /// <summary>
+    /// Declares that this mapper also uses the maps written in a
+    /// <see cref="ShiftMapperProfile"/>. Call it from your constructor, like <c>CreateMap</c>.
+    ///
+    /// <code>
+    /// public partial class AppMapper : ShiftMapperBase
+    /// {
+    ///     public AppMapper()
+    ///     {
+    ///         AddProfile&lt;CatalogProfile&gt;();
+    ///         AddProfile&lt;InvoiceProfile&gt;();
+    ///     }
+    /// }
+    /// </code>
+    ///
+    /// <para>Nothing about the generated code changes. The profile's maps become THIS mapper's
+    /// maps — <c>mapper.Map&lt;BrandDto&gt;(brand)</c> and <c>ProjectTo</c> work exactly as if the
+    /// <c>CreateMap</c> had been written here. A profile is a place to write declarations, not a
+    /// second mapper, and it never gets Map methods of its own.</para>
+    ///
+    /// <para>UNLIKE the rest of the declaration API, this one does something at run time as well
+    /// as at compile time. The generator reads it to find the maps; the call itself records the
+    /// type so the profile can be CONSTRUCTED later — which is what puts its <c>MapFrom</c> trees
+    /// where the generated code looks for them.</para>
+    ///
+    /// <para>"Later" rather than "now" is deliberate: a profile may take constructor dependencies,
+    /// and this mapper's <see cref="Services"/> is not assigned until after its own constructor
+    /// returns. So profiles are built on first use — through DI when the mapper came from DI, and
+    /// through the parameterless constructor otherwise.</para>
+    ///
+    /// <para>A pair declared BOTH here and in a profile keeps the version written here, and the
+    /// build reports the clash (SM0027) rather than leaving you to find out which won.</para>
+    /// </summary>
     protected void AddProfile<TProfile>() where TProfile : ShiftMapperProfile
     {
         (_profileTypes ??= new List<Type>()).Add(typeof(TProfile));

@@ -20,12 +20,14 @@ internal sealed class ProfileDeclarationModel
         string profileType,
         ImmutableArray<DeclaredMapModel> maps,
         ImmutableArray<DeclaredConversionModel> conversions,
-        ImmutableArray<(string Source, string Destination)> openMaps)
+        ImmutableArray<(string Source, string Destination)> openMaps,
+        ImmutableArray<DeclaredConventionModel> conventions)
     {
         ProfileType = profileType;
         Maps = maps;
         Conversions = conversions;
         OpenMaps = openMaps;
+        Conventions = conventions;
     }
 
     /// <summary>Fully qualified profile type, e.g. <c>global::ShiftFramework.ShiftEntityProfile</c>.</summary>
@@ -38,8 +40,12 @@ internal sealed class ProfileDeclarationModel
     /// <summary>Unbound generic pairs from <c>CreateMap(typeof(X&lt;&gt;), typeof(Y&lt;&gt;))</c>.</summary>
     public ImmutableArray<(string Source, string Destination)> OpenMaps { get; }
 
+    /// <summary>Member-shaped rules from <c>CreateMemberConvention</c>.</summary>
+    public ImmutableArray<DeclaredConventionModel> Conventions { get; }
+
     /// <summary>Nothing to say about this type, so nothing is emitted for it.</summary>
-    public bool IsEmpty => Maps.IsEmpty && Conversions.IsEmpty && OpenMaps.IsEmpty;
+    public bool IsEmpty =>
+        Maps.IsEmpty && Conversions.IsEmpty && OpenMaps.IsEmpty && Conventions.IsEmpty;
 }
 
 /// <summary>One <c>CreateMap</c> a profile declared, with everything that is not an expression.</summary>
@@ -130,6 +136,39 @@ internal sealed class DeclaredMapModel
     public ImmutableArray<string> Prefixes { get; }
 
     public ImmutableArray<string> Postfixes { get; }
+}
+
+/// <summary>One <c>CreateMemberConvention</c> a profile declared — entirely shape.</summary>
+internal sealed class DeclaredConventionModel
+{
+    public DeclaredConventionModel(
+        string memberType,
+        ImmutableArray<string> fill,
+        string? nameOfAttribute,
+        string? nameOfProperty,
+        ImmutableArray<string> whenDestinationIs,
+        int direction)
+    {
+        MemberType = memberType;
+        Fill = fill;
+        NameOfAttribute = nameOfAttribute;
+        NameOfProperty = nameOfProperty;
+        WhenDestinationIs = whenDestinationIs;
+        Direction = direction;
+    }
+
+    public string MemberType { get; }
+
+    /// <summary>The entries, already spelled <c>"Value={Member}ID"</c>.</summary>
+    public ImmutableArray<string> Fill { get; }
+
+    public string? NameOfAttribute { get; }
+
+    public string? NameOfProperty { get; }
+
+    public ImmutableArray<string> WhenDestinationIs { get; }
+
+    public int Direction { get; }
 }
 
 /// <summary>One <c>CreateConversion</c> a profile declared.</summary>

@@ -1,4 +1,4 @@
-using ShiftMapper;
+﻿using ShiftMapper;
 
 namespace ShiftFramework;
 
@@ -27,6 +27,20 @@ public class ShiftEntityProfile : ShiftMapperProfile
         // objects, so the honest declaration is memory-only, and every map that touches the pair
         // is told at build time that it lost its projection (SM0030).
         CreateConversion<string?, List<ShiftFileDTO>>(memory: ShiftEntityConversions.ToFiles!);
+
+        // A MEMBER-SHAPED RULE, and the one a conversion cannot express. Any destination member of
+        // type ShiftEntitySelectDTO is filled from {Member}ID plus the member the RELATED ENTITY
+        // itself nominates — so this names no application type at all and still serves every one
+        // of them.
+        CreateMemberConvention<ShiftEntitySelectDTO>()
+            .NameFrom<ShiftEntityKeyAndNameAttribute>(nameof(ShiftEntityKeyAndNameAttribute.Text))
+            .Fill(d => d.Value, "{Member}ID")
+            // FillIfPossible, not Fill — ONE rule for both shapes. Where the source has the
+            // navigation, the text comes with it; where it has only a foreign key (a request body,
+            // a list that leaves the name to whatever renders it) the entry is dropped and the id
+            // is still set. A required Fill there would be SM0034 and an unmapped member, and the
+            // framework would need a second rule.
+            .FillIfPossible(d => d.Text, "{Member}.{NameOf}");
 
         // A MAP, with a refinement — the thing that could not cross an assembly at all before.
         CreateMap<ShiftFileDTO, ShiftFileSummary>()

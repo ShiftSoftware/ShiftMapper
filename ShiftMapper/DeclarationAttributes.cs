@@ -270,6 +270,50 @@ public sealed class ShiftMapperDeclaredConversionAttribute : Attribute
 }
 
 /// <summary>
+/// One <c>CreateMemberConvention&lt;T&gt;</c> a profile declared.
+///
+/// <para>Entirely SHAPE — a member type, some target/path pairs, an attribute to read names from,
+/// and a direction — so it crosses an assembly with nothing left behind. A convention has no
+/// expression at all: it resolves to an inline member-init at compile time, which is exactly why it
+/// reaches the projection.</para>
+/// </summary>
+[AttributeUsage(AttributeTargets.Assembly, AllowMultiple = true, Inherited = false)]
+public sealed class ShiftMapperDeclaredConventionAttribute : Attribute
+{
+    public ShiftMapperDeclaredConventionAttribute(Type profile, Type memberType)
+    {
+        Profile = profile;
+        MemberType = memberType;
+    }
+
+    public Type Profile { get; }
+
+    /// <summary>The member type the rule claims.</summary>
+    public Type MemberType { get; }
+
+    /// <summary>
+    /// The <c>Fill</c> entries, one per string, spelled <c>"Value={Member}ID"</c>.
+    ///
+    /// <para>Strings rather than anything richer because an attribute array cannot hold pairs, and
+    /// the target is a member NAME by the time it gets here — the selector was compile-checked in
+    /// the assembly that wrote it.</para>
+    /// </summary>
+    public string[]? Fill { get; set; }
+
+    /// <inheritdoc cref="MemberConventionExpression{TMember}.NameFrom{TAttribute}"/>
+    public Type? NameOfAttribute { get; set; }
+
+    /// <inheritdoc cref="NameOfAttribute"/>
+    public string? NameOfProperty { get; set; }
+
+    /// <summary>Types the map's destination must be assignable to, from <c>WhenDestinationIs</c>.</summary>
+    public Type[]? WhenDestinationIs { get; set; }
+
+    /// <summary>0 Read, 1 Write, 2 Both.</summary>
+    public int Direction { get; set; } = 2;
+}
+
+/// <summary>
 /// One open generic <c>CreateMap(typeof(Wrapper&lt;&gt;), typeof(WrapperDto&lt;&gt;))</c>.
 /// </summary>
 [AttributeUsage(AttributeTargets.Assembly, AllowMultiple = true, Inherited = false)]

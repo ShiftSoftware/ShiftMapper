@@ -81,6 +81,13 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     private const string AllMemberOptionsMetadataName = "ShiftMapper.AllMemberOptions`2";
 
     /// <summary>
+    /// Full name of the handle <c>CreateMemberConvention</c> returns, and so the type <c>Fill</c>
+    /// and the rest must be declared on. Looked up for the same reason as the others: a
+    /// <c>Fill</c> call only configures a convention when it is OURS.
+    /// </summary>
+    private const string MemberConventionMetadataName = "ShiftMapper.MemberConventionExpression`1";
+
+    /// <summary>
     /// The single namespace every generated extension class lives in. It is globally
     /// imported, so it deliberately contains nothing but ShiftMapper's own classes.
     /// </summary>
@@ -242,6 +249,11 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         // safe precisely because it does not outlive this method — see ConversionTable.
         var declaredProblems = new List<string>();
 
+        // MEMBER CONVENTIONS, read from the same declaration parts as the conversions. They hold
+        // symbols and never outlive this method, exactly as the conversion table does.
+        List<MemberConventions.Convention> memberConventions = ReadMemberConventions(
+            semanticModel.Compilation, classSymbol, baseClass, profileBase, cancellationToken);
+
         ConversionTable conversions = ReadConversions(
             semanticModel.Compilation, classSymbol, baseClass, profileBase, declaredProblems,
             cancellationToken);
@@ -263,6 +275,10 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
 
         DeclaredProfiles.Recovered recovered = DeclaredProfiles.Read(
             semanticModel.Compilation, metadataProfiles, conversions, declaredProblems);
+
+        // A PACKAGE'S RULES, added after this project's own so a local convention is found first.
+        // Near beats far here exactly as it does for conversions.
+        memberConventions.AddRange(recovered.Conventions);
 
         foreach (INamedTypeSymbol silent in metadataProfiles)
         {
@@ -329,6 +345,8 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                          classDefaultNaming,
                          Lookup,
                          conversions,
+                         memberConventions,
+                         declaredProblems,
                          cancellationToken))
             {
                 if (seen.Add(map.Key))
@@ -386,6 +404,8 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                              classDefaultNaming,
                              Lookup,
                              conversions,
+                             memberConventions,
+                             declaredProblems,
                              cancellationToken))
                 {
                     if (seen.Add(map.Key))
@@ -407,7 +427,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         foreach (MapModel recoveredMap in RecoverMaps(
                      semanticModel.Compilation, recovered, classDefaultCaseSensitive,
                      classDefaultAllowNullCollections, classDefaultFlattening, classDefaultNaming,
-                     conversions,
+                     conversions, memberConventions, declaredProblems,
                      LocationInfo.CreateFrom(classDeclaration.Identifier.Parent ?? classDeclaration)))
         {
             if (seen.Add(recoveredMap.Key))
@@ -479,7 +499,9 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                         naming: classDefaultNaming,
                         refinements: Refinements.Empty,
                         unresolvedBases: ImmutableArray<string>.Empty,
-                        conversions: conversions);
+                        conversions: conversions,
+                        memberConventions: memberConventions,
+                        declaredProblems: declaredProblems);
 
                     if (seen.Add(closed.Key))
                         maps.Add(closed);
@@ -694,6 +716,73 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     /// arrive at run time, exactly as a <c>MapFrom</c> tree does, which is why a conversion can
     /// call anything C# can call without the generator having to understand it.</para>
     /// </summary>
+    /// <summary>
+    /// Every member convention declared by this mapper and the profiles it adds.
+    ///
+    /// <para>Read from SOURCE, exactly as the conversions are, and from the same set of declaration
+    /// parts — so a convention written in a profile works like one written in the mapper.</para>
+    /// </summary>
+    private static List<MemberConventions.Convention> ReadMemberConventions(
+        Compilation compilation,
+        INamedTypeSymbol classSymbol,
+        INamedTypeSymbol baseClass,
+        INamedTypeSymbol? profileBase,
+        CancellationToken cancellationToken)
+    {
+        var conventions = new List<MemberConventions.Convention>();
+
+        INamedTypeSymbol? conventionExpression =
+            compilation.GetTypeByMetadataName(MemberConventionMetadataName);
+
+        if (conventionExpression is null)
+            return conventions;
+
+        foreach (ClassDeclarationSyntax part in
+                 AllDeclarationParts(compilation, classSymbol, profileBase, cancellationToken))
+        {
+            SemanticModel model = compilation.GetSemanticModel(part.SyntaxTree);
+
+            foreach (InvocationExpressionSyntax invocation in
+                     part.DescendantNodes().OfType<InvocationExpressionSyntax>())
+            {
+                if (GetCreateMemberConventionName(model, invocation, baseClass, cancellationToken) is not { } name)
+                    continue;
+
+                if (MemberConventions.Read(model, invocation, name, conventionExpression, cancellationToken)
+                        is { } convention)
+                {
+                    conventions.Add(convention);
+                }
+            }
+        }
+
+        return conventions;
+    }
+
+    /// <summary>The <c>CreateMemberConvention&lt;T&gt;</c> in one invocation, or null.</summary>
+    private static GenericNameSyntax? GetCreateMemberConventionName(
+        SemanticModel semanticModel,
+        InvocationExpressionSyntax invocation,
+        INamedTypeSymbol baseClass,
+        CancellationToken cancellationToken)
+    {
+        GenericNameSyntax? name = invocation.Expression switch
+        {
+            MemberAccessExpressionSyntax { Name: GenericNameSyntax generic } => generic,
+            GenericNameSyntax generic => generic,
+            _ => null,
+        };
+
+        if (name is null
+            || name.Identifier.ValueText != "CreateMemberConvention"
+            || name.TypeArgumentList.Arguments.Count != 1)
+        {
+            return null;
+        }
+
+        return IsDeclaredOn(semanticModel, invocation, baseClass, cancellationToken) ? name : null;
+    }
+
     private static ConversionTable ReadConversions(
         Compilation compilation,
         INamedTypeSymbol classSymbol,
@@ -1903,6 +1992,8 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         NamingConventions classDefaultNaming,
         Func<Dictionary<string, Refinements>> lookup,
         ConversionTable conversions,
+        List<MemberConventions.Convention> memberConventions,
+        List<string> declaredProblems,
         CancellationToken cancellationToken)
     {
         TypeSyntax sourceSyntax = createMap.TypeArgumentList.Arguments[0];
@@ -1966,7 +2057,9 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             naming: naming,
             refinements: Inherit(chain.Forward, lookup, out ImmutableArray<string> unresolvedForward),
             unresolvedBases: unresolvedForward,
-            conversions: conversions);
+            conversions: conversions,
+            memberConventions: memberConventions,
+            declaredProblems: declaredProblems);
 
         if (chain.ReverseMapName is null)
             yield break;
@@ -2014,7 +2107,9 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             naming: reverseNaming.IsEmpty ? naming : reverseNaming,
             refinements: Inherit(chain.Reverse, lookup, out ImmutableArray<string> unresolvedReverse),
             unresolvedBases: unresolvedReverse,
-            conversions: conversions);
+            conversions: conversions,
+            memberConventions: memberConventions,
+            declaredProblems: declaredProblems);
     }
 
     /// <summary>The configure lambda passed to a call, or null when it was left off.</summary>
@@ -2279,8 +2374,14 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         NamingConventions naming,
         Refinements refinements,
         ImmutableArray<string> unresolvedBases,
-        ConversionTable? conversions = null)
+        ConversionTable? conversions = null,
+        List<MemberConventions.Convention>? memberConventions = null,
+        List<string>? declaredProblems = null)
     {
+        List<MemberConventions.Convention> conventionList =
+            memberConventions ?? new List<MemberConventions.Convention>();
+
+        List<string> conventionProblems = declaredProblems ?? new List<string>();
         // ONE MAP'S WORTH of global-conversion usage. Cleared here so the refusals collected below
         // describe THIS map rather than everything the mapper has resolved so far.
         ConversionTable globals = conversions ?? ConversionTable.Empty;
@@ -2295,7 +2396,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
 
         PropertyAnalysis analysis = FindMatchingProperties(
             compilation, sourceType, destinationType, caseSensitive, allowNullCollections,
-            flattening, naming, refinements, globals);
+            flattening, naming, refinements, globals, conventionList, conventionProblems);
 
         // WHICH GLOBAL CONVERSIONS THIS MAP USED that cannot be written in SQL. Read from the
         // table's usage log rather than carried out of the analysis: a conversion can be reached
@@ -2450,6 +2551,263 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     /// <see cref="PlanConstruction"/> runs first, and every member it claims is skipped below —
     /// not merely left unassigned, but left unreported too, since it is mapped.
     /// </summary>
+    /// <summary>
+    /// Turns a member convention into the C# that fills one shaped member — an inline member-init
+    /// both backends can carry.
+    ///
+    /// <code>
+    /// Brand = new global::ShiftFramework.ShiftEntitySelectDTO
+    /// {
+    ///     Value = global::ShiftMapper.ValueConverter.ToInvariantString(source.BrandId),
+    ///     Text  = (source.Brand is null ? default(string)! : source.Brand.Name),
+    /// }
+    /// </code>
+    ///
+    /// <para><b>TEXT, not a runtime hook, and that is the whole step.</b> The same rule written as
+    /// an AfterMap works in memory and cannot appear in a list query at all. An inline member-init
+    /// is an ordinary expression, so it travels through the same property plumbing as every other
+    /// member and a database translates it like any other — one code path, one answer.</para>
+    ///
+    /// <para>Each value goes through <see cref="ConversionResolver"/> on the way in, so a long id
+    /// filling a string converts by the ordinary rules — INCLUDING through a global conversion,
+    /// which is how hash ids reach a select DTO without this rule mentioning them.</para>
+    ///
+    /// <para>Returns null when the destination type cannot be built, a target member is missing, or
+    /// a path does not resolve. The caller reports it rather than emitting something that would not
+    /// compile in a file nobody can edit.</para>
+    /// </summary>
+    private static PropertyPair? BuildConventionMember(
+        Compilation compilation,
+        MemberConventions.Convention convention,
+        INamedTypeSymbol sourceType,
+        INamedTypeSymbol destinationType,
+        IPropertySymbol destinationProperty,
+        bool allowNullCollections,
+        bool caseSensitive,
+        ConversionTable globals,
+        List<string> problems)
+    {
+        if (destinationProperty.Type is not INamedTypeSymbol shaped)
+            return null;
+
+        // It has to be constructible with `new X { }`, because that is what gets emitted.
+        if (shaped.IsAbstract
+            || shaped.TypeKind == TypeKind.Interface
+            || !shaped.InstanceConstructors.Any(c =>
+                c.Parameters.Length == 0 && c.DeclaredAccessibility == Accessibility.Public))
+        {
+            problems.Add(
+                "SM0034|'" + destinationType.Name + "." + destinationProperty.Name + "' matches the " +
+                "member convention for '" + shaped.Name + "', but '" + shaped.Name + "' has no " +
+                "public parameterless constructor, so the convention cannot build one.");
+
+            return null;
+        }
+
+        var memory = new List<string>();
+        var query = new List<string>();
+
+        foreach ((string target, string path, bool optional) in convention.Fill)
+        {
+            IPropertySymbol? targetMember = shaped.GetMembers(target)
+                .OfType<IPropertySymbol>()
+                .FirstOrDefault(member =>
+                    member.SetMethod is not null
+                    && member.DeclaredAccessibility == Accessibility.Public
+                    && !member.IsStatic);
+
+            if (targetMember is null)
+            {
+                // An OPTIONAL entry naming a member that is not there is dropped like any other
+                // that cannot be satisfied.
+                if (optional)
+                    continue;
+
+                problems.Add(
+                    "SM0034|the member convention for '" + shaped.Name + "' fills '" + target +
+                    "', which '" + shaped.Name + "' does not declare as a settable public " +
+                    "property. '" + destinationType.Name + "." + destinationProperty.Name +
+                    "' was left unmapped.");
+
+                return null;
+            }
+
+            MemberConventions.ResolvedPath? resolved = MemberConventions.ResolvePath(
+                convention, sourceType, destinationProperty.Name, path, caseSensitive,
+                out string expandedPath);
+
+            if (resolved is null)
+            {
+                // FillIfPossible: the source has no such path — a foreign key with no navigation
+                // beside it, most often — so the entry is dropped and the rest of the member is
+                // still built. Quietly, because writing FillIfPossible IS the acknowledgement.
+                if (optional)
+                    continue;
+
+                problems.Add(
+                    "SM0034|the member convention for '" + shaped.Name + "' fills '" + target +
+                    "' from '" + expandedPath + "' (its Fill says '" + path + "'), which does not " +
+                    "resolve on '" + sourceType.Name + "'. '" + destinationType.Name + "." +
+                    destinationProperty.Name + "' was left unmapped.");
+
+                return null;
+            }
+
+            ValueConversion? conversion = ConversionResolver.Resolve(
+                compilation,
+                resolved.Type,
+                targetMember.Type,
+                sourceType.Name + "." + expandedPath + " -> " + shaped.Name + "." + target,
+                allowNullCollections,
+                globals);
+
+            if (conversion is null)
+            {
+                if (optional)
+                    continue;
+
+                problems.Add(
+                    "SM0034|the member convention for '" + shaped.Name + "' cannot convert '" +
+                    ShortTypeName(resolved.Type) + "' to '" + ShortTypeName(targetMember.Type) +
+                    "' for '" + target + "'. '" + destinationType.Name + "." +
+                    destinationProperty.Name + "' was left unmapped.");
+
+                return null;
+            }
+
+            memory.Add(target + " = " + conversion.Apply(resolved.MemoryAccess));
+            query.Add(target + " = " + conversion.ApplyQuery(resolved.QueryAccess));
+        }
+
+        if (memory.Count == 0)
+            return null;
+
+        string type = shaped.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+
+        return new PropertyPair(
+            destination: destinationProperty.Name,
+            source: destinationProperty.Name,
+            sourceAccess: "new " + type + " { " + string.Join(", ", memory) + " }",
+            querySourceAccess: "new " + type + " { " + string.Join(", ", query) + " }");
+    }
+
+    /// <summary>
+    /// The WRITE direction: a destination member named by the reversible <c>Fill</c> entry, filled
+    /// from the source's shaped member.
+    ///
+    /// <code>
+    /// // Fill = "Value = {Member}ID" reversed: Product.BrandId from ProductListDto.Brand.Value
+    /// destination.BrandId = source.Brand.Value;
+    /// </code>
+    ///
+    /// <para>Only an entry whose path is a plain member reverses. One that walks a navigation does
+    /// not, and should not: a display name is read from the related row, never written back.</para>
+    ///
+    /// <para>It is found by looking for a SOURCE member whose type a convention claims and whose
+    /// name, put through the pattern, is this destination member — the same rule read from the
+    /// other end.</para>
+    /// </summary>
+    private static PropertyPair? BuildReverseConventionMember(
+        Compilation compilation,
+        List<MemberConventions.Convention> conventions,
+        INamedTypeSymbol sourceType,
+        INamedTypeSymbol destinationType,
+        IPropertySymbol destinationProperty,
+        bool allowNullCollections,
+        ConversionTable globals)
+    {
+        foreach (IPropertySymbol candidate in GetProperties(sourceType))
+        {
+            if (candidate.GetMethod is null)
+                continue;
+
+            MemberConventions.Convention? convention =
+                MemberConventions.For(conventions, candidate.Type, sourceType, reading: false);
+
+            if (convention?.Reversible is not { } reversible)
+                continue;
+
+            // Does this shaped source member's name, put through the pattern, name the destination
+            // member being filled? `Brand` through "{Member}ID" gives `BrandID`.
+            if (!string.Equals(
+                    reversible.Path.Replace("{Member}", candidate.Name),
+                    destinationProperty.Name,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            IPropertySymbol? valueMember = candidate.Type.GetMembers(reversible.Target)
+                .OfType<IPropertySymbol>()
+                .FirstOrDefault(member =>
+                    member.GetMethod is not null
+                    && member.DeclaredAccessibility == Accessibility.Public
+                    && !member.IsStatic);
+
+            if (valueMember is null)
+                continue;
+
+            ValueConversion? conversion = ConversionResolver.Resolve(
+                compilation,
+                valueMember.Type,
+                destinationProperty.Type,
+                sourceType.Name + "." + candidate.Name + "." + reversible.Target + " -> " +
+                    destinationType.Name + "." + destinationProperty.Name,
+                allowNullCollections,
+                globals);
+
+            if (conversion is null)
+                continue;
+
+            string valueType = valueMember.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+
+            string memoryAccess =
+                "({0}." + candidate.Name + " is null ? default(" + valueType + ")! : {0}." +
+                candidate.Name + "." + reversible.Target + ")";
+
+            string queryAccess = "{0}." + candidate.Name + "." + reversible.Target;
+
+            return new PropertyPair(
+                destination: destinationProperty.Name,
+                source: candidate.Name + "." + reversible.Target,
+                sourceAccess: conversion.Apply(memoryAccess),
+                querySourceAccess: conversion.ApplyQuery(queryAccess));
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Whether a destination member is the ENTITY behind a shaped source member, and so belongs to
+    /// the convention rather than to name matching.
+    ///
+    /// <para>The reverse of a member convention fills the foreign key. The navigation beside it is
+    /// the related row, which is not rebuilt from a value and a label {D} and left to name matching
+    /// it would demand a map from the select DTO to the entity, stopping the build.</para>
+    /// </summary>
+    private static bool ClaimedNavigation(
+        List<MemberConventions.Convention> conventions,
+        INamedTypeSymbol sourceType,
+        IPropertySymbol destinationProperty)
+    {
+        foreach (IPropertySymbol candidate in GetProperties(sourceType))
+        {
+            if (candidate.GetMethod is null
+                || !string.Equals(candidate.Name, destinationProperty.Name, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            // Same name, and the SOURCE member is shaped: this destination member is the entity the
+            // shaped member stands for. A destination of the SAME type is an ordinary copy and is
+            // left alone.
+            return MemberConventions.For(conventions, candidate.Type, sourceType, reading: false) is not null
+                && !SymbolEqualityComparer.Default.Equals(candidate.Type, destinationProperty.Type);
+        }
+
+        return false;
+    }
+
     private static PropertyAnalysis FindMatchingProperties(
         Compilation compilation,
         INamedTypeSymbol sourceType,
@@ -2459,7 +2817,9 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         bool flattening,
         NamingConventions naming,
         Refinements refinements,
-        ConversionTable globals)
+        ConversionTable globals,
+        List<MemberConventions.Convention> conventions,
+        List<string> conventionProblems)
     {
         // An `As` map has no members of its own either, and for a cleaner reason than
         // ConvertUsing's: it does not map, it REDIRECTS. Everything is the concrete map's, so
@@ -2656,6 +3016,76 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                     sourcePropertyType: null));
 
                 NoteRequired(unfilledRequired, isRequired, destinationProperty);
+                continue;
+            }
+
+            // A MEMBER CONVENTION, BEFORE NAME MATCHING and after ForMember.
+            //
+            // Before, because the shaped member usually DOES have a name match and it is the wrong
+            // one: ProductListDto.Brand is a ShiftEntitySelectDTO and Product.Brand is an entity, so
+            // name matching would either report SM0002 or try to nest a map that means something
+            // else entirely. The convention knows what that member is for.
+            //
+            // After ForMember, because an explicit instruction always beats an inferred one.
+            if (conventions.Count > 0
+                && MemberConventions.For(conventions, destinationProperty.Type, destinationType, reading: true)
+                    is { } convention)
+            {
+                if (BuildConventionMember(
+                        compilation, convention, sourceType, destinationType, destinationProperty,
+                        allowNullCollections, caseSensitive, globals, conventionProblems) is { } shaped)
+                {
+                    all.Add(shaped);
+
+                    if (!setter.IsInitOnly)
+                        writable.Add(shaped);
+
+                    continue;
+                }
+
+                // The convention claimed the member and could not fill it. Falling through to name
+                // matching would quietly map it some other way, which is worse than leaving it
+                // unfilled with a message saying why — already recorded in conventionProblems.
+                unmapped.Add(new UnmappedProperty(
+                    destinationProperty.Name,
+                    UnmappedReason.NotConvertible,
+                    ShortTypeName(destinationProperty.Type),
+                    sourcePropertyType: null));
+
+                NoteRequired(unfilledRequired, isRequired, destinationProperty);
+                continue;
+            }
+
+            // THE WRITE DIRECTION: the same rule read backwards. A destination member named
+            // `{Member}ID` is filled from the source's shaped member `{Member}.Value`, which is how
+            // a select DTO round-trips onto the entity it came from.
+            if (conventions.Count > 0
+                && BuildReverseConventionMember(
+                       compilation, conventions, sourceType, destinationType, destinationProperty,
+                       allowNullCollections, globals) is { } reversed)
+            {
+                all.Add(reversed);
+
+                if (!setter.IsInitOnly)
+                    writable.Add(reversed);
+
+                continue;
+            }
+
+            // THE NAVIGATION BEHIND A SHAPED MEMBER, going the other way.
+            //
+            // Writing a select DTO back onto its entity fills the FOREIGN KEY, not the navigation:
+            // FiledDocument.FolderId comes from Folder.Value just above, and FiledDocument.Folder is
+            // the related row, which you do not rebuild out of two strings. But it name-matches the
+            // source's shaped member, so without this it asks for a map from ShiftEntitySelectDTO to
+            // Folder — an SM0011 that stops the build on every write map a framework has.
+            //
+            // So the convention claims it and leaves it alone. Narrow on purpose: only when a
+            // convention claims the SOURCE member's type and the destination member is a different
+            // type, which is exactly the entity-behind-the-DTO shape and nothing else.
+            if (conventions.Count > 0
+                && ClaimedNavigation(conventions, sourceType, destinationProperty))
+            {
                 continue;
             }
 

@@ -3,6 +3,7 @@
 /// <summary>
 /// A manufacturer / brand that products belong to (Apple, Samsung, ...).
 /// </summary>
+[ShiftFramework.ShiftEntityKeyAndName(nameof(Id), nameof(Name))]
 public class Brand
 {
     public int Id { get; set; }

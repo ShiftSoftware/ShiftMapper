@@ -45,7 +45,7 @@ Every step heading below carries the same marker: ✅ done, ⬜ pending.
 - [x] **Step 12** — Global type-pair converters
 - [x] **Step 13** — The compile-time extension contract for referenced assemblies
 - [x] **Step 14** — Declaration metadata: one API in a project and in a package
-- [ ] **Step 15** — Declarative member conventions
+- [x] **Step 15** — Declarative member conventions
 - [ ] **Step 16** — What ShiftFramework then builds (ShiftEntity repository, not this one)
 
 **Phase 4 — Finish**
@@ -60,8 +60,8 @@ replaces them with one**, and Steps 11—13 are refactored onto it rather than l
 comes before member conventions on purpose: that step should be built on the single vocabulary from
 its first line, not retrofitted afterwards.
 
-Next on ShiftFramework's critical path is **Step 15**, then 15 → 16 (the summary at the foot of
-this file).
+Everything ShiftFramework needs from ShiftMapper now exists. What remains is **Step 16**, which
+is ShiftFramework's own port rather than this library's work.
 
 ---
 
@@ -1411,7 +1411,7 @@ already has a build warning telling its author to fix it.
 
 ---
 
-### ⬜ Step 15 — Declarative member conventions
+### ✅ Step 15 — Declarative member conventions
 
 Type-pair conversions (Steps 12 and 13) handle "this type becomes that type". They cannot
 express ShiftFramework's select-DTO rule, which is member-SHAPED:
@@ -1482,6 +1482,74 @@ works when the application already agreed on casing is not a convention.
 **Done when** an application declares `CreateMap<Brand, BrandListDTO>()` and the generated
 projection contains an inline `Brand = new ShiftEntitySelectDTO { Value = ..., Text = ... }`
 member-init that SQL translates, with nothing written in the application.
+
+**What landed — and the "done when" is met, with the rule coming from a PACKAGE.**
+`/api/products/list?sql=true` returns the member-init inside the SELECT with the joins EF derived,
+from a project whose entire involvement is `CreateMap<Product, ProductListDto>()`.
+
+- **IN-PROJECT FIRST, as the correction demanded.** `CreateMemberConvention<T>()` with a fluent
+  chain, usable in a mapper or a profile. The target of a `Fill` is a SELECTOR (`d => d.Value`), so
+  renaming it is a compile error; the path stays a string because it names source members that are
+  not symbols until a map exists.
+- **Two placeholders and no more.** `{Member}` and `{NameOf}`, where the second reads the member a
+  type nominates in its own attribute — the indirection that lets one rule serve entities the
+  framework has never seen.
+- **It resolves to TEXT**, so it rides the existing `PropertyPair` plumbing: create method, update
+  method and projection alike, with no new emission code. That is the entire reason it reaches a
+  list query at all, where an `AfterMap` cannot go.
+- **More than one rule, and narrowable.** Several conventions coexist; `WhenDestinationIs<T>()`
+  limits one to maps whose destination fits, so a framework's rule cannot reach into unrelated
+  application types. A narrowed-out member falls through to ordinary name matching and is reported
+  by the ordinary machinery, which a test pins.
+- **It crosses an assembly through Step 14's metadata**, as the same `Convention` the source path
+  builds — so a package's rule is not a second, weaker kind.
+- **It composes with global conversions.** The runtime test expected `"7"` and got `"H7"`: the
+  convention fills `Value` from `{Member}ID` and the value then goes through the ordinary conversion
+  table, where the package's hash-id rule was waiting. Neither rule mentions the other, which is
+  exactly how the two kinds had to meet.
+- **Paths resolve exact-first, then by the mapper's case rule** — kept from the first attempt,
+  because it was measured: ShiftEntity's pattern is `{Member}ID` and real entities spell it
+  `BrandId` about as often.
+
+**The gap the plan did not cover, found by the runtime test.** The WRITE direction hit SM0011, an
+ERROR: writing a select DTO back fills the foreign key, but the navigation BESIDE it name-matches the
+shaped source member and demanded a map from `ShiftEntitySelectDTO` to `Folder`. Requiring an
+explicit `Ignore` on every write map would have defeated `Direction.Both`, which exists for exactly
+this round trip. So the convention now claims that navigation and leaves it alone — narrowly: only
+where a convention claims the SOURCE member's type and the destination member is a different type,
+which is the entity-behind-the-DTO shape and nothing else.
+
+**Then two additions, both from using it.**
+
+**`FillIfPossible`, so ONE rule covers both shapes.** Often only the id is set and the label is filled
+in by whatever renders it. With a required `Fill` that is SM0034 and an unmapped member, so
+ShiftFramework would have to declare a SECOND rule for every entity that leaves its label to the UI
+— the thing conventions exist to avoid. An optional entry is dropped when its path does not
+resolve, and both ways it can fail are covered: a source with a foreign key and no navigation beside
+it (a request body), and a related type that nominates no display member at all. It skips QUIETLY,
+which is why it is a separate method rather than a flag: writing it IS the acknowledgement, exactly
+as `Ignore` is. `NameFrom` is then needed only by a path that uses `{NameOf}`.
+
+The flag rides Step 14's metadata with a `"?"` marker on the entry, because a package's id-only rule
+has to stay id-only in a consumer — losing it would turn the rule into a hard requirement and hand
+SM0034 to consumers who never wrote it. Pinned by a cross-assembly test.
+
+An id-only member also costs **no join**: `/api/products/list?sql=true` joins `Brands` and not
+`Stocks`, because nothing reads through the second navigation.
+
+**The write direction, shown end to end.** `ProductRequest` carries `ShiftEntitySelectDTO` members and
+`POST /api/products/preview` returns `brandId: 2, stockId: 3` from `.Value` alone, with both
+navigations left null — the derived reverse of the rule written for the response, and the claimed
+navigation doing its job on a real map rather than only in a test.
+
+**One defect fixed on the way.** The projection deliberately drops the null guard — a provider turns
+a navigation into a join, and an expression tree cannot hold an `is` pattern — but against a
+NULLABLE navigation that is CS8602 in a file the developer cannot edit. The query spelling now marks
+each navigation `!`, which is the same access (the operator is erased and puts no node in the tree)
+and says the missing guard is deliberate. It goes on navigations only, not on the value at the end of
+the path.
+
+---
 
 ### ⬜ Step 16 — What ShiftFramework then builds (checklist, not ShiftMapper work)
 
@@ -1569,14 +1637,14 @@ mapper that cannot show its numbers has given up its main argument.
 |---|---|---|---|
 | 1 — Trust | 1 Tests, 2 Runtime cost, 3 Packaging, 4 `IShiftMapper` | ✅ done | Everything depended on 1 and 4 |
 | 2 — Gaps | ~~5 Collections~~, ~~6 Constructors/records~~, ~~7 Member options~~, ~~8 Map hooks~~, ~~9 Flattening~~, ~~10 Inheritance/generics~~ | ✅ done | Unblocked Phase 3 |
-| 3 — General layer | ~~11 Profiles~~, ~~12 Global conversions~~, ~~13 Compile-time contract~~, ~~14 Declaration metadata~~, 15 Member conventions, 16 ShiftFramework port | ⬜ 11—14 done | The goal |
+| 3 — General layer | ~~11 Profiles~~, ~~12 Global conversions~~, ~~13 Compile-time contract~~, ~~14 Declaration metadata~~, ~~15 Member conventions~~, 16 ShiftFramework port | ⬜ 11—15 done | The goal |
 | 4 — Finish | 17 Diagnostics, 18 Docs, 19 Benchmarks | ⬜ pending | Can run alongside 2 and 3 |
 
 The shortest path to ShiftFramework being able to adopt this is
 **1 → 4 → 8 → 10 → 11 → 12 → 13 → 14 → 15 → 16**; with 1 and 4 done, it starts at **8**. Steps 5, 6,
 7 and 9 are needed for ShiftMapper to be a good general-purpose mapper, but they are not on
-ShiftFramework's critical path. **Phase 2 and Steps 11—14 are complete, so the path is
-15 → 16.** Everything in Phase 2 is done: 5, 6 and 7 because every
+ShiftFramework's critical path. **Phase 2 and Steps 11—15 are complete, so all that remains is
+16**, which is ShiftFramework's own work. Everything in Phase 2 is done: 5, 6 and 7 because every
 application hits them on its first day (a list endpoint, a DTO that is a record, a PATCH), 8
 because it was the other Phase 3 blocker, and 9 because it is the one every DTO that is a grid row
 hits.

@@ -10,6 +10,71 @@ namespace ShiftMapper.Tests.Model;
 // its OWN build wrote into its assembly as metadata.
 // ---------------------------------------------------------------------------------------------
 
+/// <summary>An entity that nominates its own display member, the way ShiftFramework's do.</summary>
+[ShiftEntityKeyAndName(nameof(Id), nameof(Name))]
+public class Folder
+{
+    public long Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// A source with the shape a member convention is written for: an id and the navigation beside it.
+/// </summary>
+public class FiledDocument
+{
+    public long FolderId { get; set; }
+
+    public Folder? Folder { get; set; }
+}
+
+/// <summary>
+/// The shaped destination. NOTHING in this project configures <c>Folder</c> — the rule is one
+/// CreateMemberConvention in the framework's profile, and it names no type here.
+/// </summary>
+public class FiledDocumentDto
+{
+    public ShiftEntitySelectDTO Folder { get; set; } = new();
+}
+
+/// <summary>
+/// An entity that nominates NO display member — no <c>[ShiftEntityKeyAndName]</c> at all.
+///
+/// <para>THE ID-ONLY SHAPE, and it is common: whatever renders the list already holds the names, so
+/// the response carries the key and nothing else. The framework's ONE rule serves it because its
+/// text entry is a <c>FillIfPossible</c>.</para>
+/// </summary>
+public class Bin
+{
+    public long Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+}
+
+/// <summary>A source with the navigation there — but pointing at a type that nominates nothing.</summary>
+public class ShelvedDocument
+{
+    public long BinId { get; set; }
+
+    public Bin? Bin { get; set; }
+}
+
+/// <summary>
+/// The OTHER way an optional entry drops: a source carrying the foreign key and NO navigation
+/// beside it, which is what a request body looks like.
+/// </summary>
+public class LooseDocument
+{
+    public long FolderId { get; set; }
+}
+
+/// <summary>Shaped like <see cref="FiledDocumentDto"/>, and filled by the same one rule.</summary>
+public class ShelvedDocumentDto
+{
+    public ShiftEntitySelectDTO Bin { get; set; } = new();
+}
+
 public class Document
 {
     public long Id { get; set; }
@@ -50,5 +115,15 @@ public partial class DeclaredMapper : ShiftMapperBase
 
         CreateMap<Document, DocumentDto>();
         CreateMap<Document, DocumentIdDto>();
+
+        // Filled entirely by the framework's member convention.
+        CreateMap<FiledDocument, FiledDocumentDto>();
+        CreateMap<FiledDocumentDto, FiledDocument>();
+
+        // THE SAME RULE, THE ID-ONLY SHAPE. Neither of these adds anything: in one the related type
+        // nominates no display member, in the other there is no navigation to read one from. The
+        // rule's text entry is a FillIfPossible, so it drops and the id is still set.
+        CreateMap<ShelvedDocument, ShelvedDocumentDto>();
+        CreateMap<LooseDocument, FiledDocumentDto>();
     }
 }

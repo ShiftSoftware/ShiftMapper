@@ -1,8 +1,16 @@
-namespace ShiftMapper.Sample.Entities;
+﻿namespace ShiftMapper.Sample.Entities;
 
 /// <summary>
 /// A physical stock location (warehouse / store) where products are held.
 /// </summary>
+/// <remarks>
+/// <b>DELIBERATELY NOT MARKED <c>[ShiftEntityKeyAndName]</c></b>, unlike <see cref="Brand"/>.
+///
+/// <para>This is the ID-ONLY shape, and it is common: a client that already holds the stock list
+/// renders the label itself, so the response carries the id and nothing else. The framework's ONE
+/// rule serves it — its text entry is a <c>FillIfPossible</c>, so where a type nominates no display
+/// member the entry drops and the id is still set. See <see cref="Dtos.ProductListDto.Stock"/>.</para>
+/// </remarks>
 public class Stock
 {
     public int Id { get; set; }

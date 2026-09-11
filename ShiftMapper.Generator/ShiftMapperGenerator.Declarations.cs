@@ -71,6 +71,10 @@ public sealed partial class ShiftMapperGenerator
         var maps = ImmutableArray.CreateBuilder<DeclaredMapModel>();
         var conversions = ImmutableArray.CreateBuilder<DeclaredConversionModel>();
         var openMaps = ImmutableArray.CreateBuilder<(string, string)>();
+        var conventions = ImmutableArray.CreateBuilder<DeclaredConventionModel>();
+
+        INamedTypeSymbol? conventionExpression =
+            semanticModel.Compilation.GetTypeByMetadataName(MemberConventionMetadataName);
 
         foreach (InvocationExpressionSyntax invocation in
                  classDeclaration.DescendantNodes().OfType<InvocationExpressionSyntax>())
@@ -117,6 +121,31 @@ public sealed partial class ShiftMapperGenerator
                 continue;
             }
 
+            // ---- CreateMemberConvention<T>() ... a member-shaped rule, all of it shape.
+            if (conventionExpression is not null
+                && GetCreateMemberConventionName(semanticModel, invocation, baseClass, cancellationToken)
+                    is { } conventionName)
+            {
+                if (MemberConventions.Read(
+                        semanticModel, invocation, conventionName, conventionExpression, cancellationToken)
+                    is { } read)
+                {
+                    conventions.Add(new DeclaredConventionModel(
+                        FullName(read.MemberType),
+                        // The optional ones keep a marker, so a package's id-only rule stays
+                        // id-only in a consumer instead of turning into a hard requirement.
+                        read.Fill
+                            .Select(entry => (entry.Optional ? "?" : "") + entry.Target + "=" + entry.Path)
+                            .ToImmutableArray(),
+                        read.NameOfAttribute is null ? null : FullName(read.NameOfAttribute),
+                        read.NameOfProperty,
+                        read.DestinationFilters.Select(FullName).ToImmutableArray(),
+                        read.Direction));
+                }
+
+                continue;
+            }
+
             // ---- CreateConversion<A, B>(memory, query)
             if (GetCreateConversionName(semanticModel, invocation, baseClass, cancellationToken) is { } conversion)
             {
@@ -145,7 +174,8 @@ public sealed partial class ShiftMapperGenerator
         }
 
         var model = new ProfileDeclarationModel(
-            FullName(profile), maps.ToImmutable(), conversions.ToImmutable(), openMaps.ToImmutable());
+            FullName(profile), maps.ToImmutable(), conversions.ToImmutable(), openMaps.ToImmutable(),
+            conventions.ToImmutable());
 
         return model.IsEmpty ? null : model;
     }
@@ -200,6 +230,8 @@ public sealed partial class ShiftMapperGenerator
         bool? classFlattening,
         NamingConventions classNaming,
         ConversionTable conversions,
+        List<MemberConventions.Convention> memberConventions,
+        List<string> declaredProblems,
         LocationInfo? location)
     {
         foreach (DeclaredProfiles.RecoveredMap map in recovered.Maps)
@@ -231,7 +263,9 @@ public sealed partial class ShiftMapperGenerator
                 naming: map.Naming.IsEmpty ? classNaming : map.Naming,
                 refinements: refinements,
                 unresolvedBases: ImmutableArray<string>.Empty,
-                conversions: conversions);
+                conversions: conversions,
+                memberConventions: memberConventions,
+                declaredProblems: declaredProblems);
         }
     }
 
@@ -309,6 +343,32 @@ public sealed partial class ShiftMapperGenerator
 
                 if (conversion.MemoryCall is not null)
                     sb.Append($", MemoryCall = {Literal(conversion.MemoryCall)}");
+
+                sb.AppendLine(")]");
+            }
+
+            foreach (DeclaredConventionModel convention in profile.Conventions)
+            {
+                sb.Append($"[assembly: global::{DeclarationNamespace}.ShiftMapperDeclaredConvention(");
+                sb.Append($"typeof({profile.ProfileType}), typeof({convention.MemberType})");
+
+                AppendStringArray(sb, "Fill", convention.Fill);
+
+                if (convention.NameOfAttribute is not null)
+                {
+                    sb.Append($", NameOfAttribute = typeof({convention.NameOfAttribute})");
+                    sb.Append($", NameOfProperty = {Literal(convention.NameOfProperty ?? string.Empty)}");
+                }
+
+                if (!convention.WhenDestinationIs.IsDefaultOrEmpty)
+                {
+                    sb.Append(", WhenDestinationIs = new global::System.Type[] { ");
+                    sb.Append(string.Join(", ", convention.WhenDestinationIs.Select(t => $"typeof({t})")));
+                    sb.Append(" }");
+                }
+
+                if (convention.Direction != 2)
+                    sb.Append($", Direction = {convention.Direction}");
 
                 sb.AppendLine(")]");
             }

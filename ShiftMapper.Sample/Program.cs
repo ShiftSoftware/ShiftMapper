@@ -78,4 +78,7 @@ app.MapConversionEndpoints();
 // Rules arriving from a REFERENCED ASSEMBLY, through metadata rather than source.
 app.MapFrameworkEndpoints();
 
+// A member-shaped convention from that same assembly, filling shaped members in both backends.
+app.MapProductListEndpoints();
+
 app.Run();

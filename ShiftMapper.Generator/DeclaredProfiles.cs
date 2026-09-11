@@ -34,6 +34,8 @@ internal static class DeclaredProfiles
 
     private const string OpenMapAttribute = "ShiftMapper.ShiftMapperDeclaredOpenMapAttribute";
 
+    private const string ConventionAttribute = "ShiftMapper.ShiftMapperDeclaredConventionAttribute";
+
     /// <summary>One declared map, recovered and ready for <c>BuildMapModel</c>.</summary>
     internal sealed class RecoveredMap
     {
@@ -117,6 +119,9 @@ internal static class DeclaredProfiles
 
         public List<(INamedTypeSymbol Source, INamedTypeSymbol Destination)> OpenMaps { get; } = new();
 
+        /// <summary>Member-shaped rules a package declared, ready to apply like a local one.</summary>
+        public List<MemberConventions.Convention> Conventions { get; } = new();
+
         /// <summary>
         /// The profiles something was actually read for.
         ///
@@ -151,6 +156,7 @@ internal static class DeclaredProfiles
         INamedTypeSymbol? includeMarker = compilation.GetTypeByMetadataName(IncludeAttribute);
         INamedTypeSymbol? conversionMarker = compilation.GetTypeByMetadataName(ConversionAttribute);
         INamedTypeSymbol? openMarker = compilation.GetTypeByMetadataName(OpenMapAttribute);
+        INamedTypeSymbol? conventionMarker = compilation.GetTypeByMetadataName(ConventionAttribute);
         INamedTypeSymbol? contractMarker = compilation.GetTypeByMetadataName(ContractAttribute);
 
         // Which assemblies the wanted profiles live in, so only those are walked.
@@ -194,6 +200,11 @@ internal static class DeclaredProfiles
                 else if (Same(kind, openMarker) && Wants(attribute, wanted))
                 {
                     ReadOpenMap(attribute, recovered);
+                    Note(attribute, recovered);
+                }
+                else if (Same(kind, conventionMarker) && Wants(attribute, wanted))
+                {
+                    ReadConvention(attribute, recovered);
                     Note(attribute, recovered);
                 }
             }
@@ -347,6 +358,75 @@ internal static class DeclaredProfiles
             // conversion declared in its own source. There is never a query member to name: that
             // expression is a lambda the profile's constructor registers.
             memoryCall: Named(attribute, "MemoryCall") as string);
+    }
+
+    /// <summary>
+    /// Rebuilds a member-shaped rule a package declared.
+    ///
+    /// <para>It comes back as the SAME <c>MemberConventions.Convention</c> the source path builds,
+    /// so nothing downstream can tell a package's rule from a local one — and a package's rule is
+    /// therefore not a second, weaker kind of convention.</para>
+    /// </summary>
+    private static void ReadConvention(AttributeData attribute, Recovered recovered)
+    {
+        if (attribute.ConstructorArguments.Length != 2
+            || attribute.ConstructorArguments[1].Value is not ITypeSymbol memberType)
+        {
+            return;
+        }
+
+        var fill = new List<(string, string, bool)>();
+
+        foreach (string raw in StringsOf(attribute, "Fill"))
+        {
+            bool optional = raw.StartsWith("?", StringComparison.Ordinal);
+            string entry = optional ? raw.Substring(1) : raw;
+
+            int split = entry.IndexOf('=');
+
+            if (split > 0)
+                fill.Add((entry.Substring(0, split), entry.Substring(split + 1), optional));
+        }
+
+        if (fill.Count == 0)
+            return;
+
+        var destinations = ImmutableArray.CreateBuilder<ITypeSymbol>();
+
+        foreach (KeyValuePair<string, TypedConstant> argument in attribute.NamedArguments)
+        {
+            if (argument.Key != "WhenDestinationIs" || argument.Value.IsNull)
+                continue;
+
+            foreach (TypedConstant value in argument.Value.Values)
+            {
+                if (value.Value is ITypeSymbol filter)
+                    destinations.Add(filter);
+            }
+        }
+
+        recovered.Conventions.Add(new MemberConventions.Convention(
+            memberType,
+            fill,
+            Named(attribute, "NameOfAttribute") as INamedTypeSymbol,
+            Named(attribute, "NameOfProperty") as string,
+            destinations.ToImmutable(),
+            Named(attribute, "Direction") as int? ?? 2));
+    }
+
+    private static IEnumerable<string> StringsOf(AttributeData attribute, string name)
+    {
+        foreach (KeyValuePair<string, TypedConstant> argument in attribute.NamedArguments)
+        {
+            if (argument.Key != name || argument.Value.IsNull)
+                continue;
+
+            foreach (TypedConstant value in argument.Value.Values)
+            {
+                if (value.Value is string text && text.Length > 0)
+                    yield return text;
+            }
+        }
     }
 
     private static void ReadOpenMap(AttributeData attribute, Recovered recovered)

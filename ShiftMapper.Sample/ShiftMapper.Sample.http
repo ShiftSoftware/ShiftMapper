@@ -921,6 +921,99 @@ Accept: application/json
 GET {{HostAddress}}/api/brands/files?project=true
 Accept: application/json
 
+### 1t. A MEMBER-SHAPED CONVENTION — the last piece, and the one an AfterMap cannot do.
+#
+#      This project's entire involvement is one line:
+#
+#          CreateMap<Product, ProductListDto>();
+#
+#      ProductListDto has two ShiftEntitySelectDTO members, Brand and Stock. NOTHING here fills
+#      them. ShiftFramework declared one rule, once, in its own profile:
+#
+#          CreateMemberConvention<ShiftEntitySelectDTO>()
+#              .NameFrom<ShiftEntityKeyAndNameAttribute>(nameof(ShiftEntityKeyAndNameAttribute.Text))
+#              .Fill(d => d.Value, "{Member}ID")
+#              .FillIfPossible(d => d.Text, "{Member}.{NameOf}");
+#
+#      WHY A CONVERSION COULD NOT DO THIS. A conversion is handed one value and asked what it
+#      becomes. This needs TWO source members, and which two depends on the destination member's
+#      own NAME — Product.BrandId and Product.Brand.Name for a member called Brand.
+#
+#      AND {NameOf} IS WHY ONE RULE COVERS EVERYTHING. It means "the member this type nominates in
+#      its own [ShiftEntityKeyAndName]". The framework never lists the entities — the entities
+#      answer for themselves, and one calling its display member Title is served just as well.
+#
+#      LOOK AT THE TWO MEMBERS IN THE RESPONSE. They are NOT the same shape, from the same one rule:
+#
+#          "brand": { "value": "1", "text": "Apple" }      <- Brand nominates a name
+#          "stock": { "value": "1", "text": "" }           <- Stock nominates none: id only
+#
+#      That is FillIfPossible: an entry DROPPED when its path does not resolve, rather than one that
+#      fails the member. Often only the id is set and the label is filled in by whatever renders it.
+#      With a required Fill that is SM0034 and an unmapped member, and ShiftFramework would need a
+#      SECOND rule for every entity that leaves its label to the UI — which is the thing
+#      conventions exist to avoid. (The empty "text" is ShiftEntitySelectDTO's own default; the
+#      mapper wrote nothing there.)
+GET {{HostAddress}}/api/products/list
+Accept: application/json
+
+### 1t2. AND IT IS IN THE SQL, which is the entire point of the step:
+#
+#        SELECT [p].[Id], [p].[Name],
+#               CONVERT(varchar(11), [p].[BrandId]) AS [Value], [b].[Name] AS [Text],
+#               CONVERT(varchar(11), [p].[StockId]) AS [Value]
+#        FROM [Products] AS [p]
+#        INNER JOIN [Brands] AS [b] ON [p].[BrandId] = [b].[Id]
+#        ORDER BY [p].[Id]
+#
+#      AND THERE IS NO JOIN TO [Stocks]. The id-only member reads the foreign key that is already on
+#      the row, so the dropped entry costs a join as well as a column — an AfterMap filling the
+#      same member could not have avoided either, because it could not appear here at all.
+#
+#      The member-init is inside the SELECT, and EF worked out the joins from the navigations the
+#      rule walked. Written as an AfterMap — which is how this is normally done — the same rule
+#      would work in memory and disappear from this query entirely, so the list would need a second,
+#      hand-inlined code path. Removing that split is what the whole step is for.
+#
+#      Note CONVERT(varchar(11), [p].[BrandId]): the Value went through the ORDINARY conversion
+#      table on its way in. That is also where a global conversion would apply — the runtime tests
+#      get "H7" here rather than "7", because the same package declares hash ids and neither rule
+#      mentions the other.
+GET {{HostAddress}}/api/products/list?sql=true
+
+### 1t3. THE SAME RULE, READ BACKWARDS — the request side.
+#
+#      A picker posts back what it was given: a select DTO with the id in Value. Mapping it onto the
+#      entity has to set Product.BrandId, and it does, from the entry written for the RESPONSE:
+#
+#          .Fill(d => d.Value, "{Member}ID")
+#
+#            becomes, going the other way:
+#
+#          destination.BrandId = ValueConverter.Parse<int>(source.Brand.Value, ...);
+#
+#      THE WRITE DIRECTION IS DERIVED, NOT DECLARED. A Fill whose path is a plain member reverses on
+#      its own. The Text entry does not, and should not: a display name is read from the related row,
+#      never written back to it — note that "text" below is ignored entirely.
+#
+#      AND THE NAVIGATION BESIDE THE KEY IS LEFT ALONE. Product.Brand name-matches the request's
+#      Brand, so without the convention claiming it the build would demand a map from
+#      ShiftEntitySelectDTO to Brand — an error on every write map a framework has. In the response
+#      "brand" and "stock" come back null, and that is the point: you set the key, the related row is
+#      the database's business.
+#
+#      Expect: "brandId": 2, "stockId": 3, "brand": null, "stock": null.
+POST {{HostAddress}}/api/products/preview
+Content-Type: application/json
+
+{
+  "name": "Test Widget",
+  "sku": "TW-1",
+  "price": 9.5,
+  "brand": { "value": "2", "text": "ignored on the way in" },
+  "stock": { "value": "3" }
+}
+
 ### 2. Invoices — THE MAP AS A DATABASE QUERY.
 #     db.Invoices.ProjectTo<InvoiceDto>(mapper), and again not one Include, yet the response
 #     is four levels deep: invoice -> lines -> product -> brand and stock.

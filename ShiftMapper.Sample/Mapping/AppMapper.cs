@@ -550,6 +550,34 @@ public partial class AppMapper : ShiftMapperBase
         // because a name is something metadata carries and a lambda is not.
         CreateMap<Brand, BrandFilesDto>();
 
+        // ------------------------------------------------------------------
+        // A MEMBER-SHAPED CONVENTION, from the same referenced assembly.
+        // ------------------------------------------------------------------
+        //
+        // ProductListDto has two ShiftEntitySelectDTO members. NOTHING here configures them: the
+        // rule is one CreateMemberConvention in ShiftFramework's profile, and it names no
+        // application type at all. It works for Brand and Stock because THEY carry
+        // [ShiftEntityKeyAndName(nameof(Id), nameof(Name))], which is the indirection that lets one
+        // rule serve entities the framework has never seen.
+        //
+        // A type-pair conversion could not do this. A conversion is handed one value; this needs two
+        // source members, and WHICH two depends on the destination member's own name —
+        // Product.BrandId and Product.Brand.Name for a member called Brand.
+        //
+        // GET /api/products/list?sql=true — it is all in the SELECT, which is the whole point.
+        // Done as an AfterMap it would work in memory and vanish from every list query.
+        CreateMap<Product, ProductListDto>();
+
+        // THE REQUEST SIDE, from the same one rule. A picker posts back a select DTO and this sets
+        // Product.BrandId from Brand.Value — derived from the response rule, not declared
+        // separately. The Brand NAVIGATION is left alone: you set the key, not the related row.
+        CreateMap<ProductRequest, Product>()
+            // The two a create-request has no business setting: the database assigns the key and
+            // stock movements own the quantity. Written out, because the alternative is a build that
+            // stays quiet about members nobody decided on.
+            .ForMember(d => d.Id, o => o.Ignore())
+            .ForMember(d => d.QuantityOnHand, o => o.Ignore());
+
         // The projectable half. BrandFilesDto uses the JSON pair, which the framework declared
         // WITHOUT a query form because no database can parse JSON into objects — so that map is
         // in-memory only, and the build says so (SM0030). This one uses only the hash ids, which

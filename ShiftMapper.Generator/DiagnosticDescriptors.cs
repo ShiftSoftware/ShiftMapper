@@ -726,6 +726,23 @@ internal static class DiagnosticDescriptors
         description: "Update the ShiftMapper package in this project to the version the referenced " +
                      "package was built against.");
 
+    /// <summary>
+    /// SM0034 — a member convention claimed a member and could not fill it.
+    ///
+    /// The member is left UNMAPPED rather than filled some other way. Falling back to name matching
+    /// would quietly map it to the very thing the convention was written to override, which is the
+    /// failure a convention exists to prevent.
+    /// </summary>
+    public static readonly DiagnosticDescriptor MemberConventionFailed = new(
+        id: "SM0034",
+        title: "A member convention could not fill the member it claimed",
+        messageFormat: "ShiftMapper: {0}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "Check the convention's Fill paths against the source type, or write a " +
+                     "ForMember for this member, which always wins over a convention.");
+
     /// <summary>SM0005 — the whole mapper produced nothing.</summary>
     public static readonly DiagnosticDescriptor MapperSkipped = new(
         id: "SM0005",
@@ -779,6 +796,7 @@ internal static class DiagnosticDescriptors
         ConversionHasNoQueryForm,
         DeclaredConversionConflict,
         DeclaredConversionMalformed,
-        DeclaredContractTooNew);
+        DeclaredContractTooNew,
+        MemberConventionFailed);
 }
 

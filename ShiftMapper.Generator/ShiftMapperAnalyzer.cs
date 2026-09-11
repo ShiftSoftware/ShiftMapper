@@ -199,6 +199,7 @@ public sealed class ShiftMapperAnalyzer : DiagnosticAnalyzer
                 "SM0031" => DiagnosticDescriptors.DeclaredConversionConflict,
                 "SM0032" => DiagnosticDescriptors.DeclaredConversionMalformed,
                 "SM0033" => DiagnosticDescriptors.DeclaredContractTooNew,
+                "SM0034" => DiagnosticDescriptors.MemberConventionFailed,
                 _ => null,
             };
 
