@@ -46,13 +46,12 @@ Every step heading below carries the same marker: ✅ done, ⬜ pending.
 - [x] **Step 13** — The compile-time extension contract for referenced assemblies
 - [x] **Step 14** — Declaration metadata: one API in a project and in a package
 - [x] **Step 15** — Declarative member conventions
-- [ ] **Step 16** — What ShiftFramework then builds (ShiftEntity repository, not this one)
 
 **Phase 4 — Finish**
 
-- [ ] **Step 17** — Diagnostics and analyzer completeness
-- [ ] **Step 18** — Docs and sample
-- [ ] **Step 19** — Benchmarks
+- [ ] **Step 16** — Diagnostics and analyzer completeness
+- [ ] **Step 17** — Docs and sample
+- [ ] **Step 18** — Benchmarks
 
 Phases 1 and 2 are complete, and Steps 11, 12 and 13 with them — but Steps 12 and 13 left the
 library with TWO vocabularies for the same ideas, one for a project and one for a package. **Step 14
@@ -60,8 +59,10 @@ replaces them with one**, and Steps 11—13 are refactored onto it rather than l
 comes before member conventions on purpose: that step should be built on the single vocabulary from
 its first line, not retrofitted afterwards.
 
-Everything ShiftFramework needs from ShiftMapper now exists. What remains is **Step 16**, which
-is ShiftFramework's own port rather than this library's work.
+**Phase 3 is complete: everything ShiftFramework needs from ShiftMapper now exists.** Adopting it
+inside ShiftFramework — replacing the mapping half of `ShiftEntityMapperGenerator` — is
+ShiftEntity's own work in its own repository, and is deliberately NOT tracked here. What remains in
+this repository is Phase 4.
 
 ---
 
@@ -634,7 +635,7 @@ CreateMap<Brand, BrandDto>()
 ```
 
 - `BeforeMap` / `AfterMap` are in-memory only, and are what ShiftFramework's
-  `DefaultEntityToDtoAfterMap` / `DefaultDtoToEntityAfterMap` need (see Step 16).
+  `DefaultEntityToDtoAfterMap` / `DefaultDtoToEntityAfterMap` need.
 - `ConvertUsing` taking an `Expression<Func<TSource, TDestination>>` DOES project — this is
   the single most important entry in Phase 2 for Phase 3, because a global type converter is
   just a `ConvertUsing` that was registered globally.
@@ -1551,49 +1552,9 @@ the path.
 
 ---
 
-### ⬜ Step 16 — What ShiftFramework then builds (checklist, not ShiftMapper work)
-
-Tracked here so Phase 3 can be validated against a real consumer. All of it lives in the
-ShiftEntity repository, none of it in ShiftMapper.
-
-1. `ShiftEntityMappingProfile` in `ShiftEntity.Core`, registering via Steps 12–14:
-   - `string` to and from `List<ShiftFileDTO>` (both forms; the query form is the interesting
-     one)
-   - `ShiftEntityBase` to `ShiftEntitySelectDTO` via `[ShiftEntityKeyAndName]`
-   - `ShiftEntitySelectDTO` to `long` / `long?` FK, with the existing 400-on-bad-input
-     behaviour of `MappingHelpers.ToForeignKey` preserved on the in-memory path
-   - hash ids, `long` to and from `string`
-2. Base maps via `IncludeBase` (Step 10) for `ShiftEntity` to `ShiftEntityViewAndUpsertDTO` and
-   `ShiftEntity` to `ShiftEntityListDTO`, replacing `MapBaseFields` / `MapBaseListFields` — and
-   making the list one projectable, which it is not today.
-3. The `{Member}ID` select-DTO convention (Step 14), replacing `DefaultEntityToDtoAfterMap` /
-   `DefaultDtoToEntityAfterMap` and their reflection.
-4. `ForAllMembers` condition (Step 8) replacing the "never write a `ShiftEntityBase` back"
-   rule.
-5. `CreateMap<TEntity, TEntity>()` with `ID` / `ReloadAfterSave` / `AuditFieldsAreSet` ignored,
-   replacing `MappingHelpers.ShallowCopyTo` and its per-property reflection.
-6. An adapter from `IShiftMapper` (Step 4) to `IShiftEntityMapper<TEntity, TListDTO, TViewDTO>`,
-   replacing `AutoMapperShiftEntityMapper`. Note the two hard contract requirements
-   `IShiftEntityMapper.MapToList` documents: the projection MUST bind `ID` and `IsDeleted`,
-   because the OData pipeline filters the already-projected DTO queryable. Add a
-   ShiftFramework-side diagnostic for that; it is a framework rule, not a ShiftMapper rule.
-7. Map discovery. ShiftEntity currently finds its triples by scanning assemblies at runtime for
-   `ShiftRepository<...>` subclasses. A compile-time mapper cannot do that, so ShiftFramework
-   emits `CreateMap` declarations for each discovered triple as generated source (Step 11) —
-   which is the ONLY part of `ShiftEntityMapperGenerator` that survives, and it shrinks from
-   roughly 2,100 lines to a few dozen.
-8. Delete `DefaultAutoMapperProfile`, `AutoMapperExtensions`, `AutoMapperShiftEntityMapper`, and
-   the mapping half of `ShiftEntityMapperGenerator`. Keep `MappingHelpers` — its conversion
-   methods are exactly what Step 13 registers.
-9. Port `ShiftEntity.Tests/Mapping/*` onto the new stack. Those tests encode a lot of hard-won
-   behaviour (write asymmetry, FK guards, member gating) and are the best acceptance suite
-   Phase 3 could have.
-
----
-
 ## Phase 4 — Finish
 
-### ⬜ Step 17 — Diagnostics and analyzer completeness
+### ⬜ Step 16 — Diagnostics and analyzer completeness
 
 - `CreateMap` called somewhere the generator cannot read it (inside an `if`, a loop, a ternary,
   a helper method) currently generates NOTHING and says nothing. ShiftEntity's generator
@@ -1611,7 +1572,7 @@ ShiftEntity repository, none of it in ShiftMapper.
   second assembly under `analyzers/dotnet/cs`, since a code-fix provider must not be loaded into
   the compiler's own analyzer context.
 
-### ⬜ Step 18 — Docs and sample
+### ⬜ Step 17 — Docs and sample
 
 - `README.md`, plus a `docs/` folder: getting started, the conversion table, the diagnostics
   reference (one page per SM id, which is what people search for), and the extension-points
@@ -1623,7 +1584,7 @@ ShiftEntity repository, none of it in ShiftMapper.
   framework" project that registers a global conversion through Step 13 — so the extension
   contract is exercised by the sample, not only by the tests.
 
-### ⬜ Step 19 — Benchmarks
+### ⬜ Step 18 — Benchmarks
 
 BenchmarkDotNet against AutoMapper and Mapperly: single map, nested graph, 10k collection, and
 a `ProjectTo` query-shape comparison. Publish the numbers in the README. A source-generated
@@ -1637,14 +1598,15 @@ mapper that cannot show its numbers has given up its main argument.
 |---|---|---|---|
 | 1 — Trust | 1 Tests, 2 Runtime cost, 3 Packaging, 4 `IShiftMapper` | ✅ done | Everything depended on 1 and 4 |
 | 2 — Gaps | ~~5 Collections~~, ~~6 Constructors/records~~, ~~7 Member options~~, ~~8 Map hooks~~, ~~9 Flattening~~, ~~10 Inheritance/generics~~ | ✅ done | Unblocked Phase 3 |
-| 3 — General layer | ~~11 Profiles~~, ~~12 Global conversions~~, ~~13 Compile-time contract~~, ~~14 Declaration metadata~~, ~~15 Member conventions~~, 16 ShiftFramework port | ⬜ 11—15 done | The goal |
-| 4 — Finish | 17 Diagnostics, 18 Docs, 19 Benchmarks | ⬜ pending | Can run alongside 2 and 3 |
+| 3 — General layer | ~~11 Profiles~~, ~~12 Global conversions~~, ~~13 Compile-time contract~~, ~~14 Declaration metadata~~, ~~15 Member conventions~~ | ✅ done | The goal |
+| 4 — Finish | 16 Diagnostics, 17 Docs, 18 Benchmarks | ⬜ pending | Can run alongside 2 and 3 |
 
-The shortest path to ShiftFramework being able to adopt this is
-**1 → 4 → 8 → 10 → 11 → 12 → 13 → 14 → 15 → 16**; with 1 and 4 done, it starts at **8**. Steps 5, 6,
-7 and 9 are needed for ShiftMapper to be a good general-purpose mapper, but they are not on
-ShiftFramework's critical path. **Phase 2 and Steps 11—15 are complete, so all that remains is
-16**, which is ShiftFramework's own work. Everything in Phase 2 is done: 5, 6 and 7 because every
-application hits them on its first day (a list endpoint, a DTO that is a record, a PATCH), 8
-because it was the other Phase 3 blocker, and 9 because it is the one every DTO that is a grid row
-hits.
+The shortest path to ShiftFramework being able to adopt this was
+**1 → 4 → 8 → 10 → 11 → 12 → 13 → 14 → 15**, and **all of it is done**. Steps 5, 6, 7 and 9 are
+needed for ShiftMapper to be a good general-purpose mapper, but they were not on ShiftFramework's
+critical path. The port itself — teaching ShiftFramework to use this instead of its own generator —
+is ShiftEntity's work in ShiftEntity's repository, and is not tracked in this plan.
+
+Everything in Phase 2 is done: 5, 6 and 7 because every application hits them on its first day (a
+list endpoint, a DTO that is a record, a PATCH), 8 because it was the other Phase 3 blocker, and 9
+because it is the one every DTO that is a grid row hits.
