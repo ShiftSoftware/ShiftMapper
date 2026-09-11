@@ -24,8 +24,13 @@ internal sealed class MapperClassModel
         ImmutableArray<string> openGenericProblems = default,
         ImmutableArray<string> profileProblems = default,
         ImmutableArray<string> declaredProblems = default,
-        ImmutableArray<string> queryRegistrations = default)
+        ImmutableArray<string> queryRegistrations = default,
+        ImmutableArray<PositionedProblem> declarationProblems = default)
     {
+        DeclarationProblems = declarationProblems.IsDefault
+            ? ImmutableArray<PositionedProblem>.Empty
+            : declarationProblems;
+
         DeclaredProblems = declaredProblems.IsDefault
             ? ImmutableArray<string>.Empty
             : declaredProblems;
@@ -110,6 +115,16 @@ internal sealed class MapperClassModel
     /// keystrokes.</para>
     /// </summary>
     public ImmutableArray<string> QueryRegistrations { get; }
+
+    /// <summary>
+    /// SM0035 — declarations written somewhere the generator cannot bake them.
+    ///
+    /// <para>PER PART, and reported per part, because the position of a call is a fact about the
+    /// file it was written in. That is also why these are the only problems carrying their own
+    /// <see cref="LocationInfo"/>: the other channels describe the mapper as a whole and are right
+    /// to point at the class.</para>
+    /// </summary>
+    public ImmutableArray<PositionedProblem> DeclarationProblems { get; }
 
     /// <summary>
     /// Set when the class derives from ShiftMapperBase but nothing can be generated for it.

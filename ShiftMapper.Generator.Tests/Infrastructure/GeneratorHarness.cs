@@ -1,4 +1,5 @@
-﻿using System.Collections.Immutable;
+﻿using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Linq;
 using System.Text;
 using Microsoft.CodeAnalysis;
@@ -38,6 +39,9 @@ public static class GeneratorHarness
     /// against exactly the framework the rest of the suite runs on.
     /// </summary>
     private static readonly ImmutableArray<MetadataReference> References = LoadReferences();
+
+    /// <summary>The same references, for a harness that builds its own compilation.</summary>
+    public static ImmutableArray<MetadataReference> MetadataReferences => References;
 
     /// <summary>Runs the generator and the analyzer over one snippet.</summary>
     /// <param name="source">The snippet.</param>
@@ -121,10 +125,46 @@ public static class GeneratorHarness
     public static GeneratorRun RunWithPackage(
         string packageSource,
         string applicationSource,
+        bool runGeneratorOnPackage = true) =>
+        RunWithPackages(new[] { packageSource }, applicationSource, runGeneratorOnPackage);
+
+    /// <summary>
+    /// The same thing with SEVERAL packages, each compiled into its own assembly.
+    ///
+    /// <para>One package cannot express every question worth asking. SM0031 is "two assemblies claim
+    /// the same type pair", which is unreachable with a single reference — and it is exactly the
+    /// kind of rule that rots unnoticed, because nothing about a one-package harness looks
+    /// wrong.</para>
+    ///
+    /// <para>Each gets a distinct assembly name, so a message naming the culprits can be asserted
+    /// on.</para>
+    /// </summary>
+    public static GeneratorRun RunWithPackages(
+        IReadOnlyList<string> packageSources,
+        string applicationSource,
         bool runGeneratorOnPackage = true)
     {
+        var compiled = ImmutableArray.CreateBuilder<MetadataReference>();
+
+        for (int index = 0; index < packageSources.Count; index++)
+        {
+            compiled.Add(CompilePackage(
+                packageSources[index],
+                index == 0 ? "ShiftMapperPackage" : $"ShiftMapperPackage{index + 1}",
+                runGeneratorOnPackage));
+        }
+
+        return Run(applicationSource, extraReferences: compiled.ToImmutable());
+    }
+
+    /// <summary>One package snippet, through the generator and out as a real assembly.</summary>
+    private static MetadataReference CompilePackage(
+        string packageSource,
+        string assemblyName,
+        bool runGeneratorOnPackage)
+    {
         var package = CSharpCompilation.Create(
-            assemblyName: "ShiftMapperPackage",
+            assemblyName: assemblyName,
             syntaxTrees: new[]
             {
                 CSharpSyntaxTree.ParseText(
@@ -161,10 +201,7 @@ public static class GeneratorHarness
 
         assembly.Position = 0;
 
-        return Run(
-            applicationSource,
-            extraReferences: ImmutableArray.Create<MetadataReference>(
-                MetadataReference.CreateFromStream(assembly)));
+        return MetadataReference.CreateFromStream(assembly);
     }
 
     private static ImmutableArray<MetadataReference> LoadReferences()

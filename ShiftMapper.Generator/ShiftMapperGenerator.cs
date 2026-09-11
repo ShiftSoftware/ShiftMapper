@@ -276,6 +276,11 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         DeclaredProfiles.Recovered recovered = DeclaredProfiles.Read(
             semanticModel.Compilation, metadataProfiles, conversions, declaredProblems);
 
+        // SM0031 — one pair, two packages. Asked HERE, once every package has had its say,
+        // because a clash is a fact about the SET of declarations rather than about either one of
+        // them: asking inside the reader that builds the table would always find it empty.
+        declaredProblems.AddRange(conversions.ConflictingDeclarations);
+
         // A PACKAGE'S RULES, added after this project's own so a local convention is found first.
         // Near beats far here exactly as it does for conversions.
         memberConventions.AddRange(recovered.Conventions);
@@ -527,7 +532,9 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             openGenericProblems: openProblems.ToImmutable(),
             profileProblems: profileProblems.ToImmutable(),
             declaredProblems: declaredProblems.ToImmutableArray(),
-            queryRegistrations: conversions.QueryRegistrations.ToImmutableArray());
+            queryRegistrations: conversions.QueryRegistrations.ToImmutableArray(),
+            declarationProblems: CollectUnbakeableDeclarations(
+                semanticModel, classDeclaration, baseClass, cancellationToken));
     }
 
     /// <summary>
@@ -838,8 +845,6 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         // A REFERENCED ASSEMBLY'S conversions are NOT read here. They arrive through the profile
         // that declared them, when a mapper adds it — which is what makes them opt-in rather than
         // something a reference imposes. See DeclaredProfiles.
-        _ = declaredProblems;
-
         return table;
     }
 

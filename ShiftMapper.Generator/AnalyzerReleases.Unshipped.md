@@ -40,3 +40,4 @@ SM0031 | ShiftMapper | Error | Two assemblies declare a conversion for the same 
 SM0032 | ShiftMapper | Warning | A declared conversion could not be read
 SM0033 | ShiftMapper | Warning | A referenced assembly declares a newer ShiftMapper contract
 SM0034 | ShiftMapper | Warning | A member convention could not fill the member it claimed
+SM0035 | ShiftMapper | Error | A declaration cannot be honoured where it is written

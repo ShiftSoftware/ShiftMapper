@@ -460,6 +460,71 @@ An explicit `ForMember` always wins. A convention that claims a member and canno
 **unmapped** and says why (SM0034), rather than quietly falling back to name matching and mapping it
 to the very thing the convention existed to override.
 
+### Code fixes
+
+`SM0001` (— a destination member nothing fills) offers a lightbulb:
+
+```csharp
+CreateMap<Brand, BrandDto>()
+    .ForMember(d => d.Country, o => o.Ignore());   // "Ignore 'Country'"
+```
+
+**It is an acknowledgement, not a silencer.** SM0001's honest answers are "map it" or "I know, and I
+mean to leave it"; `Ignore` is the second one written into the source, where the next reader sees a
+decision instead of an oversight. A `#pragma` or an `.editorconfig` severity tweak leaves neither.
+
+There is deliberately **no "fix all"** — bulk-ignoring every unmapped member in one gesture is
+exactly the review nobody would then do.
+
+The fixes ship in the same package, as a **second assembly** under `analyzers/dotnet/cs`. They have
+to: a code fix needs `Microsoft.CodeAnalysis.Workspaces`, which does not ship beside `csc`, so an
+analyzer assembly referencing it would fail to load during a command-line build and take every
+`SM####` rule with it. Only the IDE loads the fixes.
+
+### Where a declaration may be written
+
+Declarations are read from SOURCE at compile time and baked into the generated mapper. The code
+around one therefore cannot decide whether it applies:
+
+```csharp
+public AppMapper(bool includeReporting)
+{
+    if (includeReporting)                       // SM0035: error
+        CreateMap<Report, ReportDto>();
+}
+```
+
+**This is an error, and it is the one place the library raises one for a matter of style.** Before
+the rule existed that snippet produced output byte-for-byte identical to writing the `CreateMap`
+plainly — the condition silently discarded, no diagnostic of any kind. When the branch then did not
+run, the two backends disagreed: an in-memory `Map` threw, and `ProjectTo` quietly dropped the
+member. A mapper that does not do what its source says, and says nothing, is the one failure this
+library refuses to have.
+
+Rejected: `if`/`else`, loops, ternaries and other expression positions, `switch`, `try`/`catch`,
+local functions, free-standing lambdas, property accessors. Applies to every declaration API —
+`CreateMap`, `AddProfile`, `CreateConversion`, `CreateMemberConvention`.
+
+**What stays legal is deliberate.** The rule keys on statement POSITION within whatever member holds
+the call — never on which member that is:
+
+```csharp
+public AppMapper() => CreateMap<Brand, BrandDto>();   // fine: expression-bodied constructor
+
+public AppMapper()                                    // fine: a mapper with 200 maps
+{                                                     // splits them across methods
+    AddCatalogMaps();
+    AddOrderMaps();
+}
+
+private void AddCatalogMaps() => CreateMap<Product, ProductDto>();
+```
+
+And **reachability is not chased.** A private helper that is never called still contributes its maps,
+because proving otherwise needs a call graph whose answer is unbounded — another partial part, a
+source-generated part, DI or reflection can all reach it. A rule whose false-positive rate cannot be
+bounded by reading one file is worse than no rule, so this stops at the line it can draw.
+
 ### Rules from a referenced assembly
 
 **One vocabulary.** A package writes the same `CreateMap`, `CreateConversion` and `ForMember` an
@@ -818,7 +883,7 @@ and think. Each is reported as SM0002 rather than skipped in silence.
 
 ## Diagnostics
 
-Thirty-four rules, `SM0001` to `SM0034`. Four stop the build; the rest describe something that
+Thirty-five rules, `SM0001` to `SM0035`. Five stop the build; the rest describe something that
 will not be mapped, or will be mapped in a way worth knowing about.
 
 | Id | Default | What it means |
@@ -827,7 +892,7 @@ will not be mapped, or will be mapped in a way worth knowing about.
 | SM0002 | Warning | Names match; ShiftMapper does not convert between the two types |
 | SM0003 | Warning | Destination property's setter is not public |
 | SM0004 | Warning | Destination type has no constructor ShiftMapper can call |
-| SM0005 | Warning | Nothing was generated for a `ShiftMapperBase` class (not `partial`, or generic) |
+| SM0005 | Warning | Nothing was generated for a `ShiftMapperBase` class (not `partial`, nested in a type that is not `partial`, or generic) |
 | SM0006 | Info | A `ReverseMap` leaves a destination property unmapped |
 | SM0007 | Warning | Several source properties match when case is ignored |
 | SM0008 | Info | Mapped through a conversion that loses information by design |
@@ -857,6 +922,7 @@ will not be mapped, or will be mapped in a way worth knowing about.
 | SM0032 | Warning | A declared conversion could not be read (bad signature, orphan query form) |
 | SM0033 | Warning | A referenced assembly declares a newer ShiftMapper contract |
 | SM0034 | Warning | A member convention could not fill the member it claimed |
+| SM0035 | **Error** | A declaration cannot be honoured where it is written |
 
 `SM0011` is an error because a null nested object in a response looks exactly like a null in the
 database. Two ways forward, both one line: declare the map, or `opt.Ignore()` the property.

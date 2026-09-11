@@ -62,6 +62,17 @@
                       OutputItemType="Analyzer"
                       ReferenceOutputAssembly="false"
                       PrivateAssets="all" />
+
+    <!--
+      The code fixes ride along the same way. They are a SEPARATE assembly because fixes need
+      Microsoft.CodeAnalysis.Workspaces, which does not ship beside csc: an analyzer assembly
+      referencing it would fail to load during a command-line build and take every SM#### rule
+      with it. Only the IDE loads this one.
+    -->
+    <ProjectReference Include="..\ShiftMapper.CodeFixes\ShiftMapper.CodeFixes.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false"
+                      PrivateAssets="all" />
   </ItemGroup>
 
   <PropertyGroup>
@@ -78,6 +89,9 @@
     <ItemGroup>
       <_ShiftMapperGenerator Include="@(Analyzer)" Condition="'%(Filename)%(Extension)' == 'ShiftMapper.Generator.dll'" />
       <TfmSpecificPackageFile Include="@(_ShiftMapperGenerator)" PackagePath="analyzers/dotnet/cs" />
+
+      <_ShiftMapperCodeFixes Include="@(Analyzer)" Condition="'%(Filename)%(Extension)' == 'ShiftMapper.CodeFixes.dll'" />
+      <TfmSpecificPackageFile Include="@(_ShiftMapperCodeFixes)" PackagePath="analyzers/dotnet/cs" />
     </ItemGroup>
 
     <!--
@@ -86,6 +100,13 @@
     -->
     <Error Condition="'@(_ShiftMapperGenerator)' == ''"
            Text="ShiftMapper.Generator.dll was not found among the resolved analyzers, so the package would ship without its source generator." />
+
+    <!--
+      The fixes fail quietly rather than loudly - no lightbulb, no error - so the same guard
+      applies. A package that lost them would look completely normal.
+    -->
+    <Error Condition="'@(_ShiftMapperCodeFixes)' == ''"
+           Text="ShiftMapper.CodeFixes.dll was not found among the resolved analyzers, so the package would ship without its code fixes." />
   </Target>
 
 </Project>

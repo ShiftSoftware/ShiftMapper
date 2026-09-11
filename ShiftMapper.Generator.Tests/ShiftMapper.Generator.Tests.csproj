@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -11,6 +11,8 @@
     <!-- The compiler API. The tests drive it directly: they build a small compilation from a
          source snippet, run the generator over it, and assert on what came back. -->
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" />
+    <!-- For the code-fix harness: applying a fix needs a Workspace, which csc never loads. -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="4.14.0" />
 
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
@@ -29,6 +31,7 @@
     <!-- An ORDINARY reference, not an Analyzer one. We want the generator as a class we can
          `new` up and drive, not as something the compiler runs over this project. -->
     <ProjectReference Include="..\ShiftMapper.Generator\ShiftMapper.Generator.csproj" />
+    <ProjectReference Include="..\ShiftMapper.CodeFixes\ShiftMapper.CodeFixes.csproj" />
   </ItemGroup>
 
 </Project>

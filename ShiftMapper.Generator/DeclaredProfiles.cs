@@ -194,7 +194,7 @@ internal static class DeclaredProfiles
                     includes.Add(attribute);
                 else if (Same(kind, conversionMarker) && Wants(attribute, wanted))
                 {
-                    ReadConversion(attribute, table);
+                    ReadConversion(attribute, table, assembly.Name, problems);
                     Note(attribute, recovered);
                 }
                 else if (Same(kind, openMarker) && Wants(attribute, wanted))
@@ -337,15 +337,27 @@ internal static class DeclaredProfiles
             Named(attribute, "HasAfterMap") as bool? ?? false,
             Named(attribute, "HasAllMembersCondition") as bool? ?? false));
 
-        _ = problems;
     }
 
-    private static void ReadConversion(AttributeData attribute, ConversionTable table)
+    private static void ReadConversion(
+        AttributeData attribute,
+        ConversionTable table,
+        string declaringAssembly,
+        List<string> problems)
     {
         if (attribute.ConstructorArguments.Length != 3
             || attribute.ConstructorArguments[1].Value is not ITypeSymbol source
             || attribute.ConstructorArguments[2].Value is not ITypeSymbol destination)
         {
+            // SM0032 — the metadata is there and cannot be read. Until this said something, a
+            // package built by a newer or broken generator lost a conversion in total silence and
+            // the application saw only the downstream symptom: a pair that would not convert, with
+            // nothing to connect it to the package that was supposed to supply it.
+            problems.Add(
+                $"SM0032|'{declaringAssembly}' declares a conversion whose metadata could not be " +
+                "read, so that pair will not convert. The package and this project were probably " +
+                "built with different versions of ShiftMapper.");
+
             return;
         }
 
@@ -357,7 +369,8 @@ internal static class DeclaredProfiles
             // consuming code looks the expression up at run time — the same thing it does for a
             // conversion declared in its own source. There is never a query member to name: that
             // expression is a lambda the profile's constructor registers.
-            memoryCall: Named(attribute, "MemoryCall") as string);
+            memoryCall: Named(attribute, "MemoryCall") as string,
+            declaringAssembly: declaringAssembly);
     }
 
     /// <summary>

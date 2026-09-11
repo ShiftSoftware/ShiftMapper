@@ -743,6 +743,32 @@ internal static class DiagnosticDescriptors
         description: "Check the convention's Fill paths against the source type, or write a " +
                      "ForMember for this member, which always wins over a convention.");
 
+    /// <summary>
+    /// SM0035 — a declaration written somewhere its position cannot be honoured.
+    ///
+    /// <para>AN ERROR, and the only sensible severity. The generator reads declarations from syntax
+    /// and bakes them once; a declaration inside an <c>if</c>, a loop, a <c>switch</c>, a lambda or a
+    /// local function is therefore applied UNCONDITIONALLY, discarding the very thing the developer
+    /// wrote. Emitting a mapper that does not do what the source says, and saying nothing, is the
+    /// exact failure this library refuses to have — so the build stops instead.</para>
+    ///
+    /// <para>It keys on statement POSITION, never on reachability: a call in a helper method the
+    /// constructor calls is fine, and proving a helper is never called is not decidable from one
+    /// file.</para>
+    /// </summary>
+    public static readonly DiagnosticDescriptor DeclarationNotBakeable = new(
+        id: "SM0035",
+        title: "This declaration cannot be honoured where it is written",
+        messageFormat: "ShiftMapper: {0}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true,
+        description: "Declarations are read at compile time and baked into the generated mapper, so " +
+                     "the code around one cannot decide whether it applies. Written inside a " +
+                     "condition, a loop or a lambda, it would be applied unconditionally and the " +
+                     "surrounding code silently ignored.");
+
+
     /// <summary>SM0005 — the whole mapper produced nothing.</summary>
     public static readonly DiagnosticDescriptor MapperSkipped = new(
         id: "SM0005",
@@ -797,6 +823,7 @@ internal static class DiagnosticDescriptors
         DeclaredConversionConflict,
         DeclaredConversionMalformed,
         DeclaredContractTooNew,
-        MemberConventionFailed);
+        MemberConventionFailed,
+        DeclarationNotBakeable);
 }
 

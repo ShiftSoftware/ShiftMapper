@@ -49,7 +49,7 @@ Every step heading below carries the same marker: ✅ done, ⬜ pending.
 
 **Phase 4 — Finish**
 
-- [ ] **Step 16** — Diagnostics and analyzer completeness
+- [~] **Step 16** — Diagnostics and analyzer completeness (SM0035, SM0031/32 wired, SM0001 code fix; ProjectTo call-site rule remains)
 - [ ] **Step 17** — Docs and sample
 - [ ] **Step 18** — Benchmarks
 
@@ -1554,23 +1554,132 @@ the path.
 
 ## Phase 4 — Finish
 
-### ⬜ Step 16 — Diagnostics and analyzer completeness
+### 🟨 Step 16 — Diagnostics and analyzer completeness
 
-- `CreateMap` called somewhere the generator cannot read it (inside an `if`, a loop, a ternary,
-  a helper method) currently generates NOTHING and says nothing. ShiftEntity's generator
-  learned this the hard way and reports SHENGEN005 / SHENGEN009. ShiftMapper needs the same:
-  **configuration the generator cannot bake must be an error, never a silent default.**
-- Mapper class not `partial`, mapper generic, mapper nested in a non-partial type — reported as
-  SM0005 today with a reason; verify each path has a test (Step 1).
-- Diagnostic when a map is only ever `ProjectTo`'d but uses an in-memory-only feature, and vice
-  versa.
-- Code fixes for the common ones: SM0001 offers `opt.Ignore()`; SM0011 offers the missing
-  `CreateMap`.
-- ~~Move reporting into a `DiagnosticAnalyzer` (Step 3) so `.editorconfig` works.~~ Done in
-  Step 3 — `ShiftMapperAnalyzer` reports all twelve rules and the generator reports none. What is
-  left here is the CODE FIXES, which need `Microsoft.CodeAnalysis.CSharp.Workspaces` and a
-  second assembly under `analyzers/dotnet/cs`, since a code-fix provider must not be loaded into
-  the compiler's own analyzer context.
+**Partly done. The investigation overturned two of the four sub-parts, so what the step says below
+is the corrected version, not the original.**
+
+#### ✅ 1. Configuration the generator cannot bake is now an error — SM0035
+
+**The plan's premise was BACKWARDS, and the truth was worse.** It said a `CreateMap` inside an `if`
+or a loop "generates NOTHING and says nothing". Measured across 33 syntax shapes by two independent
+probes and confirmed by a third: discovery is a flat
+`classDeclaration.DescendantNodes().OfType<InvocationExpressionSyntax>()` sweep with no notion of
+statement position, so such a call produced output **byte-for-byte identical** to writing it plainly
+in the constructor — the condition silently discarded, zero diagnostics. And when the branch that
+was baked did not run, **the two backends disagreed**: an in-memory `Map` threw from the
+customization store with a misleading "rebuild the project" message, while `ProjectTo` quietly
+dropped the member.
+
+SM0035 is an **Error**, applies to all four declaration APIs (`CreateMap`, `AddProfile`,
+`CreateConversion`, `CreateMemberConvention`), and points at the offending CALL rather than the class
+— which is why it is the first problem channel to carry its own `LocationInfo`.
+
+- **It keys on statement POSITION inside whatever member holds the call**, never on which member.
+  A helper method the constructor calls is fine: a mapper with 200 maps splits them across
+  `AddCatalogMaps()` / `AddOrderMaps()`, and an unconditional call is unconditional wherever it sits.
+- **The whitelist is the load-bearing half.** `public AppMapper() => CreateMap<A, B>();` is the
+  dominant spelling in this repository's own suite — 50+ occurrences — and a rule written from the
+  raw investigation notes would have rejected it and broken the suite on day one. Both constructor
+  forms, helper methods, chains held in a local, and every lambda belonging to a declaration are
+  pinned as ALLOWED by their own tests.
+- **Reachability is deliberately not chased.** Proving a private helper is never called needs a call
+  graph whose answer is unbounded — another partial part, a generated part, DI, reflection. A rule
+  whose false-positive rate cannot be bounded by reading one file is worse than no rule.
+- **One pass, not nine.** The generator reads declarations from nine sweeps, several of which
+  deliberately re-read the same syntax (`ReadAllRefinements` re-reads every chain whenever anything
+  uses `IncludeBase`). Checking position at the sweeps would report one call twice or three times.
+
+#### ✅ 2. SM0005 coverage — audit PASS, plus the two sub-paths
+
+All three reason strings (`NotPartial`, `ContainerNotPartial`, `Generic`) already had tests. Added
+the two sub-paths that a one-level test cannot tell apart — the OUTERMOST container being the
+non-partial one, and a mapper nested in a generic container — and made `DescribeSkipReason`'s
+catch-all explicit, so a reason added to the enum later cannot be silently mislabelled "generic".
+
+#### ✅ BONUS — SM0031 and SM0032 were DEAD rules
+
+Not in the plan, and the highest value-per-risk item found. Both had a descriptor, an analyzer arm,
+a line in `AnalyzerReleases.Unshipped.md` and a row in the README's table — and **no producer
+anywhere**. The two places they were meant to come from held `_ = problems;` and
+`_ = declaredProblems;`. A rule that cannot fire is worse than a missing one, because every artefact
+around it says the case is handled.
+
+- **SM0032** — declaration metadata that is present and unreadable, which is what version skew
+  between a package's generator and this one looks like. It was dropping the conversion in silence.
+- **SM0031** — one type pair claimed by TWO referenced assemblies. Asked once every package has had
+  its say, because a clash is a fact about the SET; asking inside the reader that builds the table
+  would always have found it empty.
+- `GeneratorHarness.RunWithPackages` was added for it: SM0031 is unreachable with a single package
+  reference, which is exactly how it stayed dead unnoticed.
+- The dead `"SM0028"` arm in the analyzer's profile-problem switch is deleted (SM0028 rides
+  `declaredProblems` and is handled by the second switch).
+
+#### ⬜ 3. "only ever ProjectTo'd" — CUT as written, replaced
+
+**"And vice versa" has no referent.** Projections are emitted only over `creatable` maps, so no map
+can project without also mapping; and `CreateConversion`'s `memory` parameter is required while
+`query` is optional, so a query-only conversion cannot be declared. There is no projection-only
+feature to diagnose.
+
+**And the absence-based half is unsound, not merely expensive.** It asks an analyzer to prove a
+negative over an open world: `IShiftMapper.ProjectTo<TSource, TDestination>` exists precisely so an
+earlier-compiled assembly can call it without naming the mapper, and through a generic repository the
+type arguments are type PARAMETERS carrying no pair information. Every leak is a FALSE POSITIVE
+accusing correct code, and the only remedy would be `#pragma` — which teaches people to tune SM####
+out.
+
+**The sound replacement, still to build:** a positive-evidence rule at the CALL SITE. Register an
+operation action on invocations named `ProjectTo` and report when the named (source, destination)
+pair is known non-projectable, staying silent when either type argument is a type parameter. It needs
+transitive non-projectability first: `ProjectionRefusals` is set once and never merged from nested
+children, and `AsConcrete is not null` forces `IsProjectable` true, so today a parent gets no
+diagnostic and its projection throws naming the CHILD pair.
+
+#### ✅ 4a. Code fixes — SM0001's `Ignore`, shipping
+
+`ShiftMapper.CodeFixes`, a new netstandard2.0 assembly packed into `analyzers/dotnet/cs` beside the
+generator. Verified by `dotnet pack`: the `.nupkg` carries `ShiftMapper.Generator.dll`,
+`ShiftMapper.CodeFixes.dll` and `lib/net10.0/ShiftMapper.dll`, and the pack target now errors if
+either analyzer goes missing — fixes fail QUIETLY (no lightbulb, no error), so a package that lost
+them would look entirely normal.
+
+- **A separate assembly, and not by preference.** A fix needs
+  `Microsoft.CodeAnalysis.CSharp.Workspaces`, which does not ship beside `csc`: an analyzer assembly
+  referencing it would fail to load during a command-line build and take every SM#### rule with it.
+- **The member name travels as a diagnostic PROPERTY**, via a new `DiagnosticReporter` overload and a
+  key defined once and linked into both projects. Parsing it back out of the message would be a
+  second, quieter definition of the sentence, and rewording the sentence would retire the lightbulb
+  with nothing to say why.
+- **No `FixAllProvider`**, deliberately: bulk-ignoring every unmapped member in one gesture is the
+  review nobody would then do.
+- **The acceptance criterion is not "the text looks right".** Every test puts the FIXED SOURCE back
+  through `GeneratorHarness` and asserts it compiles, that SM0001 is gone, and that the map and any
+  existing `ForMember` survived. `Microsoft.CodeAnalysis.Testing` was not taken — absent from the
+  cache, and it cannot re-run the generator over the fixed text, which is the half that matters.
+
+#### ⬜ 4b. SM0011's fix — deliberately NOT shipped yet
+
+**Sequencing is not optional here.** SM0011 is frequently the MISDIAGNOSIS of a silently-dropped
+member convention (an unreadable `Fill`, a chain broken over a local, a parenthesised chain), and in
+those cases the correct fix is to repair the convention. A one-click "add the missing `CreateMap`"
+would cement the wrong answer into somebody's source. It ships after the convention-readability
+errors, not before.
+
+#### ⬜ Also found, filed rather than fixed here
+
+- **Parenthesising a chain silently breaks it.** `(CreateMap<A,B>()).ForMember(...Ignore())` emits
+  the member anyway; `(CreateMap<A,B>()).ReverseMap()` produces no reverse map. Measured twice.
+- **`d => d.Value!` is not read** by `MemberConventions.MemberName`, though `(object)d.Value` is.
+- **SM0034 rides a per-assembly channel read only from `ordered[0]`**, so a convention failure in a
+  non-first file of a partial mapper is dropped.
+- **Nested types are claimed by the outer mapper.** `DescendantNodes()` descends into nested type
+  declarations, so a nested mapper's `CreateMap` is read by both — and a nested profile makes
+  SM0027 fire on a map declared exactly once, the only actively FALSE message found.
+- **A nested `private` mapper emits five CS0122 errors** in a file the developer cannot edit.
+- **`MapCustomizations.Compose` silently omits a binding** where `Value` throws for the identical
+  situation. The clearest two-backends breach found, but it is the only RUNTIME behaviour change
+  proposed and its safety against `IncludeBase` chains and metadata-recovered maps is unproven.
 
 ### ⬜ Step 17 — Docs and sample
 
@@ -1599,7 +1708,7 @@ mapper that cannot show its numbers has given up its main argument.
 | 1 — Trust | 1 Tests, 2 Runtime cost, 3 Packaging, 4 `IShiftMapper` | ✅ done | Everything depended on 1 and 4 |
 | 2 — Gaps | ~~5 Collections~~, ~~6 Constructors/records~~, ~~7 Member options~~, ~~8 Map hooks~~, ~~9 Flattening~~, ~~10 Inheritance/generics~~ | ✅ done | Unblocked Phase 3 |
 | 3 — General layer | ~~11 Profiles~~, ~~12 Global conversions~~, ~~13 Compile-time contract~~, ~~14 Declaration metadata~~, ~~15 Member conventions~~ | ✅ done | The goal |
-| 4 — Finish | 16 Diagnostics, 17 Docs, 18 Benchmarks | ⬜ pending | Can run alongside 2 and 3 |
+| 4 — Finish | 16 Diagnostics (part done), 17 Docs, 18 Benchmarks | ⬜ pending | Can run alongside 2 and 3 |
 
 The shortest path to ShiftFramework being able to adopt this was
 **1 → 4 → 8 → 10 → 11 → 12 → 13 → 14 → 15**, and **all of it is done**. Steps 5, 6, 7 and 9 are

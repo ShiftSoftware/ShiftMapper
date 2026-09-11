@@ -84,8 +84,53 @@ internal sealed class ConversionTable
         ITypeSymbol destination,
         bool hasQueryForm,
         string? memoryCall = null,
-        string? queryAccess = null) =>
-        _entries.Add(new Entry(source, destination, hasQueryForm, memoryCall, queryAccess));
+        string? queryAccess = null,
+        string? declaringAssembly = null) =>
+        _entries.Add(new Entry(
+            source, destination, hasQueryForm, memoryCall, queryAccess, declaringAssembly));
+
+    /// <summary>
+    /// SM0031 — pairs that MORE THAN ONE referenced assembly claims, as ready-made messages.
+    ///
+    /// <para>An ERROR, and the one case where near-beats-far cannot decide: two packages are the
+    /// same distance away, so whichever the generator picked would be arbitrary and the answer
+    /// would change when a reference was reordered. The application has to say which it wants.</para>
+    ///
+    /// <para>Two declarations from the SAME assembly stay silent — that is one package listing a
+    /// pair twice, which is harmless and not the application's problem to solve.</para>
+    /// </summary>
+    public IEnumerable<string> ConflictingDeclarations
+    {
+        get
+        {
+            var byPair = new Dictionary<string, SortedSet<string>>(StringComparer.Ordinal);
+
+            foreach (Entry entry in _entries)
+            {
+                if (entry.DeclaringAssembly is null)
+                    continue;
+
+                string pair = entry.Source.ToDisplayString() + " -> " + entry.Destination.ToDisplayString();
+
+                if (!byPair.TryGetValue(pair, out SortedSet<string> assemblies))
+                    byPair[pair] = assemblies = new SortedSet<string>(StringComparer.Ordinal);
+
+                assemblies.Add(entry.DeclaringAssembly);
+            }
+
+            foreach (KeyValuePair<string, SortedSet<string>> pair in byPair)
+            {
+                if (pair.Value.Count < 2)
+                    continue;
+
+                yield return
+                    "SM0031|'" + string.Join("' and '", pair.Value) + "' both declare a conversion " +
+                    "from '" + pair.Key.Replace(" -> ", "' to '") + "'. Near beats far everywhere " +
+                    "else, but these are the same distance away, so which one applied would depend " +
+                    "on reference order. Declare the pair in this project to settle it.";
+            }
+        }
+    }
 
     /// <summary>
     /// The lines the generated mapper needs so a projection can splice the query forms — one per
@@ -230,14 +275,24 @@ internal sealed class ConversionTable
             ITypeSymbol destination,
             bool hasQueryForm,
             string? memoryCall = null,
-            string? queryAccess = null)
+            string? queryAccess = null,
+            string? declaringAssembly = null)
         {
             Source = source;
             Destination = destination;
             HasQueryForm = hasQueryForm;
             MemoryCall = memoryCall;
             QueryAccess = queryAccess;
+            DeclaringAssembly = declaringAssembly;
         }
+
+        /// <summary>
+        /// The referenced assembly this came from, or null when it was declared in source.
+        ///
+        /// <para>A NAME, not a symbol — and it never leaves this transient table anyway, which is
+        /// built and discarded inside one BuildMapperClass.</para>
+        /// </summary>
+        public string? DeclaringAssembly { get; }
 
         /// <summary>
         /// The fully qualified method the generated code CALLS for the in-memory form, or null when

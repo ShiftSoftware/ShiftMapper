@@ -1,5 +1,6 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
 
 namespace ShiftMapper.Generator;
@@ -33,4 +34,23 @@ internal sealed class DiagnosticReporter
     /// <summary>Reports one diagnostic, at <paramref name="location"/> when there is one.</summary>
     public void Report(DiagnosticDescriptor descriptor, LocationInfo? location, params object?[] messageArguments) =>
         _report(Diagnostic.Create(descriptor, location?.ToLocation(_treesByPath), messageArguments));
+
+    /// <summary>
+    /// The same, with PROPERTIES attached — the structured half of a diagnostic.
+    ///
+    /// <para>A message is prose meant for a person; a code fix needs a FACT. Re-parsing the member
+    /// name back out of "'BrandDto.Country' is not mapped because..." would be a second, quieter
+    /// definition of the message format, and the first time someone reworded the sentence the
+    /// lightbulb would stop appearing with nothing to say why.</para>
+    /// </summary>
+    public void Report(
+        DiagnosticDescriptor descriptor,
+        LocationInfo? location,
+        ImmutableDictionary<string, string?> properties,
+        params object?[] messageArguments) =>
+        _report(Diagnostic.Create(
+            descriptor,
+            location?.ToLocation(_treesByPath),
+            properties,
+            messageArguments));
 }

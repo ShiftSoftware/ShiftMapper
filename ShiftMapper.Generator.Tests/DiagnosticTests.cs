@@ -267,6 +267,69 @@ public class DiagnosticTests
         Assert.Empty(run.GeneratedFiles);
     }
 
+    /// <summary>
+    /// A SUB-PATH OF THE NESTING RULE: the OUTERMOST container is the one that is not partial, two
+    /// levels up. The check has to walk the whole chain of containers, not just the immediate one
+    /// — and a test that nests only one deep cannot tell the difference.
+    /// </summary>
+    [Fact]
+    public void Sm0005_reports_a_mapper_whose_outermost_container_is_not_partial()
+    {
+        GeneratorRun run = GeneratorHarness.Run(
+            """
+            using ShiftMapper;
+
+            public class Source { public int Id { get; set; } }
+            public class Destination { public int Id { get; set; } }
+
+            public class Outermost
+            {
+                public partial class Middle
+                {
+                    public partial class TestMapper : ShiftMapperBase
+                    {
+                        public TestMapper() => CreateMap<Source, Destination>();
+                    }
+                }
+            }
+            """);
+
+        Diagnostic diagnostic = run.Single("SM0005");
+
+        Assert.Contains("a type it is nested inside is not declared partial", diagnostic.GetMessage());
+        Assert.Empty(run.GeneratedFiles);
+    }
+
+    /// <summary>
+    /// AND THE GENERIC CONTAINER. A mapper inside <c>Outer&lt;T&gt;</c> is as unsupported as a generic
+    /// mapper — the emitted extension methods would need the container's type argument, which the
+    /// call site has no way to supply — so it has to be reported rather than emitted wrong.
+    /// </summary>
+    [Fact]
+    public void Sm0005_reports_a_mapper_nested_in_a_generic_container()
+    {
+        GeneratorRun run = GeneratorHarness.Run(
+            """
+            using ShiftMapper;
+
+            public class Source { public int Id { get; set; } }
+            public class Destination { public int Id { get; set; } }
+
+            public partial class Outer<T>
+            {
+                public partial class TestMapper : ShiftMapperBase
+                {
+                    public TestMapper() => CreateMap<Source, Destination>();
+                }
+            }
+            """);
+
+        Diagnostic diagnostic = run.Single("SM0005");
+
+        Assert.Contains("generic mapper classes are not supported", diagnostic.GetMessage());
+        Assert.Empty(run.GeneratedFiles);
+    }
+
     // -----------------------------------------------------------------
     // SM0006 — SM0001's quieter twin, for the map ReverseMap added.
     // -----------------------------------------------------------------

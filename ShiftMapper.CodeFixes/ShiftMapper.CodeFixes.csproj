@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Same constraint as the generator: the IDE loads this as a plugin alongside Roslyn. -->
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <IsRoslynComponent>true</IsRoslynComponent>
+    <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      A SEPARATE ASSEMBLY FROM THE ANALYZER, and not by preference.
+
+      Workspaces does not ship beside csc. The compiler loads analyzers into a context that has
+      Microsoft.CodeAnalysis but NOT Microsoft.CodeAnalysis.Workspaces, so an analyzer assembly
+      that referenced it would fail to load during a command-line build - taking every SM#### rule
+      with it. Fixes therefore live here, where only the IDE loads them.
+
+      The version is pinned to the analyzer's Microsoft.CodeAnalysis.CSharp. Two different Roslyn
+      versions in one process is the classic way for a lightbulb to silently never appear.
+    -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="4.14.0" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      The analyzer is referenced for its SHARED CONSTANTS only, and its DLL must not be copied
+      beside this one - NuGet already ships it into analyzers/dotnet/cs, and a second copy there
+      would give Roslyn two assemblies claiming the same rules.
+    -->
+    <ProjectReference Include="..\ShiftMapper.Generator\ShiftMapper.Generator.csproj"
+                      PrivateAssets="all"
+                      ReferenceOutputAssembly="false" />
+
+    <!-- So the key is defined once. See DiagnosticProperties for why that matters. -->
+    <Compile Include="..\ShiftMapper.Generator\DiagnosticProperties.cs" Link="DiagnosticProperties.cs" />
+  </ItemGroup>
+
+</Project>

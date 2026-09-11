@@ -170,13 +170,32 @@ public sealed class ShiftMapperAnalyzer : DiagnosticAnalyzer
                 DiagnosticDescriptor? descriptor = problem.Substring(0, split) switch
                 {
                     "SM0027" => DiagnosticDescriptors.ProfileMapDeclaredTwice,
-                    "SM0028" => DiagnosticDescriptors.ProfileNotInSource,
                     "SM0029" => DiagnosticDescriptors.ProfileDefaultsIgnored,
                     _ => null,
                 };
 
                 if (descriptor is not null)
                     reporter.Report(descriptor, part.Model.Location, problem.Substring(split + 1));
+            }
+        }
+
+        // SM0035 — declarations the generator cannot bake where they are written. Reported PER
+        // PART and at the CALL rather than at the class: the position of one invocation is a fact
+        // about one file, and pointing at the class declaration would send a developer with two
+        // hundred maps looking for which of them moved.
+        foreach (MapperPart part in ordered)
+        {
+            foreach (PositionedProblem problem in part.Model.DeclarationProblems)
+            {
+                int split = problem.Problem.IndexOf('|');
+
+                if (split < 0)
+                    continue;
+
+                reporter.Report(
+                    DiagnosticDescriptors.DeclarationNotBakeable,
+                    problem.Location ?? part.Model.Location,
+                    problem.Problem.Substring(split + 1));
             }
         }
 
@@ -243,7 +262,12 @@ public sealed class ShiftMapperAnalyzer : DiagnosticAnalyzer
     {
         MapperSkipReason.NotPartial => "it is not declared partial, so no code can be added to it",
         MapperSkipReason.ContainerNotPartial => "a type it is nested inside is not declared partial",
-        _ => "generic mapper classes are not supported",
+        MapperSkipReason.Generic => "generic mapper classes are not supported",
+
+        // EXPLICIT rather than a catch-all, so a reason added to the enum without a sentence here
+        // is a question rather than a confident lie about generics. The wording is deliberately the
+        // shape of a bug report, because that is what reaching it would be.
+        _ => "the generator cannot add code to it in its current shape (" + reason + ")",
     };
 
     /// <summary>
@@ -485,6 +509,10 @@ public sealed class ShiftMapperAnalyzer : DiagnosticAnalyzer
                                 ? DiagnosticDescriptors.NoSourcePropertyInReverseMap
                                 : DiagnosticDescriptors.NoSourceProperty,
                             location,
+                            // The member's own name, so the code fix can offer an Ignore for it
+                            // without reading the sentence back apart.
+                            ImmutableDictionary<string, string?>.Empty
+                                .Add(DiagnosticProperties.MemberName, unmapped.PropertyName),
                             map.DestinationName,
                             unmapped.PropertyName,
                             map.SourceName);
