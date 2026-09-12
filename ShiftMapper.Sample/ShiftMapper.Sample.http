@@ -115,6 +115,67 @@ Content-Type: application/json
   "bayNumbers": ["1", "2", "3"]
 }
 
+### 1c5. THE MAP HOOKS — BeforeMap and AfterMap, and the order they run in.
+#
+#      Same shape as AutoMapper's: an Action<TSource, TDestination> chained onto the CreateMap.
+#      They become an ordinary statement in the generated method, around the assignments:
+#
+#          StockHookDto destination = new StockHookDto { };
+#          Customizations.RunBefore(source, destination);   // BeforeMap
+#          destination.Name = source.Name;
+#          destination.City = source.City;
+#          Customizations.RunAfter(source, destination);    // AfterMap
+#
+#      READ "nameSeenByBeforeMap" IN THE FIRST OBJECT. It says "(nothing yet)":
+#
+#          "afterOneMap": {
+#            "name": "Central Warehouse",
+#            "nameSeenByBeforeMap": "(nothing yet)",   <- the destination WAS empty
+#            "summary": "Central Warehouse (Erbil)",   <- AfterMap saw the finished values
+#            "timesMapped": 1
+#          }
+#
+#      "BEFORE" IS MADE GENUINELY BEFORE, not merely called first. A destination has to exist to
+#      be handed to you, so every member the generator can assign afterwards is moved OUT of the
+#      object initializer. Constructor arguments, init-only and required members are the
+#      exception — they cannot be assigned later — so a hook finds those already set.
+#
+#      AND THE SECOND OBJECT IS THE UPDATE OVERLOAD, mapped twice onto one instance:
+#
+#          "afterMappingTwiceOntoOneObject": {
+#            "nameSeenByBeforeMap": "Central Warehouse",  <- found it already set
+#            "timesMapped": 2                             <- both hooks ran again
+#          }
+#
+#      Nothing is arranged on an update: the object arrived built, so the hook runs before the
+#      first assignment exactly as you passed it.
+#
+#      WHEN NOT TO REACH FOR ONE. AfterMap is the useful half — it is for a value derived from
+#      the FINISHED destination, like "summary" above, which no MapFrom could produce because a
+#      MapFrom sees the SOURCE. Anything derivable from the source alone belongs in a ForMember
+#      with MapFrom, which keeps the projection.
+GET {{HostAddress}}/api/stocks/hooks
+Accept: application/json
+
+### 1c6. AND WHAT A HOOK COSTS — the map loses its projection, said at BUILD time:
+#
+#        warning SM0018: the map from 'Stock' to 'StockHookDto' runs BeforeMap and AfterMap
+#                        over its destination, so ProjectTo cannot use it; Map is unaffected
+#
+#      A projection is ONE EXPRESSION handed to the database; there is no statement in it for
+#      your code to be. Leaving the projection in place and silently NOT running the hook is the
+#      one outcome this library refuses, so asking anyway gets a sentence:
+#
+#        "ShiftMapper: the map from 'Stock' to 'StockHookDto' runs BeforeMap and AfterMap over
+#         its destination, which runs in C# and has no SQL. Use Map instead, or move what the
+#         hook does into a ForMember, which projects."
+#
+#      As of SM0037 the call site is flagged too, so you learn this where you wrote the query
+#      rather than only where the map is declared. The endpoint's own ProjectTo carries a
+#      #pragma saying the refusal is the point here.
+GET {{HostAddress}}/api/stocks/hooks?project=true
+Accept: application/json
+
 ### 1c4. Read back what 1c3 created (id 5 on a fresh database) — both directions of the
 #     round trip come from that one CreateMap line.
 GET {{HostAddress}}/api/stocks/5

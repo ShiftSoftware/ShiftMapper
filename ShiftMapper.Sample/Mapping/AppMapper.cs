@@ -203,6 +203,55 @@ public partial class AppMapper : ShiftMapperBase
             // stops. Delete the line and it comes back.
             .ForMember(d => d.Products, opt => opt.Ignore());
 
+        // ---------------------------------------------------------------------------------------
+        // THE MAP HOOKS. Same signature as AutoMapper's — an Action<TSource, TDestination> — and
+        // they become an ordinary statement in the generated method, around the assignments:
+        //
+        //   StockHookDto destination = new StockHookDto { };
+        //   Customizations.RunBefore(source, destination);   // BeforeMap
+        //   destination.Name = source.Name;                  // the assignments
+        //   destination.City = source.City;
+        //   Customizations.RunAfter(source, destination);    // AfterMap
+        //
+        // "BEFORE" IS MADE GENUINELY BEFORE. A destination has to exist to be handed to you, so
+        // every member the generator can assign afterwards is moved OUT of the object initializer.
+        // NameSeenByBeforeMap comes back EMPTY because of that, which is the proof rather than a
+        // promise. GET /api/stocks/hooks shows it.
+        //
+        // THE IGNORES ARE THE PATTERN, not boilerplate. A hook is an Action the generator cannot
+        // see inside, so it has no idea these three get filled, and "'StockHookDto.Summary' is not
+        // mapped" would be a TRUE statement about the conventions. Ignoring them says which members
+        // the hooks own — and SM0001's lightbulb writes exactly these lines for you.
+        //
+        // AND THE MAP LOSES ITS PROJECTION, said at build time rather than found at run time:
+        //
+        //   warning SM0018: the map from 'Stock' to 'StockHookDto' runs BeforeMap and AfterMap
+        //                   over its destination, so ProjectTo cannot use it; Map is unaffected
+        //
+        // A projection is ONE EXPRESSION handed to the database; there is no statement in it for
+        // your code to be. Leaving the projection in place and silently not running the hook is the
+        // one outcome this library refuses. ?project=true asks anyway, to show the refusal.
+        CreateMap<Stock, StockHookDto>()
+            .ForMember(d => d.NameSeenByBeforeMap, opt => opt.Ignore())
+            .ForMember(d => d.Summary, opt => opt.Ignore())
+            .ForMember(d => d.TimesMapped, opt => opt.Ignore())
+
+            // FIRST: the destination is empty apart from anything construction settled.
+            .BeforeMap((source, destination) =>
+            {
+                destination.NameSeenByBeforeMap = string.IsNullOrEmpty(destination.Name)
+                    ? "(nothing yet)"
+                    : destination.Name;
+
+                // Runs on the UPDATE overload too, so mapping twice onto one object counts twice.
+                destination.TimesMapped++;
+            })
+
+            // LAST: everything the map produced is in place, which is what this needs. A MapFrom
+            // could not say it — a MapFrom sees the SOURCE, and this is built from the RESULT.
+            .AfterMap((source, destination) =>
+                destination.Summary = $"{destination.Name} ({destination.City})");
+
         // This one does NOT map cleanly, on purpose — it is the live demonstration of the
         // build-time warnings. Building produces exactly two, both pointing at this line:
         //
