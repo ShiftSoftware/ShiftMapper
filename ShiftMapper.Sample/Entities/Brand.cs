@@ -3,7 +3,7 @@
 /// <summary>
 /// A manufacturer / brand that products belong to (Apple, Samsung, ...).
 /// </summary>
-[ShiftFramework.ShiftEntityKeyAndName(nameof(Id), nameof(Name))]
+[Contoso.Platform.KeyAndName(nameof(Id), nameof(Name))]
 public class Brand
 {
     public int Id { get; set; }
@@ -19,9 +19,10 @@ public class Brand
     public string ISOCode { get; set; } = string.Empty;
 
     /// <summary>
-    /// FILES AS JSON IN ONE COLUMN — ShiftFramework's real shape, and the reason Step 13 exists.
-    /// The framework knows how to turn this into List&lt;ShiftFileDTO&gt;; this project does not,
-    /// and does not need to.
+    /// FILES AS JSON IN ONE COLUMN — a shape a framework such as ShiftFramework really stores, and
+    /// the reason the sample carries a memory-only conversion from a referenced assembly. The
+    /// framework knows how to turn this into List&lt;FileDto&gt;; this project does not, and
+    /// does not need to.
     /// </summary>
     public string Files { get; set; } = "[]";
 

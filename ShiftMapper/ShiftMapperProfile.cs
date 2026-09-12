@@ -30,7 +30,7 @@
 /// <para><b>WHY IT EXISTS.</b> One constructor is a fine place for a dozen maps and a poor place
 /// for fifty. Splitting by area — catalogue, invoicing, reporting — puts each map next to the ones
 /// it is read with, and lets two people change different areas without meeting in the same file.
-/// It is also the shape everyone arriving from AutoMapper already has in mind.</para>
+/// It is also the shape anyone who has used AutoMapper already has in mind.</para>
 ///
 /// <para><b>THE WHOLE SURFACE IS INHERITED.</b> Everything <see cref="ShiftMapperBase"/> offers a
 /// mapper — <c>CreateMap</c>, open generic <c>CreateMap</c>, and every refinement chained onto them

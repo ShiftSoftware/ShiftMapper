@@ -20,8 +20,9 @@
       ONE version for the whole repository. The runtime library and the generator are two
       halves of one thing and ship in one package, so there is nothing to version separately.
 
-      Pre-1.0 on purpose: Phases 2 and 3 of PLAN.md still add to the declaration API, and a
-      0.x minor is allowed to change it. See the versioning section of README.md.
+      Pre-1.0 on purpose: the declaration API is complete but has yet to accumulate a consumer's
+      worth of use, and a 0.x minor is allowed to change it until it has. See the versioning
+      section of README.md.
     -->
     <Version>0.1.0</Version>
 

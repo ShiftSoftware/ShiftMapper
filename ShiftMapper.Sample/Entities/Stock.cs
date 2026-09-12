@@ -4,7 +4,7 @@
 /// A physical stock location (warehouse / store) where products are held.
 /// </summary>
 /// <remarks>
-/// <b>DELIBERATELY NOT MARKED <c>[ShiftEntityKeyAndName]</c></b>, unlike <see cref="Brand"/>.
+/// <b>DELIBERATELY NOT MARKED <c>[KeyAndName]</c></b>, unlike <see cref="Brand"/>.
 ///
 /// <para>This is the ID-ONLY shape, and it is common: a client that already holds the stock list
 /// renders the label itself, so the response carries the id and nothing else. The framework's ONE

@@ -72,7 +72,7 @@ public class ConversionProfile : ShiftMapperProfile
             memory: money => "$" + money.Amount,
             query: money => "$" + money.Amount);
 
-        // A pair the built-in table ALREADY converts. This wins, which is the point: ShiftFramework's
+        // A pair the built-in table ALREADY converts. This wins, which is the point: a framework's
         // hash ids are exactly `long -> string`, and a rule that lost to the built-in conversion
         // would be ignored in silence.
         CreateConversion<int, string>(

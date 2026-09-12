@@ -85,7 +85,7 @@ public class MemberConventionTests
     // -----------------------------------------------------------------
 
     /// <summary>
-    /// THE PLAN'S "DONE WHEN": one <c>CreateMap</c> and one convention, and the shaped member comes
+    /// THE ACCEPTANCE TEST: one <c>CreateMap</c> and one convention, and the shaped member comes
     /// out as an inline member-init — in the create method AND in the projection.
     /// </summary>
     [Fact]
@@ -601,11 +601,11 @@ public class MemberConventionTests
     }
 
     /// <summary>
-    /// A CONVENTION DECLARED IN A PACKAGE, which is the shape ShiftFramework needs: the framework
+    /// A CONVENTION DECLARED IN A PACKAGE, which is the shape a framework needs: the framework
     /// ships the rule, an application adds the profile, and its own DTOs are filled by a rule that
     /// names none of its types.
     ///
-    /// <para>It rides Step 14's metadata like everything else, so what comes back is the same
+    /// <para>It rides the declaration metadata like everything else, so what comes back is the same
     /// convention the source path builds - not a weaker kind.</para>
     /// </summary>
     [Fact]

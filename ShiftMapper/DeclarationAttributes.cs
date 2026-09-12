@@ -18,7 +18,7 @@ namespace ShiftMapper;
 //
 // WHY TYPED ATTRIBUTES RATHER THAN A SERIALIZED BLOB. Type IDENTITY is the thing that must not be
 // got wrong: typeof(Brand) is resolved by the compiler and is unambiguously that type in that
-// assembly, while a string "ShiftFramework.Brand" has to be re-resolved by name and can find the
+// assembly, while a string "SomePackage.Brand" has to be re-resolved by name and can find the
 // wrong type, or none, when two assemblies share a namespace or a type moves. A blob would win on
 // compactness and lose on the only property that matters. These are also legible in a decompiler,
 // which is what somebody will have the first time a package's rule does not apply.

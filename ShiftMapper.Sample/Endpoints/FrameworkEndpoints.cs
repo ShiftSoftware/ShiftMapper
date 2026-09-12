@@ -6,17 +6,18 @@ using ShiftMapper.Sample.Mapping;
 namespace ShiftMapper.Sample.Endpoints;
 
 /// <summary>
-/// RULES FROM A REFERENCED ASSEMBLY — the whole of Phase 3's point, in one endpoint.
+/// RULES FROM A REFERENCED ASSEMBLY — a package's conversions, arriving as metadata, in two endpoints.
 ///
-/// <para>The map behind this is <c>CreateMap&lt;Brand, BrandFilesDto&gt;()</c> and nothing else.
-/// This project declares no conversion, adds no profile for it, and never names
-/// <c>ShiftEntityConversions</c>. Both conversions arrive from <c>ShiftFramework.Mock</c>, a
-/// compiled assembly referenced the way a NuGet package would be, through two assembly
-/// attributes.</para>
+/// <para>The map behind this is <c>CreateMap&lt;Brand, BrandFilesDto&gt;()</c> and one
+/// <c>AddProfile&lt;PlatformProfile&gt;()</c>. This project declares no conversion and never names
+/// <c>PlatformConversions</c>. Both conversions arrive from <c>Contoso.Platform</c>, a compiled
+/// assembly referenced the way a NuGet package would be.</para>
 ///
-/// <para>That could not have worked with a profile. A generator sees a reference as METADATA, and
-/// metadata has no method bodies — the sample registers <c>ShiftFileProfile</c> deliberately so the
-/// build says exactly that (SM0028).</para>
+/// <para>How, given that a generator sees a reference as METADATA with no method bodies: the
+/// package's OWN build wrote the SHAPE of its profile's declarations into the assembly as
+/// attributes, and <c>AddProfile</c> runs the profile's constructor at run time so the
+/// expressions arrive then. A package built without the generator carries no such metadata, and
+/// that is reported (SM0028) rather than silently mapped as nothing.</para>
 /// </summary>
 public static class FrameworkEndpoints
 {
@@ -25,7 +26,7 @@ public static class FrameworkEndpoints
         // GET /api/brands/hashed?sql=true
         //
         // A RULE FROM ANOTHER ASSEMBLY, IN THE SQL. ExternalIds is a List<long> on the entity and a
-        // List<string> here, and ShiftFramework declared long -> string with both forms:
+        // List<string> here, and the framework declared long -> string with both forms:
         //
         //   SELECT [b].[Id], [b].[Name], N'H' + CAST(CAST([e].[value] AS bigint) AS nvarchar(max))
         //   FROM [Brands] AS [b]
@@ -52,13 +53,13 @@ public static class FrameworkEndpoints
         // GET /api/brands/files?project=true
         //
         // THE OTHER HALF, and the more interesting one. Turning a JSON column into objects is
-        // System.Text.Json's job and no database can do it, so ShiftFramework declared that pair
+        // System.Text.Json's job and no database can do it, so the framework declared that pair
         // with a MEMORY FORM ONLY — which says, in metadata, "this cannot be projected".
         //
         // The application is told at BUILD time which of its endpoints that costs:
         //
         //   warning SM0030: the map from 'Brand' to 'BrandFilesDto' converts 'String' to
-        //                   'List<ShiftFileDTO>' with a conversion that has no query form, so
+        //                   'List<FileDto>' with a conversion that has no query form, so
         //                   ProjectTo cannot use it; Map is unaffected
         //
         // A runtime conversion table converts this pair just as well and cannot tell anyone that.

@@ -5,7 +5,7 @@
 /// a JSON parser.
 ///
 /// <para>Its map is one line, and this project says nothing about ids. <c>ExternalIds</c> is a
-/// <c>List&lt;long&gt;</c> on the entity; ShiftFramework declared <c>long → string</c> with BOTH
+/// <c>List&lt;long&gt;</c> on the entity; the framework declared <c>long → string</c> with BOTH
 /// forms, so it converts in memory and in SQL alike:</para>
 ///
 /// <code>

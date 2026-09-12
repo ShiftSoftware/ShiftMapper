@@ -42,7 +42,7 @@ public sealed class AllMemberOptions<TSource, TDestination>
     /// alone, exactly as a per-member <c>Condition</c> leaves it.
     ///
     /// <code>
-    /// // the ShiftFramework rule: a DTO never writes a navigation entity back
+    /// // a rule a framework might ship: a DTO never writes a navigation entity back
     /// .ForAllMembers(opt =&gt; opt.Condition((s, d, value) =&gt; value is not null))
     /// </code>
     ///

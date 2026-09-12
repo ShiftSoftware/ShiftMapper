@@ -1,5 +1,5 @@
 ﻿using Microsoft.Extensions.Logging;
-using ShiftFramework;
+using Contoso.Platform;
 using ShiftMapper.Sample.Dtos;
 using ShiftMapper.Sample.Entities;
 using ShiftMapper.Sample.Services;
@@ -587,13 +587,14 @@ public partial class AppMapper : ShiftMapperBase
         // RULES FROM A REFERENCED ASSEMBLY — the compile-time extension contract.
         // ------------------------------------------------------------------
         //
-        // ShiftFramework.Mock is referenced the way a NuGet package would be: a compiled assembly,
+        // Contoso.Platform — the sample's stand-in for a framework package, modelled on
+        // ShiftFramework — is referenced the way a NuGet package would be: a compiled assembly,
         // no source. Its profile declares two conversions with the ORDINARY API — the same
         // CreateConversion this file could use — and its own build wrote their SHAPE into the
-        // assembly as metadata. AddProfile<ShiftEntityProfile>() above is how this project takes
+        // assembly as metadata. AddProfile<PlatformProfile>() below is how this project takes
         // them; the expressions arrive at run time when that profile's constructor runs.
         //
-        //   string        -> List<ShiftFileDTO>   (a JSON column becoming files; memory form only)
+        //   string        -> List<FileDto>   (a JSON column becoming files; memory form only)
         //   long          -> string               (hash ids, which BEAT the built-in conversion)
         //
         // The one line below is the whole of this project's involvement in this map. The pair with
@@ -605,10 +606,10 @@ public partial class AppMapper : ShiftMapperBase
         // A MEMBER-SHAPED CONVENTION, from the same referenced assembly.
         // ------------------------------------------------------------------
         //
-        // ProductListDto has two ShiftEntitySelectDTO members. NOTHING here configures them: the
-        // rule is one CreateMemberConvention in ShiftFramework's profile, and it names no
+        // ProductListDto has two SelectDto members. NOTHING here configures them: the
+        // rule is one CreateMemberConvention in the package's profile, and it names no
         // application type at all. It works for Brand and Stock because THEY carry
-        // [ShiftEntityKeyAndName(nameof(Id), nameof(Name))], which is the indirection that lets one
+        // [KeyAndName(nameof(Id), nameof(Name))], which is the indirection that lets one
         // rule serve entities the framework has never seen.
         //
         // A type-pair conversion could not do this. A conversion is handed one value; this needs two
@@ -635,20 +636,20 @@ public partial class AppMapper : ShiftMapperBase
         // have both forms, and it projects.
         CreateMap<Brand, BrandHashDto>();
 
-        // A PACKAGE'S PROFILE, ADDED WITH THE ORDINARY LINE. ShiftFramework.Mock is referenced the
+        // A PACKAGE'S PROFILE, ADDED WITH THE ORDINARY LINE. Contoso.Platform is referenced the
         // way a NuGet package would be — a compiled assembly, no source — and this is the whole
         // of what it takes to use its maps and conversions:
         //
-        //     AddProfile<ShiftEntityProfile>();
+        //     AddProfile<PlatformProfile>();
         //
-        // Identical to adding a profile from this project. It works because ShiftFramework's OWN
+        // Identical to adding a profile from this project. It works because the package's OWN
         // build wrote what its profile declares into its assembly as metadata: a generator sees a
         // reference as metadata and no method bodies, so the CreateMap calls themselves are
         // invisible, and something has to say what they were.
         //
         // Note it is OPT-IN. Referencing the package changes nothing until this line asks for it,
         // so a package cannot quietly alter how your maps behave.
-        AddProfile<ShiftEntityProfile>();
+        AddProfile<PlatformProfile>();
     }
 
     /// <summary>Proof that constructor injection works on this class.</summary>

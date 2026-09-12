@@ -1,17 +1,17 @@
-﻿using ShiftFramework;
+using Contoso.Platform;
 
 namespace ShiftMapper.Tests.Model;
 
 // ---------------------------------------------------------------------------------------------
 // THE COMPILE-TIME EXTENSION CONTRACT, exercised across a REAL assembly boundary.
 //
-// ShiftFramework.Mock is referenced as a compiled library with no source here. Nothing in this file
+// Contoso.Platform is referenced as a compiled library with no source here. Nothing in this file
 // declares a conversion or that map; they arrive from the profile added below, whose declarations
 // its OWN build wrote into its assembly as metadata.
 // ---------------------------------------------------------------------------------------------
 
 /// <summary>An entity that nominates its own display member, the way ShiftFramework's do.</summary>
-[ShiftEntityKeyAndName(nameof(Id), nameof(Name))]
+[KeyAndName(nameof(Id), nameof(Name))]
 public class Folder
 {
     public long Id { get; set; }
@@ -35,11 +35,11 @@ public class FiledDocument
 /// </summary>
 public class FiledDocumentDto
 {
-    public ShiftEntitySelectDTO Folder { get; set; } = new();
+    public SelectDto Folder { get; set; } = new();
 }
 
 /// <summary>
-/// An entity that nominates NO display member — no <c>[ShiftEntityKeyAndName]</c> at all.
+/// An entity that nominates NO display member — no <c>[KeyAndName]</c> at all.
 ///
 /// <para>THE ID-ONLY SHAPE, and it is common: whatever renders the list already holds the names, so
 /// the response carries the key and nothing else. The framework's ONE rule serves it because its
@@ -72,7 +72,7 @@ public class LooseDocument
 /// <summary>Shaped like <see cref="FiledDocumentDto"/>, and filled by the same one rule.</summary>
 public class ShelvedDocumentDto
 {
-    public ShiftEntitySelectDTO Bin { get; set; } = new();
+    public SelectDto Bin { get; set; } = new();
 }
 
 public class Document
@@ -90,7 +90,7 @@ public class DocumentDto
     public string Id { get; set; } = string.Empty;
 
     /// <summary>A JSON column becoming objects, declared with a memory form only.</summary>
-    public List<ShiftFileDTO> Files { get; set; } = new();
+    public List<FileDto> Files { get; set; } = new();
 
     /// <summary>The hash-id rule again, one list element at a time.</summary>
     public List<string> Related { get; set; } = new();
@@ -109,9 +109,9 @@ public partial class DeclaredMapper : ShiftMapperBase
 {
     public DeclaredMapper()
     {
-        // THE ONE LINE. ShiftFramework.Mock is a compiled assembly with no source here, and this is
-        // identical to adding a profile from this project — which is the whole of Step 14.
-        AddProfile<ShiftEntityProfile>();
+        // THE ONE LINE. Contoso.Platform is a compiled assembly with no source here, and this is
+        // identical to adding a profile from this project — which is the whole of the contract.
+        AddProfile<PlatformProfile>();
 
         CreateMap<Document, DocumentDto>();
         CreateMap<Document, DocumentIdDto>();

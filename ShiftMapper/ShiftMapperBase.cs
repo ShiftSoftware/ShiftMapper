@@ -177,8 +177,8 @@ public abstract class ShiftMapperBase
     /// out.
     ///
     /// <code>
-    /// CreateMemberConvention&lt;ShiftEntitySelectDTO&gt;()
-    ///     .NameFrom&lt;ShiftEntityKeyAndNameAttribute&gt;("Text")
+    /// CreateMemberConvention&lt;SelectDto&gt;()
+    ///     .NameFrom&lt;KeyAndNameAttribute&gt;("Text")
     ///     .Fill(d =&gt; d.Value, "{Member}ID")
     ///     .Fill(d =&gt; d.Text,  "{Member}.{NameOf}");
     /// </code>

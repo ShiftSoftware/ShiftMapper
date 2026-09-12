@@ -7,7 +7,8 @@ using BenchmarkDotNet.Configs;
 namespace ShiftMapper.Benchmarks;
 
 /// <summary>
-/// SHIFTMAPPER AGAINST AUTOMAPPER AND MAPPERLY, on the four shapes the roadmap names.
+/// SHIFTMAPPER AGAINST AUTOMAPPER AND MAPPERLY, on four shapes: one object, a nested graph, a
+/// large collection, and building a projection.
 ///
 /// <para>Every mapper is asked the same question: the four maps in <see cref="SharedOnlyMapper"/>,
 /// declared for each library in <see cref="Competitors"/>. Every mapper is warm, every

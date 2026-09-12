@@ -39,14 +39,13 @@ you can call.
 
 ### A note on the shape of the diagnostics reference
 
-The roadmap for this step asked for **one page per `SM` id**, on the reasoning that an id is what
-people search for. It is one page with a section and a stable anchor per id instead —
-[`diagnostics.md#sm0011`](diagnostics.md) — for two reasons worth writing down rather than leaving
-as a silent deviation:
+The obvious shape is **one page per `SM` id**, on the reasoning that an id is what people search
+for. It is one page with a section and a stable anchor per id instead —
+[`diagnostics.md#sm0011`](diagnostics.md) — for two reasons worth writing down:
 
 - **Completeness is checkable.** There are 38 rules and the set grows. One file can be diffed
   against `DiagnosticDescriptors.All` in a single pass; thirty-eight files drift, and a missing page
   looks exactly like a rule that was never added.
-- **Nothing is published yet.** Per-id pages buy search placement, which is worth having when there
+- **The library is pre-1.0.** Per-id pages buy search placement, which is worth having once there
   is search traffic to place. Splitting the file later is mechanical; reconciling thirty-eight
   drifted pages is not.

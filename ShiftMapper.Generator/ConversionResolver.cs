@@ -140,12 +140,13 @@ internal static class ConversionResolver
         // 1b. A GLOBAL CONVERSION THE DEVELOPER REGISTERED, ahead of everything below.
         //
         //     AHEAD, and that is a deliberate departure from "extend the built-in table rather
-        //     than replace it". The case that settles it is ShiftFramework's hash ids: `long` to
-        //     `string` ALREADY converts, so a rule registered for that pair would be silently
-        //     ignored under the other ordering — and silently ignoring an explicit declaration
-        //     is the one behaviour this library is arranged never to have. Registering a pair is a
-        //     specific statement about those two types; the built-in table is the general one, and
-        //     the specific wins.
+        //     than replace it". The case that settles it is a pair that already converts. A
+        //     framework such as ShiftFramework renders its `long` ids as hashed strings, and
+        //     `long` to `string` ALREADY converts, so a rule registered for that pair would be
+        //     silently ignored under the other ordering — and silently ignoring an explicit
+        //     declaration is the one behaviour this library is arranged never to have.
+        //     Registering a pair is a specific statement about those two types; the built-in
+        //     table is the general one, and the specific wins.
         //
         //     Everything you did NOT register is untouched, which is the sense in which the table
         //     is still extended rather than replaced.

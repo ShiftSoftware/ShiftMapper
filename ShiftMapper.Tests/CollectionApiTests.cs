@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using ShiftMapper.Tests.Model;
 using Xunit;
 
@@ -6,7 +6,7 @@ namespace ShiftMapper.Tests;
 
 /// <summary>
 /// The top-level collection API, <c>MapOrNull</c>, and the null-collection policy — the three
-/// things Step 5 added, exercised through the real generated mapper.
+/// things that arrived after the single-object `Map`, exercised through the real generated mapper.
 ///
 /// The single-object <c>Map</c> was always there; what was missing was every shape around it.
 /// Mapping a list meant writing the <c>Select</c> yourself, mapping a possibly-absent object

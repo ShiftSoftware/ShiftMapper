@@ -1,4 +1,4 @@
-using ShiftMapper.Generator.Tests.Infrastructure;
+﻿using ShiftMapper.Generator.Tests.Infrastructure;
 using Xunit;
 
 namespace ShiftMapper.Generator.Tests;
@@ -6,8 +6,8 @@ namespace ShiftMapper.Generator.Tests;
 /// <summary>
 /// SM0037 — <c>ProjectTo</c> called on a pair that cannot be projected.
 ///
-/// <para><b>This is the SOUND replacement for a plan item that could not be built.</b> The roadmap
-/// asked for a warning when a map "is only ever ProjectTo'd", which asks an analyzer to prove a
+/// <para><b>This is the SOUND version of a rule that could not be built as first imagined.</b> The
+/// obvious rule is a warning when a map "is only ever ProjectTo'd", which asks an analyzer to prove a
 /// negative over an open world — <c>IShiftMapper.ProjectTo</c> exists so an earlier-compiled
 /// assembly can project without naming the mapper, and through a generic repository the type
 /// arguments are type PARAMETERS naming no pair at all. Every call it could not see would be a false
@@ -84,7 +84,7 @@ public class ProjectToCallSiteTests
 
     /// <summary>
     /// THE GUARD THAT MAKES THIS SOUND. A generic repository projecting <c>IQueryable&lt;TEntity&gt;</c>
-    /// to <c>TDto</c> names no pair, so there is nothing to be right or wrong about. The plan's
+    /// to <c>TDto</c> names no pair, so there is nothing to be right or wrong about. The obvious
     /// version would have had to guess here; this one says nothing.
     /// </summary>
     [Fact]

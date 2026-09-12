@@ -1,4 +1,4 @@
-﻿using ShiftFramework;
+﻿using Contoso.Platform;
 
 namespace ShiftMapper.Sample.Dtos;
 
@@ -13,14 +13,14 @@ namespace ShiftMapper.Sample.Dtos;
 /// </code>
 ///
 /// <para><b>NO PROFILE, NO CONVERSION, NO ForMember.</b> Both conversions arrive from
-/// <c>ShiftFramework.Mock</c>, a compiled assembly referenced like any NuGet package, through two
+/// <c>Contoso.Platform</c>, a compiled assembly referenced like any NuGet package, through two
 /// assembly attributes and a class of ordinary static methods. The generator read them out of
 /// METADATA — which is all it can see of a reference — and emitted direct calls:</para>
 ///
 /// <code>
-/// Files       = global::ShiftFramework.ShiftEntityConversions.ToFiles(source.Files),
+/// Files       = global::Contoso.Platform.PlatformConversions.ToFiles(source.Files),
 /// ExternalIds = ValueConverter.ToListOrEmpty&lt;long, string&gt;(
-///                   source.ExternalIds, static item =&gt; ShiftEntityConversions.ToHashId(item)),
+///                   source.ExternalIds, static item =&gt; PlatformConversions.ToHashId(item)),
 /// </code>
 ///
 /// <para>Note the <c>static</c> on that lambda. A conversion declared in SOURCE has to be looked up
@@ -29,13 +29,13 @@ namespace ShiftMapper.Sample.Dtos;
 /// as the only one that crosses an assembly.</para>
 ///
 /// <para><b>THIS MAP IS IN-MEMORY ONLY, and the framework decided that.</b> Parsing JSON into
-/// objects is System.Text.Json's job and no database can do it, so ShiftFramework declared that
+/// objects is System.Text.Json's job and no database can do it, so the framework declared that
 /// pair with a memory form and no query form — which says, in metadata, that it cannot be
 /// projected. The build passes that on:</para>
 ///
 /// <code>
 /// warning SM0030: the map from 'Brand' to 'BrandFilesDto' converts 'String' to
-///                 'List&lt;ShiftFileDTO&gt;' with a conversion that has no query form, so
+///                 'List&lt;FileDto&gt;' with a conversion that has no query form, so
 ///                 ProjectTo cannot use it; Map is unaffected
 /// </code>
 ///
@@ -52,9 +52,9 @@ public class BrandFilesDto
 
     /// <summary>
     /// A <c>string</c> column on the way in, a list of files on the way out. The pair converts
-    /// because ShiftFramework said so, once, in its own assembly.
+    /// because the framework said so, once, in its own assembly.
     /// </summary>
-    public List<ShiftFileDTO> Files { get; set; } = new();
+    public List<FileDto> Files { get; set; } = new();
 
     /// <summary>
     /// HASH IDS, and the rule that had to beat the built-in table. <c>long</c> to <c>string</c>

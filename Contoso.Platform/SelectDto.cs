@@ -1,7 +1,8 @@
-namespace ShiftFramework;
+namespace Contoso.Platform;
 
 /// <summary>
-/// ShiftFramework's select DTO: an id and something to show a human.
+/// A select DTO of the kind a framework such as ShiftFramework ships: an id and something to show
+/// a human.
 ///
 /// <para><b>WHY A CONVERSION CANNOT FILL THIS.</b> A type-pair conversion is handed ONE value and
 /// asked what it becomes. This needs two source members, and which two depends on the DESTINATION
@@ -10,11 +11,11 @@ namespace ShiftFramework;
 /// on top of <c>CreateConversion</c> rather than replacing it.</para>
 ///
 /// <para><b>AND IT HAS TO REACH THE PROJECTION.</b> Doing this reflectively in an <c>AfterMap</c> —
-/// which is what ShiftFramework does today — works in memory and cannot appear in a list query at
+/// which is how this is normally done — works in memory and cannot appear in a list query at
 /// all, so lists need a second, hand-inlined code path. The convention resolves to an ordinary
 /// inline member-init at compile time, so there is one code path and one answer.</para>
 /// </summary>
-public class ShiftEntitySelectDTO
+public class SelectDto
 {
     /// <summary>The id, as text. Filled from <c>{Member}ID</c>.</summary>
     public string Value { get; set; } = string.Empty;
@@ -32,9 +33,9 @@ public class ShiftEntitySelectDTO
 /// display member <c>Title</c> is served by the same rule as one that calls it <c>Name</c>.</para>
 /// </summary>
 [AttributeUsage(AttributeTargets.Class, Inherited = true)]
-public sealed class ShiftEntityKeyAndNameAttribute : Attribute
+public sealed class KeyAndNameAttribute : Attribute
 {
-    public ShiftEntityKeyAndNameAttribute(string value, string text)
+    public KeyAndNameAttribute(string value, string text)
     {
         Value = value;
         Text = text;

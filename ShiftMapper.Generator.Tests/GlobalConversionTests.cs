@@ -1,4 +1,4 @@
-﻿using ShiftMapper.Generator.Tests.Infrastructure;
+using ShiftMapper.Generator.Tests.Infrastructure;
 using Xunit;
 
 namespace ShiftMapper.Generator.Tests;
@@ -91,7 +91,7 @@ public class GlobalConversionTests
 
     /// <summary>
     /// A REGISTERED PAIR BEATS THE BUILT-IN TABLE. <c>long</c> to <c>string</c> already converts,
-    /// and a rule written for it must win — otherwise ShiftFramework's hash ids would be ignored in
+    /// and a rule written for it must win — otherwise a framework's hash ids would be ignored in
     /// silence, which is the one behaviour this library is arranged never to have.
     /// </summary>
     [Fact]

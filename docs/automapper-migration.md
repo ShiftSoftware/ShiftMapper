@@ -162,7 +162,7 @@ through `IncludeBase` as `UPPER([c].[Sku])`.
 | an AutoMapper `Profile` in a referenced package, picked up by scanning | a `ShiftMapperProfile` in a package **built with the ShiftMapper generator**, added with `AddProfile<T>()`; a package built without it is SM0028 |
 
 `CreateMemberConvention<TMember>()` has no AutoMapper counterpart in either direction. It is a rule
-about a member *shape* — "any destination member of type `ShiftEntitySelectDTO` is filled from
+about a member *shape* — "any destination member of type `SelectDto` is filled from
 `{Member}ID` and `{Member}.{NameOf}`" — that resolves to text at compile time and therefore reaches
 the projection. The nearest AutoMapper idiom is an `AfterMap` per map, which is exactly the thing
 that cannot appear in a list query. `GET /api/products/list?sql=true` is the worked example.
@@ -223,7 +223,9 @@ projected `IQueryable` instead — that is what it is for.
 ### Not built yet
 
 These are real gaps with no structural obstacle. Most have a workaround that projects; a few were
-evaluated and declined, and the reason is recorded in [PLAN.md](../PLAN.md) so it can be argued with.
+evaluated and declined because they would add API surface without adding anything the existing
+calls cannot already express — those are listed at the end, each with its reason, so it can be
+argued with.
 
 - **`NullSubstitute`.** Would be `?? value` in both backends and translates. Not written.
   `opt.MapFrom(s => s.Name ?? "")` does the same thing today and projects.
@@ -250,7 +252,8 @@ evaluated and declined, and the reason is recorded in [PLAN.md](../PLAN.md) so i
   reverse map starts clean and reports what it cannot fill as SM0006 (Info), which is the normal
   shape of a DTO-to-entity direction.
 
-Evaluated and declined, with the reasoning in PLAN.md:
+Evaluated and declined — each either duplicates what an existing call already expresses, or
+depends on a feature that does not exist yet:
 
 - **`PreCondition`** is strictly weaker than `Condition`, which already receives the source.
 - **`MapFrom(string path)`** and **`UseValue`** add nothing over `opt.MapFrom(s => s.A.B)` and

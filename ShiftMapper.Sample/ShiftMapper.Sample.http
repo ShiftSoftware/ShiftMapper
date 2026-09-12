@@ -607,7 +607,7 @@ Accept: text/plain
 #
 #     Same answer SM0007 gives two source names differing only by case. Name it with ForMember.
 #
-#     NAMING CONVENTIONS are the other half of this step and have no natural home in this
+#     NAMING CONVENTIONS are the other half of flattening and have no natural home in this
 #     schema, so they live in the tests: o.RecognizePrefixes("Db") lets a destination `Name` be
 #     filled by a source `DbName`, and o.RecognizePostfixes("Id") lets `Customer` be filled by
 #     `CustomerId`. The bare name is always tried first, so a source declaring both is not
@@ -926,20 +926,23 @@ Accept: application/json
 GET {{HostAddress}}/api/products/fingerprints?project=true
 Accept: application/json
 
-### 1s. RULES FROM A REFERENCED ASSEMBLY — the whole point of Phase 3, in two requests.
+### 1s. RULES FROM A REFERENCED ASSEMBLY — the compile-time extension contract, in two requests.
 #
-#      ShiftFramework.Mock is a separate project, referenced the way a NuGet package would be: a
-#      compiled assembly, no analyzer, no source. This project declares NO conversion for these
-#      pairs, adds no profile for them, and never names the framework's conversion class. All of it
-#      arrives through two assembly attributes over there:
+#      Contoso.Platform — the sample's stand-in for a framework package, modelled on
+#      ShiftFramework — is a separate project, referenced the way a NuGet package would be: a
+#      compiled assembly, no source. This project declares NO conversion for these pairs and never
+#      names the framework's conversion class. It adds ONE profile, and the package's own build
+#      wrote what that profile declares into the assembly as metadata:
 #
 #          [assembly: ShiftMapperContract(1)]
-#          [assembly: ShiftMapperConversions(typeof(ShiftEntityConversions))]
+#          [assembly: ShiftMapperDeclaredConversion(typeof(PlatformProfile), typeof(long), typeof(string), HasQueryForm = true)]
+#          [assembly: ShiftMapperDeclaredConversion(typeof(PlatformProfile), typeof(string), typeof(List<FileDto>), HasQueryForm = false)]
 #
-#      A PROFILE COULD NOT HAVE DONE THIS. A generator sees a reference as METADATA, and metadata
-#      has no method bodies — so CreateConversion calls compiled into a package are simply not
-#      there to read. The sample registers ShiftFileProfile on purpose so the build says exactly
-#      that (SM0028). Attributes, signatures and names are what survives.
+#      THAT IS HOW A PROFILE CROSSES AN ASSEMBLY. A generator sees a reference as METADATA with no
+#      method bodies, so the profile's CreateConversion calls are not there to read — but their
+#      SHAPE is, written by the package's own build, and AddProfile runs the constructor at run
+#      time so the expressions arrive then. A package built without the generator carries none of
+#      this, and the build says so (SM0028) rather than mapping nothing in silence.
 #
 #      "externalIds" below is a List<long> on the entity and a List<string> here, converted by the
 #      framework's hash-id rule. Note that long → string ALREADY converts — 10010 would have been
@@ -961,7 +964,7 @@ GET {{HostAddress}}/api/brands/hashed?sql=true
 
 ### 1s3. THE OTHER RULE THE SAME PACKAGE SHIPS, and the more interesting one.
 #
-#      Brand.Files is a JSON column; BrandFilesDto.Files is a List<ShiftFileDTO>. The framework
+#      Brand.Files is a JSON column; BrandFilesDto.Files is a List<FileDto>. The framework
 #      parses it with System.Text.Json, which no database can do — so it declared that pair with a
 #      MEMORY FORM AND NO QUERY FORM, which says in metadata "this cannot be projected".
 #
@@ -972,7 +975,7 @@ Accept: application/json
 ### 1s4. ASK FOR THE PROJECTION AND IT IS REFUSED — and the BUILD said so first:
 #
 #        warning SM0030: the map from 'Brand' to 'BrandFilesDto' converts 'string?' to
-#                        'List<ShiftFileDTO>' with a conversion that has no query form, so
+#                        'List<FileDto>' with a conversion that has no query form, so
 #                        ProjectTo cannot use it; Map is unaffected
 #
 #      THIS IS THE ARGUMENT FOR DOING ANY OF THIS AT COMPILE TIME. A runtime conversion table
@@ -988,11 +991,11 @@ Accept: application/json
 #
 #          CreateMap<Product, ProductListDto>();
 #
-#      ProductListDto has two ShiftEntitySelectDTO members, Brand and Stock. NOTHING here fills
-#      them. ShiftFramework declared one rule, once, in its own profile:
+#      ProductListDto has two SelectDto members, Brand and Stock. NOTHING here fills
+#      them. The framework declared one rule, once, in its own profile:
 #
-#          CreateMemberConvention<ShiftEntitySelectDTO>()
-#              .NameFrom<ShiftEntityKeyAndNameAttribute>(nameof(ShiftEntityKeyAndNameAttribute.Text))
+#          CreateMemberConvention<SelectDto>()
+#              .NameFrom<KeyAndNameAttribute>(nameof(KeyAndNameAttribute.Text))
 #              .Fill(d => d.Value, "{Member}ID")
 #              .FillIfPossible(d => d.Text, "{Member}.{NameOf}");
 #
@@ -1001,7 +1004,7 @@ Accept: application/json
 #      own NAME — Product.BrandId and Product.Brand.Name for a member called Brand.
 #
 #      AND {NameOf} IS WHY ONE RULE COVERS EVERYTHING. It means "the member this type nominates in
-#      its own [ShiftEntityKeyAndName]". The framework never lists the entities — the entities
+#      its own [KeyAndName]". The framework never lists the entities — the entities
 #      answer for themselves, and one calling its display member Title is served just as well.
 #
 #      LOOK AT THE TWO MEMBERS IN THE RESPONSE. They are NOT the same shape, from the same one rule:
@@ -1011,14 +1014,14 @@ Accept: application/json
 #
 #      That is FillIfPossible: an entry DROPPED when its path does not resolve, rather than one that
 #      fails the member. Often only the id is set and the label is filled in by whatever renders it.
-#      With a required Fill that is SM0034 and an unmapped member, and ShiftFramework would need a
+#      With a required Fill that is SM0034 and an unmapped member, and the framework would need a
 #      SECOND rule for every entity that leaves its label to the UI — which is the thing
-#      conventions exist to avoid. (The empty "text" is ShiftEntitySelectDTO's own default; the
+#      conventions exist to avoid. (The empty "text" is SelectDto's own default; the
 #      mapper wrote nothing there.)
 GET {{HostAddress}}/api/products/list
 Accept: application/json
 
-### 1t2. AND IT IS IN THE SQL, which is the entire point of the step:
+### 1t2. AND IT IS IN THE SQL, which is the entire point of a member-shaped convention:
 #
 #        SELECT [p].[Id], [p].[Name],
 #               CONVERT(varchar(11), [p].[BrandId]) AS [Value], [b].[Name] AS [Text],
@@ -1034,7 +1037,7 @@ Accept: application/json
 #      The member-init is inside the SELECT, and EF worked out the joins from the navigations the
 #      rule walked. Written as an AfterMap — which is how this is normally done — the same rule
 #      would work in memory and disappear from this query entirely, so the list would need a second,
-#      hand-inlined code path. Removing that split is what the whole step is for.
+#      hand-inlined code path. Removing that split is what member-shaped conventions are for.
 #
 #      Note CONVERT(varchar(11), [p].[BrandId]): the Value went through the ORDINARY conversion
 #      table on its way in. That is also where a global conversion would apply — the runtime tests
@@ -1059,7 +1062,7 @@ GET {{HostAddress}}/api/products/list?sql=true
 #
 #      AND THE NAVIGATION BESIDE THE KEY IS LEFT ALONE. Product.Brand name-matches the request's
 #      Brand, so without the convention claiming it the build would demand a map from
-#      ShiftEntitySelectDTO to Brand — an error on every write map a framework has. In the response
+#      SelectDto to Brand — an error on every write map a framework has. In the response
 #      "brand" and "stock" come back null, and that is the point: you set the key, the related row is
 #      the database's business.
 #

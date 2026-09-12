@@ -30,7 +30,7 @@ internal sealed class ProfileDeclarationModel
         Conventions = conventions;
     }
 
-    /// <summary>Fully qualified profile type, e.g. <c>global::ShiftFramework.ShiftEntityProfile</c>.</summary>
+    /// <summary>Fully qualified profile type, e.g. <c>global::Contoso.Platform.PlatformProfile</c>.</summary>
     public string ProfileType { get; }
 
     public ImmutableArray<DeclaredMapModel> Maps { get; }

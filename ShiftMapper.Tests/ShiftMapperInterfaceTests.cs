@@ -10,7 +10,7 @@ namespace ShiftMapper.Tests;
 ///
 /// The point of the interface is that code can be written against it without naming
 /// <c>TestMapper</c>, so most of these tests go through <see cref="PretendFramework"/> at the foot
-/// of the file, which is written exactly the way ShiftFramework would have to write: one
+/// of the file, which is written exactly the way a library would have to write it: one
 /// constructor parameter, of the interface type, and no idea what implements it.
 /// </summary>
 [Collection(DatabaseCollection.Name)]
@@ -305,7 +305,7 @@ public class ShiftMapperInterfaceTests
     }
 
     /// <summary>
-    /// The acceptance test for the whole step: a class written the way ShiftFramework has to write
+    /// The acceptance test for the interface: a class written the way a library has to write
     /// one — no mention of TestMapper anywhere in it — reads, writes and projects.
     /// </summary>
     [Fact]
@@ -368,8 +368,8 @@ public class NotPartialMapper : ShiftMapperBase
 #pragma warning restore SM0005
 
 /// <summary>
-/// ShiftFramework, in miniature. Every method here is generic over the entity and the DTO, and
-/// nothing in the class names a mapper — which is the whole thing Step 4 had to make possible.
+/// A framework, in miniature. Every method here is generic over the entity and the DTO, and
+/// nothing in the class names a mapper — which is the whole thing the interface has to make possible.
 /// </summary>
 public sealed class PretendFramework
 {

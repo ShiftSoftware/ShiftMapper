@@ -1,10 +1,10 @@
-﻿using ShiftMapper.Generator.Tests.Infrastructure;
+using ShiftMapper.Generator.Tests.Infrastructure;
 using Xunit;
 
 namespace ShiftMapper.Generator.Tests;
 
 /// <summary>
-/// Dictionaries — step 2b of the conversion table, and until Step 5 a flat SM0002.
+/// Dictionaries — step 2b of the conversion table, and once a flat SM0002.
 ///
 /// A dictionary is a collection like any other as far as ShiftMapper is concerned: it is COPIED
 /// rather than shared, its keys and values convert by the ordinary rules, and it answers the

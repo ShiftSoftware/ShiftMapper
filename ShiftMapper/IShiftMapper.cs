@@ -7,7 +7,7 @@ namespace ShiftMapper;
 /// <c>ProjectTo&lt;BrandDto&gt;(query)</c> — are the primary API, and they are strongly typed: a
 /// destination with no map is a COMPILE error at the call site. Keep using them wherever you can.
 ///
-/// A LIBRARY cannot. Code in ShiftFramework has to map an entity to a DTO in an application it
+/// A LIBRARY cannot. Code in a framework package has to map an entity to a DTO in an application it
 /// has never seen, whose mapper class is called something it cannot know, so it has nothing to
 /// write against. This interface is that something: resolve it from DI and map.
 ///

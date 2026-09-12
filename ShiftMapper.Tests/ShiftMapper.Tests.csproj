@@ -27,7 +27,7 @@
     <ProjectReference Include="..\ShiftMapper\ShiftMapper.csproj" />
     <!-- A REAL referenced assembly, so the compile-time extension contract is exercised the
          way an application meets it: as metadata, with no source and no analyzer. -->
-    <ProjectReference Include="..\ShiftFramework.Mock\ShiftFramework.Mock.csproj" />
+    <ProjectReference Include="..\Contoso.Platform\Contoso.Platform.csproj" />
 
     <!-- The generator runs over THIS project, so the mapper under test is the real generated
          one rather than something the tests hand-wrote to look like it. -->

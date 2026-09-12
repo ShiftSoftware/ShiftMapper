@@ -1,4 +1,4 @@
-﻿using System.Collections.Immutable;
+using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
 
 namespace ShiftMapper.Generator;
@@ -624,7 +624,7 @@ internal static class DiagnosticDescriptors
     /// <summary>
     /// SM0028 — a profile that arrived as metadata rather than source.
     ///
-    /// The one profile failure with no workaround inside this step, so the message says what the
+    /// The one profile failure with no consuming-side workaround, so the message says what the
     /// limitation IS rather than only that it was hit.
     /// </summary>
     public static readonly DiagnosticDescriptor ProfileNotInSource = new(

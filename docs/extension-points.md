@@ -1,8 +1,9 @@
 # Extension points: rules that ship in a package
 
-You maintain a library — ShiftFramework is the case this library was built for — and you want the
-maps, type-pair conversions and member conventions you write to apply in every application that
-references you. The application should write one line, and nothing else.
+You maintain a library — a framework such as ShiftFramework, for instance, or any package that
+ships DTOs and the rules for mapping them — and you want the maps, type-pair conversions and
+member conventions you write to apply in every application that references you. The application
+should write one line, and nothing else.
 
 That line is `AddProfile<YourProfile>()`. This page is about what has to be true on your side for
 it to work, and why: how a declaration compiled into your DLL is visible to a source generator that
@@ -16,9 +17,9 @@ The [README](../README.md) is the front door and already covers the application'
 [rules from a referenced assembly](../README.md#rules-from-a-referenced-assembly). This page goes
 deeper on each from the package author's side, and does not repeat what the README settles.
 
-Every code block below is either taken from `ShiftFramework.Mock` — the stand-in package in this
-repository, consumed by `ShiftMapper.Sample` exactly as a NuGet reference would be — or from the
-files the generator wrote for those two projects.
+Every code block below is either taken from `Contoso.Platform` — the sample's stand-in for a
+framework package, modelled on ShiftFramework and consumed by `ShiftMapper.Sample` exactly as a
+NuGet reference would be — or from the files the generator wrote for those two projects.
 
 ---
 
@@ -27,23 +28,23 @@ files the generator wrote for those two projects.
 A package writes an ordinary profile with the ordinary API:
 
 ```csharp
-// ShiftFramework.Mock/ShiftEntityProfile.cs — compiled into its own assembly
-public class ShiftEntityProfile : ShiftMapperProfile
+// Contoso.Platform/PlatformProfile.cs — compiled into its own assembly
+public class PlatformProfile : ShiftMapperProfile
 {
-    public ShiftEntityProfile()
+    public PlatformProfile()
     {
         CreateConversion<long, string>(
             memory: id => "H" + id,
             query:  id => "H" + id);
 
-        CreateConversion<string?, List<ShiftFileDTO>>(memory: ShiftEntityConversions.ToFiles!);
+        CreateConversion<string?, List<FileDto>>(memory: PlatformConversions.ToFiles!);
 
-        CreateMemberConvention<ShiftEntitySelectDTO>()
-            .NameFrom<ShiftEntityKeyAndNameAttribute>(nameof(ShiftEntityKeyAndNameAttribute.Text))
+        CreateMemberConvention<SelectDto>()
+            .NameFrom<KeyAndNameAttribute>(nameof(KeyAndNameAttribute.Text))
             .Fill(d => d.Value, "{Member}ID")
             .FillIfPossible(d => d.Text, "{Member}.{NameOf}");
 
-        CreateMap<ShiftFileDTO, ShiftFileSummary>()
+        CreateMap<FileDto, FileSummary>()
             .ForMember(d => d.Name, opt => opt.MapFrom(s => s.Name.Trim()));
     }
 }
@@ -57,11 +58,11 @@ public partial class AppMapper : ShiftMapperBase
 {
     public AppMapper()
     {
-        AddProfile<ShiftEntityProfile>();
+        AddProfile<PlatformProfile>();
 
         CreateMap<Brand, BrandHashDto>();       // ExternalIds: List<long> -> List<string>, hashed
-        CreateMap<Brand, BrandFilesDto>();      // Files: string -> List<ShiftFileDTO>; loses ProjectTo (SM0030)
-        CreateMap<Product, ProductListDto>();   // Brand, Stock: ShiftEntitySelectDTO, filled by the convention
+        CreateMap<Brand, BrandFilesDto>();      // Files: string -> List<FileDto>; loses ProjectTo (SM0030)
+        CreateMap<Product, ProductListDto>();   // Brand, Stock: SelectDto, filled by the convention
     }
 }
 ```
@@ -72,7 +73,7 @@ public partial class AppMapper : ShiftMapperBase
 Those three endpoints are the worked example for everything below.
 
 There is no second API for packages. Nothing in the sample is an attribute written by hand, and
-nothing in it names `ShiftEntityConversions`. What makes that possible is the mechanism in the next
+nothing in it names `PlatformConversions`. What makes that possible is the mechanism in the next
 section, which is the thing a library author actually has to understand.
 
 ---
@@ -83,7 +84,7 @@ section, which is the thing a library author actually has to understand.
 
 A source generator compiling the application is handed the application's source and a set of
 references. A reference is **metadata**: type names, member signatures, attributes, and the types
-those attributes mention. It is never a method body. So `ShiftEntityProfile`, seen from the
+those attributes mention. It is never a method body. So `PlatformProfile`, seen from the
 application's compilation, is a class with a parameterless constructor and nothing inside it. The
 `CreateMap` and `CreateConversion` calls are not "hard to read" — they are not there.
 
@@ -109,19 +110,19 @@ The **shape** is written into your assembly by **your own build**. The same Shif
 that writes a mapper's `Map` methods also runs over your package, finds every
 `ShiftMapperProfile` subclass, and emits one file of assembly attributes describing what those
 profiles declared — while your source is still in front of it. This is the file
-`ShiftFramework.Mock`'s build produces (`global::` prefixes trimmed for width; the file itself is
+`Contoso.Platform`'s build produces (`global::` prefixes trimmed for width; the file itself is
 fully qualified):
 
 ```csharp
-// ShiftMapper.Declarations.g.cs — generated into ShiftFramework.Mock.dll, never edited
+// ShiftMapper.Declarations.g.cs — generated into Contoso.Platform.dll, never edited
 [assembly: ShiftMapper.ShiftMapperContract(1)]
 
-// ---- ShiftFramework.ShiftEntityProfile
-[assembly: ShiftMapper.ShiftMapperDeclaredMap(typeof(ShiftEntityProfile), typeof(ShiftFileDTO), typeof(ShiftFileSummary))]
-[assembly: ShiftMapper.ShiftMapperDeclaredMember(typeof(ShiftEntityProfile), typeof(ShiftFileDTO), typeof(ShiftFileSummary), "Name", PropertyType = "string", CanSetAfterConstruction = true)]
-[assembly: ShiftMapper.ShiftMapperDeclaredConversion(typeof(ShiftEntityProfile), typeof(long), typeof(string), HasQueryForm = true)]
-[assembly: ShiftMapper.ShiftMapperDeclaredConversion(typeof(ShiftEntityProfile), typeof(string), typeof(List<ShiftFileDTO>), HasQueryForm = false)]
-[assembly: ShiftMapper.ShiftMapperDeclaredConvention(typeof(ShiftEntityProfile), typeof(ShiftEntitySelectDTO), Fill = new string[] { "Value={Member}ID", "?Text={Member}.{NameOf}" }, NameOfAttribute = typeof(ShiftEntityKeyAndNameAttribute), NameOfProperty = "Text")]
+// ---- Contoso.Platform.PlatformProfile
+[assembly: ShiftMapper.ShiftMapperDeclaredMap(typeof(PlatformProfile), typeof(FileDto), typeof(FileSummary))]
+[assembly: ShiftMapper.ShiftMapperDeclaredMember(typeof(PlatformProfile), typeof(FileDto), typeof(FileSummary), "Name", PropertyType = "string", CanSetAfterConstruction = true)]
+[assembly: ShiftMapper.ShiftMapperDeclaredConversion(typeof(PlatformProfile), typeof(long), typeof(string), HasQueryForm = true)]
+[assembly: ShiftMapper.ShiftMapperDeclaredConversion(typeof(PlatformProfile), typeof(string), typeof(List<FileDto>), HasQueryForm = false)]
+[assembly: ShiftMapper.ShiftMapperDeclaredConvention(typeof(PlatformProfile), typeof(SelectDto), Fill = new string[] { "Value={Member}ID", "?Text={Member}.{NameOf}" }, NameOfAttribute = typeof(KeyAndNameAttribute), NameOfProperty = "Text")]
 ```
 
 Read it against the profile above. `s => s.Name.Trim()` is not in it; `"Name"` is. `id => "H" + id`
@@ -133,7 +134,7 @@ every diagnostic — none of it can tell a package's map from a local one, and n
 
 The **expressions** arrive because `AddProfile<T>()` is the one declaration call that also does
 something at run time: it records `T` so the mapper can construct it on first use. Constructing
-`ShiftEntityProfile` runs its constructor, and its constructor calls the real `CreateConversion`
+`PlatformProfile` runs its constructor, and its constructor calls the real `CreateConversion`
 and `ForMember(... MapFrom ...)`, which put the delegate and the trees into the mapper's
 customization store. This is the same path a profile in the application's own project takes.
 Nothing about it is package-specific.
@@ -143,9 +144,9 @@ a lookup by member name against the store the profile's constructor filled. From
 generated mapper:
 
 ```csharp
-// MapToShiftFileSummary — the package's ForMember
-Name = (_ShiftMapperValue_ShiftFramework_ShiftFileDTO_To_ShiftFramework_ShiftFileSummary_Name
-           ??= Customizations.Value<global::ShiftFramework.ShiftFileDTO, global::ShiftFramework.ShiftFileSummary, string>("Name"))(source),
+// MapToFileSummary — the package's ForMember
+Name = (_ShiftMapperValue_Contoso_Platform_FileDto_To_Contoso_Platform_FileSummary_Name
+           ??= Customizations.Value<global::Contoso.Platform.FileDto, global::Contoso.Platform.FileSummary, string>("Name"))(source),
 
 // MapToBrandHashDto — the package's long -> string conversion
 ExternalIds = global::ShiftMapper.ValueConverter.ToListOrEmpty<long, string>(source.ExternalIds, item => Customizations.Conversion<long, string>()(item)),
@@ -158,9 +159,9 @@ without the generator understanding a single line of your code.
 
 ### Why typed attributes with `typeof`, not a serialized blob
 
-The property that must not be got wrong is **type identity**. `typeof(ShiftFileDTO)` is resolved
+The property that must not be got wrong is **type identity**. `typeof(FileDto)` is resolved
 by your compiler and is unambiguously that type in that assembly. A string
-`"ShiftFramework.ShiftFileDTO"` would have to be re-resolved by name in the consumer, and can find
+`"Contoso.Platform.FileDto"` would have to be re-resolved by name in the consumer, and can find
 the wrong type, or none, when two assemblies share a namespace or a type moves. A blob would be
 smaller and versioned in one place; identity is worth more than both. Typed attributes are also
 readable in a decompiler, which is what somebody will have the first time your rule does not apply
@@ -294,7 +295,7 @@ are specific to writing one that ships.
 `memory` is a delegate the generated `Map` methods call, and it may do anything C# can do. `query`
 is an expression tree that is **inlined** into the projection — not invoked, because a delegate
 call is opaque to EF — so it has to be something a database can run. The two forms are yours to
-keep in agreement; nothing can check that for you. `ShiftFramework.Mock`'s first draft had
+keep in agreement; nothing can check that for you. `Contoso.Platform`'s first draft had
 `"H" + id.ToString("D6")` in memory and `"H" + id` in the query, both well-typed, both translating,
 and the same brand came back as `H010010` from `Map` and `H10010` from `ProjectTo`. The sample shows
 both backends of a map side by side for that reason.
@@ -305,14 +306,14 @@ Parsing a JSON column into objects is `System.Text.Json`'s job and no database c
 honest registration is:
 
 ```csharp
-CreateConversion<string?, List<ShiftFileDTO>>(memory: ShiftEntityConversions.ToFiles!);
+CreateConversion<string?, List<FileDto>>(memory: PlatformConversions.ToFiles!);
 ```
 
 That line **says** the pair cannot be projected. Every map in every consuming application that
 touches the pair loses its projection, and each of those builds reports which map:
 
 ```
-warning SM0030: the map from 'Brand' to 'BrandFilesDto' converts 'string' to 'List<ShiftFileDTO>'
+warning SM0030: the map from 'Brand' to 'BrandFilesDto' converts 'string' to 'List<FileDto>'
                 with a conversion that has no query form, so ProjectTo cannot use it; Map is unaffected
 ```
 
@@ -367,7 +368,7 @@ produces.
 
 A conversion is handed **one value** and asked what it becomes. Some rules a framework needs are
 shaped differently: which source members fill a destination member depends on that member's own
-**name**. `ProductListDto.Brand` of type `ShiftEntitySelectDTO` is filled from `Product.BrandId`
+**name**. `ProductListDto.Brand` of type `SelectDto` is filled from `Product.BrandId`
 and `Product.Brand.Name` — two source members, chosen by the word `Brand`. No type-pair rule can
 express that, which is why `CreateMemberConvention<TMember>()` sits beside `CreateConversion` rather
 than replacing it. The [README](../README.md#member-conventions) shows the application's view; this
@@ -376,8 +377,8 @@ is the rule from the side that writes it.
 ### The vocabulary, and why it is small
 
 ```csharp
-CreateMemberConvention<ShiftEntitySelectDTO>()
-    .NameFrom<ShiftEntityKeyAndNameAttribute>(nameof(ShiftEntityKeyAndNameAttribute.Text))
+CreateMemberConvention<SelectDto>()
+    .NameFrom<KeyAndNameAttribute>(nameof(KeyAndNameAttribute.Text))
     .Fill(d => d.Value, "{Member}ID")
     .FillIfPossible(d => d.Text, "{Member}.{NameOf}");
 ```
@@ -396,7 +397,7 @@ CreateMemberConvention<ShiftEntitySelectDTO>()
   not be a convention.
 - **`{NameOf}`** — the member that the type the path has reached nominates in its own attribute.
   This is the indirection the whole rule turns on. Your package marks nothing in the application;
-  the application marks its entities `[ShiftEntityKeyAndName(nameof(Id), nameof(Name))]`, and an
+  the application marks its entities `[KeyAndName(nameof(Id), nameof(Name))]`, and an
   entity that calls its display member `Title` is served by the same rule as one that calls it
   `Name`.
 - **`NameFrom<TAttribute>(property)`** — which attribute `{NameOf}` reads, and which of its values
@@ -421,12 +422,12 @@ sample, for `CreateMap<Product, ProductListDto>()` with nothing else configured:
 
 ```csharp
 // in-memory MapToProductListDto
-Brand = new global::ShiftFramework.ShiftEntitySelectDTO { Value = global::ShiftMapper.ValueConverter.ToInvariantString(source.BrandId), Text = (source.Brand is null ? default(string)! : source.Brand.Name) },
-Stock = new global::ShiftFramework.ShiftEntitySelectDTO { Value = global::ShiftMapper.ValueConverter.ToInvariantString(source.StockId) },
+Brand = new global::Contoso.Platform.SelectDto { Value = global::ShiftMapper.ValueConverter.ToInvariantString(source.BrandId), Text = (source.Brand is null ? default(string)! : source.Brand.Name) },
+Stock = new global::Contoso.Platform.SelectDto { Value = global::ShiftMapper.ValueConverter.ToInvariantString(source.StockId) },
 
 // the projection EF is handed
-Brand = new global::ShiftFramework.ShiftEntitySelectDTO { Value = source.BrandId.ToString(), Text = source.Brand!.Name },
-Stock = new global::ShiftFramework.ShiftEntitySelectDTO { Value = source.StockId.ToString() },
+Brand = new global::Contoso.Platform.SelectDto { Value = source.BrandId.ToString(), Text = source.Brand!.Name },
+Stock = new global::Contoso.Platform.SelectDto { Value = source.StockId.ToString() },
 ```
 
 The same rule written as an `AfterMap` works in memory and cannot appear in a list query at all,
@@ -453,7 +454,7 @@ build that declares it.
 
 ### The write direction is derived
 
-`CreateMap<ProductRequest, Product>()`, where the request carries `ShiftEntitySelectDTO` members,
+`CreateMap<ProductRequest, Product>()`, where the request carries `SelectDto` members,
 sets `Product.BrandId` from `request.Brand.Value` — the reverse of the entry you wrote for the
 response. A `Fill` whose path is a plain member reverses on its own; an entry that walks a
 navigation does not, and should not, since a display name is read from the related row and never
@@ -489,7 +490,7 @@ attributes, and every application that adds your profile gets SM0028.
 `dotnet add package ShiftSoftware.ShiftMapper` delivers both halves: `lib/net10.0` holds the
 runtime types your profile derives from, and `analyzers/dotnet/cs` holds the generator, which NuGet
 hands to the compiler. A library that references the package the ordinary way is already covered.
-Inside this repository, where there is no package, `ShiftFramework.Mock` says the same thing with
+Inside this repository, where there is no package, `Contoso.Platform` says the same thing with
 two project references:
 
 ```xml
@@ -546,7 +547,7 @@ usually see is a bug report quoting one.
 **SM0028 — a referenced assembly carries no ShiftMapper declaration metadata.** Warning.
 
 ```
-ShiftMapper: the profile 'ShiftEntityProfile' is in a referenced assembly that carries no
+ShiftMapper: the profile 'PlatformProfile' is in a referenced assembly that carries no
 ShiftMapper declaration metadata, so nothing it declares could be read. That package has to be
 built with the ShiftMapper generator referenced as an analyzer.
 ```

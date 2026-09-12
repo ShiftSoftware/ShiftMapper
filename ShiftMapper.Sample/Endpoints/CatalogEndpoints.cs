@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using ShiftMapper.Sample.Data;
 using ShiftMapper.Sample.Dtos;
 using ShiftMapper.Sample.Entities;
@@ -107,7 +107,7 @@ public static class CatalogEndpoints
         //   WHERE [c].[Discriminator] = N'PhysicalItem'    <- what OfType compiled to
         //   UPPER([c].[Sku])                               <- the INHERITED MapFrom, in SQL
         //
-        // That UPPER is the payoff of Step 10's least visible piece. The expression is stored
+        // That UPPER is the payoff of inheritance's least visible piece. The expression is stored
         // against CatalogItem -> CatalogItemDto, not against this pair, so the projection has to
         // walk the lineage to find it exactly as Map does. If it did not, Map would upper-case and
         // ProjectTo would not — two answers that each look right on their own.

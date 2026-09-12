@@ -7,7 +7,7 @@ namespace ShiftMapper.Benchmarks;
 /// Building the expression <c>ProjectTo</c> hands to EF — not running a query, which would
 /// measure the database rather than ShiftMapper.
 ///
-/// This is the other half of Step 2. The projection used to be an expression-bodied property, so
+/// This is the other half of caching. The projection used to be an expression-bodied property, so
 /// every call rebuilt the member initializer, re-scanned the customization store and re-grafted
 /// every nested map — and once per LEVEL per call, because a nested map is reached through the
 /// parent's member. <see cref="OnAWarmMapper"/> is what that costs now; the composition half of

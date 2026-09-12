@@ -1,12 +1,13 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <!--
       TFM POLICY, stated rather than implied: the runtime library targets net10.0 and nothing
-      else. ShiftFramework, the consumer this library exists for, is on net10.0, and every
-      earlier target would have to be tested for the conversions and the projection shapes it
-      changes. The generator is a separate matter - it MUST be netstandard2.0, because the C#
-      compiler loads it as a plugin and the compiler itself runs on netstandard2.0.
+      else. One target means the conversion table and the projection shapes are verified against
+      one BCL and one EF Core, and every earlier target would have to be tested for the
+      conversions and the projection shapes it changes. The generator is a separate matter - it
+      MUST be netstandard2.0, because the C# compiler loads it as a plugin and the compiler itself
+      runs on netstandard2.0.
     -->
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -41,7 +42,7 @@
   <ItemGroup>
     <None Include="..\README.md" Pack="true" PackagePath="\" Visible="false" />
 
-    <!-- The shared ShiftFramework icon, in the place and shape every other Shift package uses. -->
+    <!-- The shared Shift icon, in the place and shape every other Shift package uses. -->
     <None Include="Images\icon.png" Pack="true" PackagePath="\" />
   </ItemGroup>
 

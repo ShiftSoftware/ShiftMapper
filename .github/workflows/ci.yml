@@ -1,6 +1,6 @@
 name: CI
 
-# Step 1 of PLAN.md: the suite is only worth having if it runs on every change.
+# The suite is only worth having if it runs on every change.
 on:
   push:
     branches: [master]
@@ -34,7 +34,7 @@ jobs:
       - name: Test
         run: dotnet test ShiftMapper.slnx --no-build --configuration Release --verbosity normal
 
-      # Step 3 of PLAN.md. Packing on every change is what keeps "one PackageReference gets you
+      # Packing on every change is what keeps "one PackageReference gets you
       # both halves" true, rather than true on the day it was set up.
       - name: Pack
         # Not --no-build: resolving the generator project reference so it can be copied into

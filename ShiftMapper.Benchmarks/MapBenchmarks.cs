@@ -5,7 +5,7 @@ namespace ShiftMapper.Benchmarks;
 /// <summary>
 /// The in-memory maps.
 ///
-/// The two that matter for Step 2 are at the bottom. <c>PerRequest*</c> builds a NEW mapper for
+/// The two that matter for caching are at the bottom. <c>PerRequest*</c> builds a NEW mapper for
 /// every iteration, which is what <c>AddShiftMapper</c>'s default Scoped lifetime does on every
 /// request — and before the compile cache was keyed by mapper type, that meant compiling every
 /// customization the request touched, all over again.

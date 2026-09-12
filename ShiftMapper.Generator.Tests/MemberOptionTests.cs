@@ -157,7 +157,7 @@ public class MemberOptionTests
     // -----------------------------------------------------------------
 
     /// <summary>
-    /// The lookup is hoisted into a field, exactly as Step 2 hoisted the projections and for the
+    /// The lookup is hoisted into a field, exactly as the projections are hoisted and for the
     /// same reason: the emitter writes it INSIDE the initializer, so it ran once per mapped object
     /// and once per element of a nested collection.
     ///

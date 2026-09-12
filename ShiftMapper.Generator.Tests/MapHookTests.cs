@@ -9,7 +9,7 @@ namespace ShiftMapper.Generator.Tests;
 /// <c>ForAllMembers</c>.
 ///
 /// They divide on one question — can it be an EXPRESSION? <c>ConvertUsing</c> is one, so it is the
-/// only map-level hook that projects, and the whole reason this step matters for what comes after
+/// only map-level hook that projects, and the whole reason the hooks matter for what comes after
 /// it. The other three are statements, so they take the map's projection away rather than
 /// silently not running in it.
 /// </summary>

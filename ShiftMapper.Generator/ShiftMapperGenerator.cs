@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
@@ -1269,8 +1269,8 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     /// site can be told WHERE IT IS WRITTEN rather than only where the map is declared.
     ///
     /// <para>A call site knows the pair and the mapper and nothing else; the configuration is in
-    /// another file, often another assembly. The shape travels instead — the same answer Step 14
-    /// reached for declarations.</para>
+    /// another file, often another assembly. The shape travels instead — the same answer the
+    /// declaration metadata reached.</para>
     ///
     /// <para>Nothing is written for a mapper whose maps all project, which is most of them.</para>
     /// </summary>
@@ -2665,14 +2665,14 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     /// both backends can carry.
     ///
     /// <code>
-    /// Brand = new global::ShiftFramework.ShiftEntitySelectDTO
+    /// Brand = new global::Contoso.Platform.SelectDto
     /// {
     ///     Value = global::ShiftMapper.ValueConverter.ToInvariantString(source.BrandId),
     ///     Text  = (source.Brand is null ? default(string)! : source.Brand.Name),
     /// }
     /// </code>
     ///
-    /// <para><b>TEXT, not a runtime hook, and that is the whole step.</b> The same rule written as
+    /// <para><b>TEXT, not a runtime hook, and that is the whole point.</b> The same rule written as
     /// an AfterMap works in memory and cannot appear in a list query at all. An inline member-init
     /// is an ordinary expression, so it travels through the same property plumbing as every other
     /// member and a database translates it like any other — one code path, one answer.</para>
@@ -3131,7 +3131,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             // A MEMBER CONVENTION, BEFORE NAME MATCHING and after ForMember.
             //
             // Before, because the shaped member usually DOES have a name match and it is the wrong
-            // one: ProductListDto.Brand is a ShiftEntitySelectDTO and Product.Brand is an entity, so
+            // one: ProductListDto.Brand is a SelectDto and Product.Brand is an entity, so
             // name matching would either report SM0002 or try to nest a map that means something
             // else entirely. The convention knows what that member is for.
             //
@@ -3186,7 +3186,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             // Writing a select DTO back onto its entity fills the FOREIGN KEY, not the navigation:
             // FiledDocument.FolderId comes from Folder.Value just above, and FiledDocument.Folder is
             // the related row, which you do not rebuild out of two strings. But it name-matches the
-            // source's shaped member, so without this it asks for a map from ShiftEntitySelectDTO to
+            // source's shaped member, so without this it asks for a map from SelectDto to
             // Folder — an SM0011 that stops the build on every write map a framework has.
             //
             // So the convention claims it and leaves it alone. Narrow on purpose: only when a
@@ -5432,7 +5432,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     /// </summary>
     private static string CustomValueExpression(MapModel map, CustomProperty custom)
     {
-        // A CACHED FIELD, for the same reason the projections got one in Step 2. Customizations.Value
+        // A CACHED FIELD, for the same reason the projections got one. Customizations.Value
         // is a dictionary lookup, a shareability lookup and a compiled-delegate lookup, and the
         // emitter writes it INSIDE the initializer — so it ran once per mapped object, and once
         // per element of a nested collection. Hoisting it is ~88ns per customized member per
@@ -6141,8 +6141,8 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     ///
     /// Where several mapped source types match by assignability, the first written here wins.
     /// That is only reachable when two mapped types are related by inheritance AND the value is a
-    /// subclass of both; choosing properly between them is what Step 10 of the plan is for, and
-    /// guessing at it now would be a rule to unpick later.
+    /// subclass of both; choosing properly between them is a question for the inheritance rules,
+    /// and guessing at it here would be a rule to unpick later.
     /// </summary>
     private static void AppendMapFromObject(StringBuilder sb, string indent, List<string> sources)
     {

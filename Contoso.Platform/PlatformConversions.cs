@@ -1,29 +1,23 @@
 ﻿using System.Text.Json;
 
-namespace ShiftFramework;
+namespace Contoso.Platform;
 
 /// <summary>
-/// The rules ShiftFramework wants EVERY application that references it to map by, without any of
-/// them writing a line.
+/// The conversions a framework package wants EVERY application that references it to map by —
+/// as plain static methods, which is what <see cref="PlatformProfile"/> hands to
+/// <c>CreateConversion</c>.
 ///
-/// <para><b>THIS IS THE SHAPE A PACKAGE CAN SHIP.</b> A <c>ShiftMapperProfile</c> is the natural
-/// first attempt and it cannot work across an assembly boundary: a source generator sees a
-/// reference as metadata, and metadata has no method bodies, so the <c>CreateConversion</c> calls
-/// compiled in here would not be there to read. See <see cref="ShiftFileProfile"/>, which the
-/// sample registers on purpose to show exactly that.</para>
+/// <para><b>Nothing here is special to ShiftMapper.</b> These are ordinary methods a framework
+/// would have anyway; the profile is what turns them into rules. That is the point of the split:
+/// the framework keeps its conversion logic where it always was, and one profile declares which
+/// pairs it applies to, in the same vocabulary an application uses.</para>
 ///
-/// <para><b>WHAT THE APPLICATION'S GENERATED MAPPER ENDS UP WITH IS A DIRECT CALL:</b></para>
-///
-/// <code>
-/// Files = global::ShiftFramework.ShiftEntityConversions.ToFiles(source.FilesJson),
-/// </code>
-///
-/// <para>Fully qualified, no reflection, no registry lookup — the framework's rule inlined into
-/// the application's own code exactly as if the developer had written it. That is better than the
-/// in-project route rather than a degraded version of it, because a name is something metadata
-/// carries and a lambda is not.</para>
+/// <para>Which of them has a QUERY form is a decision made in the profile, not here. <c>ToFiles</c>
+/// parses JSON into objects, which no database can do, so the profile declares that pair with the
+/// memory form only — and every map that touches it is reported as in-memory only (SM0030) rather
+/// than left with a projection that could not run.</para>
 /// </summary>
-public static class ShiftEntityConversions
+public static class PlatformConversions
 {
     private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web);
 
@@ -33,13 +27,13 @@ public static class ShiftEntityConversions
 
     /// <summary>
     /// The MEMORY form: a public static method with exactly one parameter and a return value. That
-    /// signature IS the declaration — the pair it converts is <c>(string, List&lt;ShiftFileDTO&gt;)</c>,
+    /// signature IS the declaration — the pair it converts is <c>(string, List&lt;FileDto&gt;)</c>,
     /// read straight off the method.
     /// </summary>
-    public static List<ShiftFileDTO> ToFiles(string? json) =>
+    public static List<FileDto> ToFiles(string? json) =>
         string.IsNullOrWhiteSpace(json)
-            ? new List<ShiftFileDTO>()
-            : JsonSerializer.Deserialize<List<ShiftFileDTO>>(json!, Options) ?? new List<ShiftFileDTO>();
+            ? new List<FileDto>()
+            : JsonSerializer.Deserialize<List<FileDto>>(json!, Options) ?? new List<FileDto>();
 
     // AND DELIBERATELY NO QUERY FORM FOR THAT PAIR.
     //
@@ -53,13 +47,13 @@ public static class ShiftEntityConversions
     // is told at BUILD time which of its endpoints that affects:
     //
     //   warning SM0030: the map from 'Brand' to 'BrandFilesDto' converts 'String' to
-    //                   'List<ShiftFileDTO>' with a conversion that has no query form, so
+    //                   'List<FileDto>' with a conversion that has no query form, so
     //                   ProjectTo cannot use it; Map is unaffected
     //
     // A runtime conversion table converts this pair just as well and cannot tell anybody that.
 
     /// <summary>The way back, which needs no query form: nothing writes a DTO into SQL.</summary>
-    public static string FromFiles(List<ShiftFileDTO>? files) =>
+    public static string FromFiles(List<FileDto>? files) =>
         files is null || files.Count == 0 ? "[]" : JsonSerializer.Serialize(files, Options);
 
     // ------------------------------------------------------------------
@@ -69,7 +63,7 @@ public static class ShiftEntityConversions
     /// <summary>
     /// <c>long</c> to <c>string</c> is in ShiftMapper's built-in table, so a rule for this pair is
     /// only worth declaring if a declared rule BEATS the built-in one. It does, and this is the
-    /// case that settled it: under the other ordering ShiftFramework's hash ids would have been
+    /// case that settled it: under the other ordering a framework's hash ids would have been
     /// ignored in silence.
     /// </summary>
     public static string ToHashId(long id) => "H" + id;
@@ -77,8 +71,11 @@ public static class ShiftEntityConversions
 
 }
 
-/// <summary>A file reference stored as JSON in one column — ShiftFramework's real shape.</summary>
-public class ShiftFileDTO
+/// <summary>
+/// A file reference stored as JSON in one column — the shape a framework such as ShiftFramework
+/// really stores.
+/// </summary>
+public class FileDto
 {
     public string Name { get; set; } = string.Empty;
 

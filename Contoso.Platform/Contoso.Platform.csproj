@@ -1,8 +1,8 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    A STAND-IN FOR SHIFTFRAMEWORK: a library the sample consumes as a compiled assembly, the way
-    a NuGet package is consumed.
+    THE SAMPLE'S STAND-IN FOR A FRAMEWORK PACKAGE, modelled on ShiftFramework: a library the sample
+    consumes as a compiled assembly, the way a NuGet package is consumed.
 
     A source generator compiling the sample sees this assembly as METADATA — types, signatures,
     attributes, never a method body — so the CreateMap and CreateConversion calls in its profile
@@ -15,7 +15,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <RootNamespace>ShiftFramework</RootNamespace>
+    <RootNamespace>Contoso.Platform</RootNamespace>
     <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
     <CompilerGeneratedFilesOutputPath>Generated</CompilerGeneratedFilesOutputPath>
   </PropertyGroup>

@@ -43,7 +43,7 @@ public partial class CapturedLocalProbe : ShiftMapperBase
 }
 
 /// <summary>
-/// What Step 2 of the plan is about: the work that used to be repeated per request, and the one
+/// What the caching is about: the work that used to be repeated per request, and the one
 /// case where repeating it is the only correct answer.
 ///
 /// These are the tests that would not fail if the caching were removed — the values would all

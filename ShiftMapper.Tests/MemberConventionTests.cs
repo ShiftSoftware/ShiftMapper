@@ -1,4 +1,4 @@
-﻿using ShiftFramework;
+using Contoso.Platform;
 using ShiftMapper.Tests.Model;
 using Xunit;
 
@@ -96,7 +96,7 @@ public class MemberConventionTests
         {
             // Plain digits here: the package's hash rule is long-to-string only, so the way back
             // uses the ordinary parse. A framework wanting a round trip would declare both halves.
-            Folder = new ShiftEntitySelectDTO { Value = "7", Text = "Contracts" },
+            Folder = new SelectDto { Value = "7", Text = "Contracts" },
         });
 
         Assert.Equal(7, entity.FolderId);
@@ -111,7 +111,7 @@ public class MemberConventionTests
     /// and the id is still set — in BOTH backends, from the same one rule.
     ///
     /// <para>With a required <c>Fill</c> this would be an unmapped member and a build warning, and
-    /// ShiftFramework would need a second rule for every entity that leaves its label to whatever
+    /// the framework would need a second rule for every entity that leaves its label to whatever
     /// renders it.</para>
     /// </summary>
     [Fact]

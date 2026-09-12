@@ -15,7 +15,7 @@ namespace ShiftMapper.Generator;
 ///
 /// <para><b>The question a type-pair conversion cannot answer.</b> A conversion is handed one value
 /// and asked what it becomes. This is handed a MEMBER and has to go looking: a
-/// <c>ShiftEntitySelectDTO</c> called <c>Brand</c> is filled from <c>BrandId</c> AND
+/// <c>SelectDto</c> called <c>Brand</c> is filled from <c>BrandId</c> AND
 /// <c>Brand.Name</c>, and knowing that needs the member's name, not only its type.</para>
 ///
 /// <para><b>What comes out is TEXT.</b> The whole rule resolves at compile time into an inline
@@ -432,7 +432,7 @@ internal static class MemberConventions
                 continue;
 
             // Named arguments first, then constructor parameters BY NAME — so a framework may write
-            // [ShiftEntityKeyAndName("Id", "Name")] or [ShiftEntityKeyAndName(Text = "Name")] and
+            // [KeyAndName("Id", "Name")] or [KeyAndName(Text = "Name")] and
             // this reads either.
             foreach (KeyValuePair<string, TypedConstant> named in attribute.NamedArguments)
             {
@@ -465,7 +465,7 @@ internal static class MemberConventions
     /// One step of a path, resolved on the type reached so far.
     ///
     /// <para><b>EXACT FIRST, THEN THE MAP'S OWN CASE RULE.</b> A pattern is written by a framework
-    /// against a naming convention it hopes for — ShiftEntity's is <c>{Member}ID</c> — and real
+    /// against a naming convention it hopes for — <c>{Member}ID</c>, say — and real
     /// entities spell it <c>BrandId</c> about as often. Falling back to the same case-insensitive
     /// lookup the rest of the mapper already uses means one rule serves both, which is the whole
     /// promise of a convention. A case-SENSITIVE mapper gets the strict answer, because it asked.</para>

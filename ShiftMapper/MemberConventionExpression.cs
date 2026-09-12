@@ -21,8 +21,8 @@ public enum MappingDirection
 /// that the destination member's own NAME picks out.
 ///
 /// <code>
-/// CreateMemberConvention&lt;ShiftEntitySelectDTO&gt;()
-///     .NameFrom&lt;ShiftEntityKeyAndNameAttribute&gt;(nameof(ShiftEntityKeyAndNameAttribute.Text))
+/// CreateMemberConvention&lt;SelectDto&gt;()
+///     .NameFrom&lt;KeyAndNameAttribute&gt;(nameof(KeyAndNameAttribute.Text))
 ///     .Fill(d =&gt; d.Value, "{Member}ID")
 ///     .Fill(d =&gt; d.Text,  "{Member}.{NameOf}");
 /// </code>
@@ -93,8 +93,8 @@ public sealed class MemberConventionExpression<TMember>
     /// failing the member.
     ///
     /// <code>
-    /// CreateMemberConvention&lt;ShiftEntitySelectDTO&gt;()
-    ///     .NameFrom&lt;ShiftEntityKeyAndNameAttribute&gt;("Text")
+    /// CreateMemberConvention&lt;SelectDto&gt;()
+    ///     .NameFrom&lt;KeyAndNameAttribute&gt;("Text")
     ///     .Fill(d =&gt; d.Value, "{Member}ID")                  // always
     ///     .FillIfPossible(d =&gt; d.Text, "{Member}.{NameOf}"); // when there is one to read
     /// </code>
@@ -127,13 +127,14 @@ public sealed class MemberConventionExpression<TMember>
     /// reached.
     ///
     /// <code>
-    /// .NameFrom&lt;ShiftEntityKeyAndNameAttribute&gt;(nameof(ShiftEntityKeyAndNameAttribute.Text))
+    /// .NameFrom&lt;KeyAndNameAttribute&gt;(nameof(KeyAndNameAttribute.Text))
     /// </code>
     ///
-    /// <para><b>THIS INDIRECTION IS THE WHOLE POINT.</b> ShiftFramework marks its entities
-    /// <c>[ShiftEntityKeyAndName("Id", "Name")]</c>; the rule says "the member this type nominates
-    /// there", so the framework never has to list the entities and an entity calling its display
-    /// member <c>Title</c> is served by the same rule as one calling it <c>Name</c>.</para>
+    /// <para><b>THIS INDIRECTION IS THE WHOLE POINT.</b> A framework marks its entities with an
+    /// attribute of its own — <c>[KeyAndName("Id", "Name")]</c>, say; the rule says "the member
+    /// this type nominates there", so the framework never has to list the entities and an entity
+    /// calling its display member <c>Title</c> is served by the same rule as one calling it
+    /// <c>Name</c>.</para>
     ///
     /// <para>Only needed when a path uses <c>{NameOf}</c>. A rule that fills nothing but an id
     /// — common, because a display name is often supplied by whatever renders it — needs no

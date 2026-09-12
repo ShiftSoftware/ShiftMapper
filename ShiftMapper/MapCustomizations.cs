@@ -68,7 +68,7 @@ public sealed class MapCustomizations
     ///
     /// <para><b>WHY THIS HAS TO EXIST AT RUNTIME</b> and not only in the generator. Everything the
     /// developer wrote is stored against the type pair it was written for: a <c>MapFrom</c> on
-    /// <c>ShiftEntity → ShiftEntityViewDTO</c> lives under THAT key. A derived map asking for it
+    /// <c>EntityBase → EntityBaseDto</c> lives under THAT key. A derived map asking for it
     /// under <c>Brand → BrandDTO</c> would find nothing — in memory AND in the projection,
     /// where <c>Compose</c> collects by the same key. So the lookups walk this chain, and
     /// the answer is the same on both paths rather than merely similar.
@@ -208,7 +208,7 @@ public sealed class MapCustomizations
     ///
     /// <para><b>EXACT PAIR FIRST, THEN ASSIGNABILITY.</b> A conversion registered for a BASE type
     /// answers for everything that derives from it — which is what lets a framework write one
-    /// rule for <c>ShiftEntityBase</c> and have it fire for entities it has never seen. The
+    /// rule for its own entity base type and have it fire for entities it has never seen. The
     /// delegate really is typed to the base, and handing it back as a
     /// <c>Func&lt;TSource, TDestination&gt;</c> is exactly what <c>Func</c>'s contravariance in its
     /// argument is for.</para>
@@ -807,7 +807,7 @@ public sealed class MapCustomizations
 
     /// <summary>
     /// The per-instance cache, created on demand — most mappers never need one, and an empty
-    /// ConcurrentDictionary per mapper per request is exactly the sort of allocation this step
+    /// ConcurrentDictionary per mapper per request is exactly the sort of allocation the caching
     /// exists to remove.
     /// </summary>
     private ConcurrentDictionary<CustomizationKey, Delegate> InstanceCompiled

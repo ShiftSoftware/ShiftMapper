@@ -51,7 +51,7 @@ internal sealed class ConversionTable
                     continue;
 
                 // MinimallyQualified rather than Name: a Name says "List" where the pair is really
-                // List<ShiftFileDTO>, and a message that cannot tell two conversions apart is not
+                // List<FileDto>, and a message that cannot tell two conversions apart is not
                 // worth printing.
                 string described = $"'{Short(entry.Source)}' to '{Short(entry.Destination)}'";
 

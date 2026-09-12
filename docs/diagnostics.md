@@ -747,8 +747,9 @@ public AppMapper() => AddProfile<FrameworkProfile>();   // FrameworkProfile's pa
 package, which brings the generator in as an analyzer and writes the declarations on the package's
 own build. There is no consuming-side workaround, which is why the message states the limitation
 rather than only that it was hit. A package that was built correctly is recognised by the
-`[assembly: ShiftMapperContract(1)]` its build stamps on it; `ShiftFramework.Mock` in this
-repository is the working example, consumed through `GET /api/brands/hashed`.
+`[assembly: ShiftMapperContract(1)]` its build stamps on it; `Contoso.Platform` — the sample's
+stand-in for a framework package — is the working example in this repository, consumed through
+`GET /api/brands/hashed`.
 
 <a id="sm0029"></a>
 ## SM0029 — ConfigureDefaults on a profile has no effect
@@ -908,7 +909,7 @@ Refusing whole rather than half-reading is the point: a generator that guessed a
 not know would emit code that fails to compile in a file the developer cannot edit, which is the
 worst outcome available.
 
-> warning SM0033: 'ShiftFramework' carries ShiftMapper declaration metadata version 2, and this
+> warning SM0033: 'PackageA' carries ShiftMapper declaration metadata version 2, and this
 > ShiftMapper understands version 1. Its profiles were ignored. Update the ShiftMapper package in
 > this project.
 
@@ -959,7 +960,7 @@ CreateMap<Product, ProductListDto>();
 it should, correct the `Fill` path or the source. If the source legitimately lacks it — a foreign key
 with no navigation beside it, a request body, an entity that nominates no display member — the
 entry was never required, and `FillIfPossible` says so: it drops out quietly and the rest of the
-member is still built, which is how one rule in `ShiftFramework.Mock/ShiftEntityProfile.cs` serves
+member is still built, which is how one rule in `Contoso.Platform/PlatformProfile.cs` serves
 both `Product.Brand` (id and name) and a request that carries only the id. Writing `FillIfPossible`
 is the acknowledgement, as `Ignore` is, so it stays silent by design. And for one map that is the
 exception, a `ForMember` on the member always wins over a convention. If every entry is
@@ -1120,7 +1121,7 @@ public class Repository<TEntity, TDto>
 }
 ```
 
-The rule the roadmap originally asked for — warn when a map "is only ever `ProjectTo`'d" — would
+The obvious rule — warn when a map "is only ever `ProjectTo`'d" — would
 have had to prove a negative over an open world and accuse that repository of a mistake it has not
 made. Inverted to "this concrete call, on this concrete pair, on this mapper, is known to throw", it
 is decidable. Two more silences follow from the same principle: `mapper.Map<Destination>(source)` on

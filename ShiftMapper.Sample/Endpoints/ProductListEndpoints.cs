@@ -10,7 +10,7 @@ namespace ShiftMapper.Sample.Endpoints;
 /// A MEMBER-SHAPED CONVENTION, declared by a referenced assembly, reaching SQL.
 ///
 /// <para>The map is <c>CreateMap&lt;Product, ProductListDto&gt;()</c> and nothing else. Two members
-/// of the DTO are <c>ShiftEntitySelectDTO</c>, and both are filled by a rule ShiftFramework declared
+/// of the DTO are <c>SelectDto</c>, and both are filled by a rule that assembly declared
 /// once in its own profile — a rule that names no application type at all.</para>
 /// </summary>
 public static class ProductListEndpoints
@@ -19,10 +19,10 @@ public static class ProductListEndpoints
     {
         // GET /api/products/list?sql=true
         //
-        // THE WHOLE OF PHASE 3 IN ONE REQUEST. Nothing in this project configures Brand or Stock;
-        // ShiftFramework's convention fills both:
+        // THE WHOLE EXTENSION CONTRACT IN ONE REQUEST. Nothing in this project configures Brand or
+        // Stock; the framework's convention fills both:
         //
-        //   Brand = new ShiftEntitySelectDTO
+        //   Brand = new SelectDto
         //   {
         //       Value = ValueConverter.ToInvariantString(source.BrandId),
         //       Text  = source.Brand.Name,
@@ -33,7 +33,7 @@ public static class ProductListEndpoints
         //
         // Done as an AfterMap - which is how this is usually done - it would work in memory and
         // disappear from this query entirely, so the list would need a second hand-written path.
-        // Removing that split is what the step is for.
+        // Removing that split is what member-shaped conventions are for.
         app.MapGet("/api/products/list", (AppDbContext db, AppMapper mapper, bool sql = false) =>
         {
             IQueryable<ProductListDto> query = db.Products
@@ -66,7 +66,7 @@ public static class ProductListEndpoints
         //
         // And Product.Brand {D} the NAVIGATION beside the key {D} is left alone. It name-matches the
         // request's Brand, so without the convention claiming it the build would demand a map from
-        // ShiftEntitySelectDTO to Brand, an error on every write map a framework has. You set the
+        // SelectDto to Brand, an error on every write map a framework has. You set the
         // key; the related row is the database's business.
         //
         // Nothing is saved: the response is the mapped entity, so the ids it carries are the point.

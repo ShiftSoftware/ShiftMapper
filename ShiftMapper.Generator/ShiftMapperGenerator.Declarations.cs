@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
 using System.Text;
@@ -168,7 +168,7 @@ public sealed partial class ShiftMapperGenerator
                     // LIFTING is a later optimisation. Without it the consuming generator emits the
                     // runtime lookup {D} which is character for character what it emits for a
                     // conversion declared in its OWN source, so a package is never worse off than a
-                    // project. See PLAN Step 14.
+                    // project.
                     memoryCall: null));
             }
         }
@@ -212,7 +212,7 @@ public sealed partial class ShiftMapperGenerator
     /// <summary>
     /// Turns what a package DECLARED back into ordinary <see cref="MapModel"/>s.
     ///
-    /// <para>This is the join, and the reason the whole step is small: the recovered declaration is
+    /// <para>This is the join, and the reason the contract is small: the recovered declaration is
     /// rebuilt into the same <c>Refinements</c> the source path produces and handed to the same
     /// <c>BuildMapModel</c>. Everything after this point — property matching, conversions, nesting,
     /// projections, every diagnostic — cannot tell a package's map from one written here, and does

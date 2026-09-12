@@ -1,4 +1,4 @@
-﻿using System.Collections.Immutable;
+using System.Collections.Immutable;
 using System.Linq;
 using System.Threading;
 using Microsoft.CodeAnalysis;
@@ -24,7 +24,7 @@ namespace ShiftMapper.Generator;
 /// in-memory <c>Map</c> throws from the customization store, while <c>ProjectTo</c> quietly drops
 /// the member. A developer reading the source sees a condition; the build honours none of it.</para>
 ///
-/// <para>So the rule is the one Step 16 states: <b>configuration the generator cannot bake must be
+/// <para>So the rule is: <b>configuration the generator cannot bake must be
 /// an error, never a silent default.</b></para>
 ///
 /// <para><b>WHAT IS DELIBERATELY STILL ALLOWED.</b> The rule keys on STATEMENT POSITION within

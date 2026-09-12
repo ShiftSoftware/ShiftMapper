@@ -1,4 +1,4 @@
-﻿namespace ShiftMapper.Tests.Model;
+namespace ShiftMapper.Tests.Model;
 
 public class BrandDto
 {
@@ -39,7 +39,7 @@ public class BrandLooseDto
 }
 
 /// <summary>
-/// A POSITIONAL RECORD, which until Step 6 was SM0004 and nothing else.
+/// A POSITIONAL RECORD, which was once SM0004 and nothing else.
 ///
 /// Every property here is a constructor parameter, so the whole map is the call: there is no
 /// object initializer, no update overload (nothing is assignable once it exists), and the
@@ -61,7 +61,7 @@ public record BrandRecordDto(int Id, string Name, string FoundedYear, string Iso
 public record ProductRecordDto(int Id, string Name, BrandRecordDto Brand);
 
 /// <summary>
-/// <c>required</c> members, the other half of Step 6. C# refuses an object initializer that
+/// <c>required</c> members. C# refuses an object initializer that
 /// leaves one out, so an unmapped required member is not a property left empty — it stops the
 /// whole destination, and SM0014 says which one.
 ///
@@ -212,7 +212,7 @@ public class StockAuditDto
 /// <summary>
 /// The <c>ForAllMembers</c> destination: one rule said once instead of on every member.
 ///
-/// It is the shape ShiftFramework needs for "a DTO never writes a navigation entity back" — a
+/// It is the shape a framework needs for "a DTO never writes a navigation entity back" — a
 /// blanket condition rather than a condition repeated per member, with the same semantics as a
 /// per-member one, including losing the projection.
 /// </summary>

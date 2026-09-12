@@ -9,8 +9,8 @@ namespace ShiftMapper.Generator;
 /// <summary>
 /// SM0037 — <c>ProjectTo</c> called on a pair that cannot be projected, reported WHERE IT IS WRITTEN.
 ///
-/// <para><b>WHAT THIS REPLACED, AND WHY THE PLAN'S VERSION COULD NOT BE BUILT.</b> The roadmap asked
-/// for a diagnostic when a map "is only ever <c>ProjectTo</c>'d". That asks an analyzer to prove a
+/// <para><b>WHY THE OBVIOUS RULE COULD NOT BE BUILT.</b> The obvious rule is a diagnostic when a
+/// map "is only ever <c>ProjectTo</c>'d". That asks an analyzer to prove a
 /// NEGATIVE over an open world: <c>IShiftMapper.ProjectTo&lt;TSource, TDestination&gt;</c> exists
 /// precisely so an earlier-compiled assembly can project without naming the mapper, and through a
 /// generic repository the type arguments are type PARAMETERS carrying no pair information at all.
@@ -25,7 +25,7 @@ namespace ShiftMapper.Generator;
 /// nothing about how that mapper was configured — which lives in another file, and often another
 /// assembly. So the SHAPE travels: the generator records each non-projectable map as a
 /// <c>[ShiftMapperNotProjectable]</c> on the generated part, and this reads it off the symbol. The
-/// same answer Step 14 reached for declarations, and it works across a reference for the same
+/// same answer the declaration metadata reached, and it works across a reference for the same
 /// reason.</para>
 ///
 /// <para>The existing warnings at the <c>CreateMap</c> stay: they tell whoever wrote the map. This
@@ -81,7 +81,7 @@ public sealed partial class ShiftMapperAnalyzer
         if (source is null)
             return;
 
-        // THE FALSE-POSITIVE GUARD, and the reason this rule is sound where the plan's was not. A
+        // THE FALSE-POSITIVE GUARD, and the reason this rule is sound where the obvious one is not. A
         // generic repository projecting `IQueryable<TEntity>` to `TDto` names no pair, so there is
         // nothing to be right or wrong about and nothing is said.
         if (source is ITypeParameterSymbol || destination is ITypeParameterSymbol)

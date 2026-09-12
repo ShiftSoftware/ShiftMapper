@@ -1,12 +1,11 @@
 ﻿<Solution>
   <Folder Name="/Solution Items/">
-    <File Path="PLAN.md" />
     <File Path="README.md" />
     <File Path="LICENSE" />
     <File Path="Directory.Build.props" />
     <File Path=".github/workflows/ci.yml" />
   </Folder>
-  <Project Path="ShiftFramework.Mock/ShiftFramework.Mock.csproj" />
+  <Project Path="Contoso.Platform/Contoso.Platform.csproj" />
   <Project Path="ShiftMapper.Sample/ShiftMapper.Sample.csproj" />
   <Project Path="ShiftMapper/ShiftMapper.csproj" />
   <Project Path="ShiftMapper.CodeFixes/ShiftMapper.CodeFixes.csproj" />

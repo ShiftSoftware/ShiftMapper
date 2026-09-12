@@ -24,7 +24,7 @@ namespace ShiftMapper.Generator.Tests;
 ///
 /// So a framework generator that scans an application's entities and writes CreateMap calls for
 /// them cannot work: the scanning requires the compilation, and needing the compilation puts it in
-/// the pass whose output nobody else can see. That is what Step 13's metadata contract is for.
+/// the pass whose output nobody else can see. That is what the metadata contract is for.
 /// </summary>
 public class CrossGeneratorTests
 {
@@ -170,8 +170,8 @@ public class CrossGeneratorTests
     /// AND ORDINARY GENERATED SOURCE IS NOT. Every generator sees the compilation as it was before
     /// any of them ran; there is no ordering, no chaining and no way to ask for one.
     ///
-    /// <para>This is the result that shapes Phase 3. A framework generator that walks the
-    /// application's entities to write CreateMap calls needs the compilation, and needing the
+    /// <para>This is the result that shapes the extension contract. A framework generator that walks
+    /// the application's entities to write CreateMap calls needs the compilation, and needing the
     /// compilation puts it in exactly the pass whose output ShiftMapper cannot see. So the
     /// extension route cannot be "another generator writes CreateMap calls" — it has to be
     /// something that survives into METADATA and is read from the referenced assembly.</para>

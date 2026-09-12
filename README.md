@@ -361,8 +361,8 @@ A conversion answers "this type becomes that type". Some rules are MEMBER-shaped
 source members fill a destination member depends on that member's own NAME.
 
 ```csharp
-CreateMemberConvention<ShiftEntitySelectDTO>()
-    .NameFrom<ShiftEntityKeyAndNameAttribute>(nameof(ShiftEntityKeyAndNameAttribute.Text))
+CreateMemberConvention<SelectDto>()
+    .NameFrom<KeyAndNameAttribute>(nameof(KeyAndNameAttribute.Text))
     .Fill(d => d.Value, "{Member}ID")
     .FillIfPossible(d => d.Text, "{Member}.{NameOf}");
 ```
@@ -375,7 +375,7 @@ CreateMap<Product, ProductListDto>();     // the whole of the application's invo
 
 ```csharp
 // what the generator writes
-Brand = new ShiftEntitySelectDTO
+Brand = new SelectDto
 {
     Value = ValueConverter.ToInvariantString(source.BrandId),
     Text  = (source.Brand is null ? default(string)! : source.Brand.Name),
@@ -408,8 +408,8 @@ related type nominates no display member at all:
 
 ```csharp
 // Brand nominates a name; Stock does not. Same rule, nothing added:
-Brand = new ShiftEntitySelectDTO { Value = ..., Text = source.Brand!.Name },
-Stock = new ShiftEntitySelectDTO { Value = ... },
+Brand = new SelectDto { Value = ..., Text = source.Brand!.Name },
+Stock = new SelectDto { Value = ... },
 ```
 
 ```sql
@@ -447,7 +447,7 @@ request carries a select DTO and the entity needs its foreign key set. The entry
 response does it:
 
 ```csharp
-CreateMap<ProductRequest, Product>();   // ProductRequest.Brand is a ShiftEntitySelectDTO
+CreateMap<ProductRequest, Product>();   // ProductRequest.Brand is a SelectDto
 ```
 
 ```csharp
@@ -460,7 +460,7 @@ should not — a display name is read from the related row, never written back t
 
 And **the navigation beside the key is left alone**. `Product.Brand` name-matches the request's
 `Brand`, so without the convention claiming it the build would demand a map from
-`ShiftEntitySelectDTO` to `Brand` — an error on every write map a framework has. You set the key;
+`SelectDto` to `Brand` — an error on every write map a framework has. You set the key;
 the related row is the database's business.
 
 An explicit `ForMember` always wins. A convention that claims a member and cannot fill it leaves it
@@ -581,14 +581,14 @@ bounded by reading one file is worse than no rule, so this stops at the line it 
 application writes, in an ordinary profile:
 
 ```csharp
-// in ShiftFramework
-public class ShiftEntityProfile : ShiftMapperProfile
+// in a package — Contoso.Platform is the sample's stand-in for one
+public class PlatformProfile : ShiftMapperProfile
 {
-    public ShiftEntityProfile()
+    public PlatformProfile()
     {
         CreateConversion<long, string>(id => "H" + id, id => "H" + id);
 
-        CreateMap<ShiftFileDTO, ShiftFileSummary>()
+        CreateMap<FileDto, FileSummary>()
             .ForMember(d => d.Name, opt => opt.MapFrom(s => s.Name.Trim()));
     }
 }
@@ -597,7 +597,7 @@ public class ShiftEntityProfile : ShiftMapperProfile
 and an application adds it with the line it would use for a profile of its own:
 
 ```csharp
-public AppMapper() => AddProfile<ShiftEntityProfile>();
+public AppMapper() => AddProfile<PlatformProfile>();
 ```
 
 That is the whole of it. No attributes written by hand, no second API, and nothing in the
@@ -935,6 +935,21 @@ and think. Each is reported as SM0002 rather than skipped in silence.
 
 ---
 
+## Replacing AutoMapper
+
+ShiftMapper can take over an AutoMapper configuration without changing its shape: the
+declaration vocabulary is the same — `CreateMap`, `ForMember`, `ReverseMap`, profiles — so most
+of a `Profile` moves across as it is. What changes is when it is read: at build time, so an
+unmapped member, a missing conversion or a nested map nobody declared is a diagnostic naming the
+property, where AutoMapper reports nothing until a runtime call fails or an
+`AssertConfigurationIsValid` somebody remembered to write. `ProjectTo` is an expression tree EF
+Core turns into one `SELECT`, and any configuration it cannot express is reported by id rather
+than dropped. ShiftFramework is adopting ShiftMapper for exactly that replacement.
+[Migrating from AutoMapper](docs/automapper-migration.md) lists what each line becomes and what
+has no equivalent.
+
+---
+
 ## Performance
 
 Measured, not asserted. `ShiftMapper.Benchmarks` runs the same four maps through ShiftMapper,
@@ -1081,9 +1096,9 @@ dotnet_diagnostic.SM0001.severity = none
 ## Versioning and target frameworks
 
 - The runtime library targets **`net10.0` only**. That is deliberate rather than incidental:
-  ShiftFramework, the consumer this library exists for, is on `net10.0`, and every additional
-  target would need its own pass over the conversion table and the projection shapes. If you
-  need an earlier target, open an issue rather than assuming one will appear.
+  one target means the conversion table and the projection shapes are verified against one BCL
+  and one EF Core, and every additional target would need its own pass over both. If you need
+  an earlier target, open an issue rather than assuming one will appear.
 - The generator targets `netstandard2.0`, as every Roslyn component must — the compiler loads
   it as a plugin and the compiler itself runs on `netstandard2.0`. You never reference it
   directly.
@@ -1098,11 +1113,10 @@ dotnet_diagnostic.SM0001.severity = none
 
 ## Status
 
-What works today is listed above, and is everything ShiftFramework needs from this library.
-What does not exist is `NullSubstitute` — deliberately, see
+What works today is listed above, with the reasoning behind each decision given where the
+feature is described. What does not exist is `NullSubstitute` — deliberately, see
 [Migrating from AutoMapper](docs/automapper-migration.md) — and the code fixes for rules other
-than SM0001 and SM0011. What remains on the roadmap is benchmarks. [PLAN.md](PLAN.md) is the
-record of how each step was decided and what was measured on the way.
+than SM0001 and SM0011.
 
 ## License
 

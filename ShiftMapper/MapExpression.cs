@@ -1,4 +1,4 @@
-﻿using System.Linq.Expressions;
+using System.Linq.Expressions;
 
 namespace ShiftMapper;
 
@@ -333,17 +333,17 @@ public readonly struct MapExpression<TSource, TDestination>
     ///
     /// <code>
     /// // said once
-    /// CreateMap&lt;ShiftEntity, ShiftEntityViewDTO&gt;()
+    /// CreateMap&lt;EntityBase, EntityBaseDto&gt;()
     ///     .ForMember(d =&gt; d.ID,         opt =&gt; opt.MapFromSource(s =&gt; s.ID))
     ///     .ForMember(d =&gt; d.CreateDate, opt =&gt; opt.Ignore());
     ///
     /// // and inherited by every map that wants it
-    /// CreateMap&lt;Brand, BrandDTO&gt;().IncludeBase&lt;ShiftEntity, ShiftEntityViewDTO&gt;();
-    /// CreateMap&lt;Stock, StockDTO&gt;().IncludeBase&lt;ShiftEntity, ShiftEntityViewDTO&gt;();
+    /// CreateMap&lt;Brand, BrandDTO&gt;().IncludeBase&lt;EntityBase, EntityBaseDto&gt;();
+    /// CreateMap&lt;Stock, StockDTO&gt;().IncludeBase&lt;EntityBase, EntityBaseDto&gt;();
     /// </code>
     ///
     /// <para><b>WHAT IS INHERITED is the CONFIGURATION, not the members.</b> The members were never
-    /// the problem: <c>Brand</c> derives from <c>ShiftEntity</c>, so it already carries the base's
+    /// the problem: <c>Brand</c> derives from <c>EntityBase</c>, so it already carries the base's
     /// properties and they already match by name. What could not be shared was everything said
     /// ABOUT them — an <c>Ignore</c>, a <c>MapFrom</c>, a <c>MapFromSource</c>, a
     /// <c>Condition</c> — which had to be repeated on every map. This is that, once.</para>

@@ -1,4 +1,4 @@
-﻿using ShiftFramework;
+using Contoso.Platform;
 using ShiftMapper.Tests.Model;
 using Xunit;
 
@@ -7,9 +7,9 @@ namespace ShiftMapper.Tests;
 /// <summary>
 /// THE COMPILE-TIME EXTENSION CONTRACT, running across a REAL assembly boundary.
 ///
-/// <para><c>ShiftFramework.Mock</c> is referenced as a compiled library — no source, no analyzer,
+/// <para><c>Contoso.Platform</c> is referenced as a compiled library — no source, no analyzer,
 /// nothing but metadata. Nothing in this project declares a conversion. Everything below works
-/// because of two assembly attributes over there, which is the whole claim of Step 13.</para>
+/// because of two assembly attributes over there, which is the whole claim of the contract.</para>
 /// </summary>
 [Collection(DatabaseCollection.Name)]
 public class DeclaredConversionTests
@@ -105,7 +105,7 @@ public class DeclaredConversionTests
             #pragma warning restore SM0037
 
         Assert.Contains("no query form", error.Message);
-        Assert.Contains("ShiftFileDTO", error.Message);
+        Assert.Contains("FileDto", error.Message);
     }
 
     /// <summary>But the same map is unaffected in memory, which is what "Map is unaffected" means.</summary>
