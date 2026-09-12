@@ -5,6 +5,14 @@
     <File Path="Directory.Build.props" />
     <File Path=".github/workflows/ci.yml" />
   </Folder>
+  <Folder Name="/docs/">
+    <File Path="docs/README.md" />
+    <File Path="docs/getting-started.md" />
+    <File Path="docs/conversions.md" />
+    <File Path="docs/diagnostics.md" />
+    <File Path="docs/extension-points.md" />
+    <File Path="docs/automapper-migration.md" />
+  </Folder>
   <Project Path="Contoso.Platform/Contoso.Platform.csproj" />
   <Project Path="ShiftMapper.Sample/ShiftMapper.Sample.csproj" />
   <Project Path="ShiftMapper/ShiftMapper.csproj" />
