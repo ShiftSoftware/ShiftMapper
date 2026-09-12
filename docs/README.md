@@ -10,6 +10,7 @@ install it, and a five-minute tour. These pages are the deeper reference behind 
 | [Diagnostics](diagnostics.md) | A build said `SM00NN` and you want the answer in ten seconds |
 | [Extension points](extension-points.md) | You are shipping a **library** whose maps must apply in every application that references it |
 | [Migrating from AutoMapper](automapper-migration.md) | You have an AutoMapper configuration to port, and want the honest gaps as well as the table |
+| [Performance](../README.md#performance) | You want the numbers against AutoMapper and Mapperly, and the reason behind each one |
 
 ## The two things worth knowing before anything else
 

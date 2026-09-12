@@ -51,7 +51,7 @@ Every step heading below carries the same marker: ✅ done, ⬜ pending.
 
 - [x] **Step 16** — Diagnostics and analyzer completeness
 - [x] **Step 17** — Docs and sample
-- [ ] **Step 18** — Benchmarks
+- [x] **Step 18** — Benchmarks
 
 Phases 1 and 2 are complete, and Steps 11, 12 and 13 with them — but Steps 12 and 13 left the
 library with TWO vocabularies for the same ideas, one for a project and one for a package. **Step 14
@@ -1780,11 +1780,62 @@ Checked mechanically before finishing: every id in `DiagnosticDescriptors.All` h
 section and its documented severity matches; every relative link and anchor across `docs/` and from
 `README.md` resolves.
 
-### ⬜ Step 18 — Benchmarks
+### ✅ Step 18 — Benchmarks
 
 BenchmarkDotNet against AutoMapper and Mapperly: single map, nested graph, 10k collection, and
 a `ProjectTo` query-shape comparison. Publish the numbers in the README. A source-generated
 mapper that cannot show its numbers has given up its main argument.
+
+**What landed.** `ComparisonBenchmarks` runs the four shapes through all three libraries on
+identical maps (`Competitors.cs` declares the same four pairs, conversion, case-insensitive match,
+collection copy and three computed members for each), and `--shapes` prints the three projection
+trees. The numbers are in the README's **Performance** section. Both competitors were in the local
+package cache; AutoMapper is pinned to 14.0.0, the last MIT release, so the comparison carries no
+licence-key caveat.
+
+**The honest result, and why each part of it is a decision.**
+
+| | vs AutoMapper 14 | vs Mapperly 4.3 |
+|---|---|---|
+| One object | 2.4× faster | 2.1× slower |
+| Nested graph | 1.2× faster | 2.4× slower |
+| 10k objects | 5× faster | 2.6× slower |
+| Building the projection | 2× faster | 24× faster |
+
+Against a runtime mapper the source-generated code wins as expected. Against the other source
+generator ShiftMapper is about 2× slower in memory, and every part of that gap was traced to a
+line of generated code rather than left as a number:
+
+- **Collections are copied, not aliased.** `ToListOrEmpty(source.Tags)` allocates 72 B where
+  Mapperly's `(IReadOnlyList<string>)source.Tags` is a cast that shares the entity's list. That is
+  the ENTIRE one-object gap. A DTO that aliases its entity's collection is a footgun; the copy is
+  deliberate, and `MapFrom(s => s.Tags)` gives the alias to anyone who wants it (verified: the
+  delegate returns the list directly).
+- **`MapFrom` is a cached delegate, not inlined C#.** Twelve invocations of
+  `Customizations.Value<…>("LineTotal")(source)` on the nested graph, each an indirect call into
+  a delegate compiled from an expression tree, against Mapperly's `x1.Quantity * x1.UnitPrice`.
+  The delegate exists because the expression lives in a runtime store — which is what lets it be
+  spliced into the projection and what lets a PACKAGE supply one. A capturing lambda has to work
+  this way. **A pure one could be inlined and is not yet**; this is the one optimisation the table
+  points at, filed below.
+- **The projection goes the other way by 24×** because ShiftMapper composes its tree once and
+  keeps it in a field, while Mapperly's expression-tree literal is rebuilt by compiler-emitted
+  `Expression.*` calls on every call — 16 KB each. EF's query cache absorbs it in practice.
+
+**The shape comparison** found all three producing one member-init tree with the computed members
+inlined and no client evaluation — Mapperly inlines its expression-bodied helpers, which was not a
+given. The one semantic difference: AutoMapper wraps every nested navigation in
+`IIF(x == null, null, new …)`, a `CASE` per level in SQL, where the two generators trust the
+schema. ShiftMapper's null guards are deliberately in-memory only, where there is no schema.
+
+**Filed, not done here:** inline a `MapFrom` whose lambda captures nothing as plain C# in the
+create and update methods, keeping the expression in the store for the projection only. It closes
+most of the nested-graph gap and changes no behaviour. It is a generator change with its own test
+surface, and belongs to a step of its own rather than to publishing the numbers.
+
+**Housekeeping found on the way:** the Step 16 investigation's worktrees had not been cleaned up
+(`.claude/worktrees/`), and a second copy of the benchmark project there made BenchmarkDotNet
+refuse to run. Removed.
 
 ---
 
@@ -1795,7 +1846,7 @@ mapper that cannot show its numbers has given up its main argument.
 | 1 — Trust | 1 Tests, 2 Runtime cost, 3 Packaging, 4 `IShiftMapper` | ✅ done | Everything depended on 1 and 4 |
 | 2 — Gaps | ~~5 Collections~~, ~~6 Constructors/records~~, ~~7 Member options~~, ~~8 Map hooks~~, ~~9 Flattening~~, ~~10 Inheritance/generics~~ | ✅ done | Unblocked Phase 3 |
 | 3 — General layer | ~~11 Profiles~~, ~~12 Global conversions~~, ~~13 Compile-time contract~~, ~~14 Declaration metadata~~, ~~15 Member conventions~~ | ✅ done | The goal |
-| 4 — Finish | ~~16 Diagnostics~~, ~~17 Docs~~, 18 Benchmarks | ⬜ 16—17 done | Can run alongside 2 and 3 |
+| 4 — Finish | ~~16 Diagnostics~~, ~~17 Docs~~, ~~18 Benchmarks~~ | ✅ done | Can run alongside 2 and 3 |
 
 The shortest path to ShiftFramework being able to adopt this was
 **1 → 4 → 8 → 10 → 11 → 12 → 13 → 14 → 15**, and **all of it is done**. Steps 5, 6, 7 and 9 are

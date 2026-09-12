@@ -935,6 +935,80 @@ and think. Each is reported as SM0002 rather than skipped in silence.
 
 ---
 
+## Performance
+
+Measured, not asserted. `ShiftMapper.Benchmarks` runs the same four maps through ShiftMapper,
+AutoMapper and Mapperly — four type pairs, an `int` to `string` conversion, a case-insensitive
+member match, a `List` to `IReadOnlyList` copy, and three computed members — with every mapper
+warm and every configuration built once. BenchmarkDotNet 0.15.8, .NET 10, i7-13700H; the full
+report with error bars is committed as
+[`ShiftMapper.Benchmarks/RESULTS.md`](ShiftMapper.Benchmarks/RESULTS.md).
+
+| Shape | ShiftMapper | AutoMapper 14 | Mapperly 4.3 |
+|---|---:|---:|---:|
+| **One object** (6 members) | 24.6 ns / 168 B | 58.0 ns / 184 B | 11.9 ns / 96 B |
+| **Nested graph** (4 levels, 10 lines, 3 `MapFrom`) | 943 ns / 3.3 KB | 1,137 ns / 3.6 KB | 398 ns / 2.5 KB |
+| **10,000 objects**, one call | 360 µs / 1.76 MB | 1,787 µs / 2.10 MB | 140 µs / 1.04 MB |
+| **Building the projection** (warm) | 343 ns / 424 B | 697 ns / 872 B | 8,270 ns / 16.6 KB |
+
+*Medians for the 10k row, where GC makes the mean noisy.*
+
+**Against AutoMapper, ShiftMapper is 2—5× faster in memory and allocates less** — the expected
+result of code that was compiled rather than assembled from a configuration at run time. AutoMapper
+also builds its projection expression 2× slower.
+
+**Against Mapperly, ShiftMapper is about 2× slower in memory**, and it is worth saying exactly why,
+because each reason is a decision rather than an accident:
+
+- **ShiftMapper copies collections; Mapperly aliases them.** For `Tags`, ShiftMapper emits
+  `ValueConverter.ToListOrEmpty(source.Tags)` — a new list, 72 B — and Mapperly emits
+  `(IReadOnlyList<string>)source.Tags`, a cast. That is the entire gap on one object: Mapperly's DTO
+  shares the entity's list, so a later change to either shows in both. ShiftMapper's DTO owns its
+  collection. Where you want the alias, an explicit `MapFrom(s => s.Tags)` says so.
+- **ShiftMapper's `MapFrom` is a cached delegate; Mapperly's is inlined C#.** `LineTotal` runs
+  `Customizations.Value<…>("LineTotal")(source)` — a delegate compiled from the expression tree
+  and cached in a field — where Mapperly emits `x1.Quantity * x1.UnitPrice` in place. Twelve of
+  those on the nested graph is most of that row's gap. The delegate exists because the expression
+  lives in a runtime store: that is what lets the same `MapFrom` be spliced into the projection, and
+  what lets a **package's** profile supply one. A capturing lambda has to work this way; a pure
+  one could be inlined and is not yet, which is the one clear optimisation this table points at.
+- **Building the projection goes the other way, by 24×.** ShiftMapper composes its expression
+  tree once and keeps it in a field; Mapperly's projection is an expression-tree literal, which the
+  C# compiler turns into `Expression.*` factory calls that run on **every** invocation — 16 KB of
+  allocation per call. EF's query cache absorbs this in practice, but it is real per-call work.
+
+### What the projections contain
+
+Speed of building the tree matters less than what is in it, because the database decides what to
+do with it. `dotnet run -c Release --project ShiftMapper.Benchmarks -- --shapes` prints all three
+for the nested graph. The findings:
+
+- **All three produce one member-init tree with the computed members inlined** — `Number = "IQ/" +
+  x.Number`, `LineTotal = x.Quantity * x.UnitPrice`, `Total = x.Lines.Sum(…)`. Mapperly inlines
+  its expression-bodied helper methods; ShiftMapper splices the `MapFrom` trees; AutoMapper reads
+  its configuration. None of them leaves a method call a provider cannot translate, and none falls
+  back to client evaluation for the nested objects.
+- **AutoMapper guards every nested navigation**: `Product = IIF(x.Product == null, null, new
+  ProductDto {…})`, which becomes a `CASE` per level in SQL. ShiftMapper and Mapperly trust the
+  schema and emit the member-init plainly — the right answer for a required navigation, and the
+  reason ShiftMapper keeps its null guards for the **in-memory** path only, where there is no schema
+  to trust.
+- **Collections**: ShiftMapper leaves `Tags = x.Tags` for the provider to shape; the other two
+  cast. Equivalent once translated.
+
+### Reproducing
+
+```
+dotnet run -c Release --project ShiftMapper.Benchmarks -- --filter *Comparison*
+dotnet run -c Release --project ShiftMapper.Benchmarks -- --shapes
+```
+
+AutoMapper is pinned to 14.0.0, the last MIT release, so the comparison carries no licence-key
+caveat; the engine is the same one later versions use. Change the version in the `.csproj` to
+compare against another.
+
+---
+
 ## Diagnostics
 
 Thirty-eight rules, `SM0001` to `SM0038`. Five stop the build; the rest describe something that

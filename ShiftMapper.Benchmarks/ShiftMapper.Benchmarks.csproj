@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -13,6 +13,18 @@
 
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />
+
+    <!--
+      THE TWO THE PLAN NAMES. AutoMapper is pinned to 14.0.0, the last MIT release: 15.0 moved
+      to a commercial licence with a LicenseKey setting, and a benchmark should not carry a
+      "did you configure the licence" caveat. The engine is the same one - configuration read
+      at run time, expression trees compiled on first use - which is the approach being measured.
+      Bump the version below to compare against a newer one.
+    -->
+    <PackageReference Include="AutoMapper" Version="14.0.0" />
+
+    <!-- Mapperly is a source generator too, so it is the comparison that matters most. -->
+    <PackageReference Include="Riok.Mapperly" Version="4.3.1" />
   </ItemGroup>
 
   <ItemGroup>
