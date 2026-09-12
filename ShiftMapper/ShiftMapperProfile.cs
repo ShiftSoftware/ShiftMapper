@@ -62,11 +62,13 @@
 /// throws, naming the profile and what to register. If you construct mappers by hand in tests,
 /// keep their profiles parameterless.</para>
 ///
-/// <para><b>SAME COMPILATION ONLY.</b> The generator reads a profile the way it reads the mapper:
-/// as SOURCE. A profile compiled into a referenced package cannot be read — a generator sees a
-/// referenced assembly as metadata, and metadata has no method bodies, so the <c>CreateMap</c>
-/// calls inside it simply are not there to find. That case is reported (SM0028) rather than
-/// silently mapping nothing.</para>
+/// <para><b>AND IT CROSSES AN ASSEMBLY.</b> A generator sees a referenced assembly as metadata —
+/// types, signatures, attributes, never a method body — so a profile's <c>CreateMap</c> calls
+/// are not there to read from a consumer. The package's OWN build therefore writes the SHAPE of
+/// every declaration into its assembly as attributes (see <c>ShiftMapperDeclaredMapAttribute</c>
+/// and its siblings), and <c>AddProfile</c> runs the constructor at run time so the EXPRESSIONS
+/// arrive then. A package built without the generator carries no metadata, and that is reported
+/// (SM0028) rather than silently mapping nothing.</para>
 /// </summary>
 public abstract class ShiftMapperProfile : ShiftMapperBase
 {

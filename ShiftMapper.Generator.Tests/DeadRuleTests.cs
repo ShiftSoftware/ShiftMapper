@@ -1,4 +1,4 @@
-using ShiftMapper.Generator.Tests.Infrastructure;
+﻿using ShiftMapper.Generator.Tests.Infrastructure;
 using Xunit;
 
 namespace ShiftMapper.Generator.Tests;
@@ -132,6 +132,42 @@ public class DeadRuleTests
                 public TestMapper()
                 {
                     AddProfile<FirstProfile>();
+                    CreateMap<Source, Destination>();
+                }
+            }
+            """);
+
+        run.Compiles();
+        run.None("SM0031");
+    }
+
+    /// <summary>
+    /// THE FIX THE MESSAGE NAMES HAS TO WORK. SM0031 says "declare the pair in this project to
+    /// settle it" — and a local declaration is nearer than any package, so it wins the lookup. It
+    /// therefore has to clear the error too, or the message sends somebody to do something that
+    /// changes nothing.
+    /// </summary>
+    [Fact]
+    public void A_local_declaration_settles_the_conflict()
+    {
+        GeneratorRun run = GeneratorHarness.RunWithPackages(
+            [Package("FirstProfile", "A"), Package("SecondProfile", "B")],
+            """
+            using ShiftMapper;
+
+            public class Source { public long Id { get; set; } }
+            public class Destination { public string Id { get; set; } = ""; }
+
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+                    AddProfile<FirstProfile>();
+                    AddProfile<SecondProfile>();
+
+                    // This project's own answer, which beats both.
+                    CreateConversion<long, string>(id => "local" + id, id => "local" + id);
+
                     CreateMap<Source, Destination>();
                 }
             }

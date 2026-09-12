@@ -105,12 +105,22 @@ internal sealed class ConversionTable
         {
             var byPair = new Dictionary<string, SortedSet<string>>(StringComparer.Ordinal);
 
+            // Pairs THIS project declared in its own source. A local declaration is nearer than any
+            // package, so it wins the lookup outright — and the message below tells the developer
+            // to write one to settle the clash. That promise was empty until this set existed: local
+            // entries were skipped and the error fired regardless, so the fix the message named
+            // did not work.
+            var settledLocally = new HashSet<string>(StringComparer.Ordinal);
+
             foreach (Entry entry in _entries)
             {
-                if (entry.DeclaringAssembly is null)
-                    continue;
-
                 string pair = entry.Source.ToDisplayString() + " -> " + entry.Destination.ToDisplayString();
+
+                if (entry.DeclaringAssembly is null)
+                {
+                    settledLocally.Add(pair);
+                    continue;
+                }
 
                 if (!byPair.TryGetValue(pair, out SortedSet<string> assemblies))
                     byPair[pair] = assemblies = new SortedSet<string>(StringComparer.Ordinal);
@@ -120,7 +130,7 @@ internal sealed class ConversionTable
 
             foreach (KeyValuePair<string, SortedSet<string>> pair in byPair)
             {
-                if (pair.Value.Count < 2)
+                if (pair.Value.Count < 2 || settledLocally.Contains(pair.Key))
                     continue;
 
                 yield return

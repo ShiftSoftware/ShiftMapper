@@ -61,8 +61,8 @@ internal static class DiagnosticDescriptors
                      "Guid and the date and time types — honours implicit conversion operators the " +
                      "types themselves declare, and copies COLLECTIONS of those simple types between " +
                      "the shapes it can build (arrays, List, HashSet, and the interfaces those satisfy). " +
-                     "It does NOT map nested objects, nor collections of them — a List<Product> cannot " +
-                     "become a List<ProductDto> until nested mapping exists. It will not move a " +
+                     "A nested object, or a collection of them, is mapped through its OWN map and " +
+                     "reported as SM0011 when that map is missing, not here. It will not move a " +
                      "reference around by up-casting, down-casting or boxing; and it refuses " +
                      "four pairs on purpose, because their answer would not come from the types alone: " +
                      "DateTime to DateTimeOffset (the offset would come from the machine's time zone), " +
@@ -485,8 +485,9 @@ internal static class DiagnosticDescriptors
         defaultSeverity: DiagnosticSeverity.Info,
         isEnabledByDefault: true,
         description: "Flattening walks into the source when no property carries the destination " +
-                     "member's own name. It is off unless the map asks for it, and every member it " +
-                     "fills is named here so the conventions can be checked rather than trusted.");
+                     "member's own name. It is on by default and can be turned off per map or for a " +
+                     "whole mapper, and every member it fills is named here so the conventions can " +
+                     "be checked rather than trusted.");
 
     /// <summary>
     /// SM0021 — more than one path flattens to the same member, so none is taken.
@@ -705,9 +706,10 @@ internal static class DiagnosticDescriptors
         category: Category,
         defaultSeverity: DiagnosticSeverity.Warning,
         isEnabledByDefault: true,
-        description: "A conversion is a public static method with exactly one parameter and a " +
-                     "return value; its query form is a public static member returning " +
-                     "Expression<Func<TSource, TDestination>>.");
+        description: "A package's build records each CreateConversion as a " +
+                     "ShiftMapperDeclaredConversion attribute naming the profile, the source type " +
+                     "and the destination type. One that does not have that shape was written by a " +
+                     "different version of the generator, and the pair it described is not applied.");
 
     /// <summary>
     /// SM0033 — a package built against a NEWER contract than this generator understands.

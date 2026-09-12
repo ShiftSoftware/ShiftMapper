@@ -50,7 +50,7 @@ Every step heading below carries the same marker: ✅ done, ⬜ pending.
 **Phase 4 — Finish**
 
 - [x] **Step 16** — Diagnostics and analyzer completeness
-- [ ] **Step 17** — Docs and sample
+- [x] **Step 17** — Docs and sample
 - [ ] **Step 18** — Benchmarks
 
 Phases 1 and 2 are complete, and Steps 11, 12 and 13 with them — but Steps 12 and 13 left the
@@ -1721,17 +1721,64 @@ Each was measured failing before being fixed, and each is pinned by its own test
   situation. The clearest two-backends breach found, but it is the only RUNTIME behaviour change
   proposed and its safety against `IncludeBase` chains and metadata-recovered maps is unproven.
 
-### ⬜ Step 17 — Docs and sample
+### ✅ Step 17 — Docs and sample
 
 - `README.md`, plus a `docs/` folder: getting started, the conversion table, the diagnostics
   reference (one page per SM id, which is what people search for), and the extension-points
-  page for library authors (Steps 11–14) — that last one is the document ShiftFramework will be
+  page for library authors (Steps 11—14) — that last one is the document ShiftFramework will be
   written from.
 - An **AutoMapper migration guide**: a two-column table of every AutoMapper API against its
   ShiftMapper equivalent, and an honest list of what has no equivalent and why.
 - Extend `ShiftMapper.Sample` with a records DTO, a flattened DTO, and a small "pretend
   framework" project that registers a global conversion through Step 13 — so the extension
   contract is exercised by the sample, not only by the tests.
+
+**What landed.**
+
+**The sample bullet was already done** by earlier steps and needed nothing: `ProductSummaryDto`
+is a positional record with a nested record, `InvoiceLineFlatDto` demonstrates flattening with its
+SM0020, and `ShiftFramework.Mock` is the pretend framework — consumed by the sample as a real local
+package, not a project reference.
+
+**`docs/`, six pages,** each drafted by an agent that read the real source and was told the verified
+API surface up front, then reviewed by a seventh against the repository. The review found **zero
+invented API** — every method, option, attribute and generated member documented exists — and
+confirmed the diagnostics reference at 38/38 with every severity correct. It also found twenty
+concrete corrections (a stale seed-data claim, a `-v d` claim a clean rebuild disproved, a worked
+example that counted three flattened members where there are five), all applied before anything was
+written to disk.
+
+- `getting-started.md` — the class, what one `CreateMap` generates (real names read from the
+  checked-in generated file), the two backends, DI and the `Services` timing, reading the build.
+- `conversions.md` — the table, and the edges a table cannot hold: what wraps, what parses, what
+  a null collection becomes, which of it projects.
+- `diagnostics.md` — **one file with a stable anchor per id, not one page per id.** A deliberate
+  deviation, recorded in `docs/README.md`: 38 files drift and a missing page looks identical to a
+  rule that was never added, whereas one file is diffed against `DiagnosticDescriptors.All` in a
+  single pass — the check that found SM0031/SM0032 dead. Splitting later is mechanical.
+- `extension-points.md` — the page ShiftFramework is written from. Its centre is the mechanism:
+  a generator sees a referenced assembly as metadata and never a method body, so the SHAPE travels
+  as attributes the package's own build writes, and the EXPRESSIONS arrive at run time. It quotes
+  the mock's actual `ShiftMapper.Declarations.g.cs`, `?Text=` optional marker and all.
+- `automapper-migration.md` — the table, then the honest gaps split into "not built yet" and
+  "cannot exist in a compile-time mapper". AutoMapper-side spellings were from memory and are
+  flagged as such rather than asserted.
+- `README.md` in `docs/` — the index, and the two invariants in one place.
+
+**The review caught the repository lying about itself, and that was fixed too.** README said
+profiles were "same compilation only" and that inheritance, open generics and the global layer "do
+not exist yet"; `ShiftMapperProfile.cs` said the same; the sample's own comments described the
+pre-Step-14 design of `ShiftFramework.Mock`; three descriptor descriptions (SM0002, SM0020, SM0032)
+described behaviour that had since changed. All corrected to follow the source.
+
+**And one defect in Step 16's own work.** SM0031's message says "declare the pair in this project to
+settle it" — but `ConflictingDeclarations` skipped every local entry, so a local `CreateConversion`
+won the lookup without clearing the error. The fix the message named did not work. It does now, and
+a test pins it.
+
+Checked mechanically before finishing: every id in `DiagnosticDescriptors.All` has exactly one
+section and its documented severity matches; every relative link and anchor across `docs/` and from
+`README.md` resolves.
 
 ### ⬜ Step 18 — Benchmarks
 
@@ -1748,7 +1795,7 @@ mapper that cannot show its numbers has given up its main argument.
 | 1 — Trust | 1 Tests, 2 Runtime cost, 3 Packaging, 4 `IShiftMapper` | ✅ done | Everything depended on 1 and 4 |
 | 2 — Gaps | ~~5 Collections~~, ~~6 Constructors/records~~, ~~7 Member options~~, ~~8 Map hooks~~, ~~9 Flattening~~, ~~10 Inheritance/generics~~ | ✅ done | Unblocked Phase 3 |
 | 3 — General layer | ~~11 Profiles~~, ~~12 Global conversions~~, ~~13 Compile-time contract~~, ~~14 Declaration metadata~~, ~~15 Member conventions~~ | ✅ done | The goal |
-| 4 — Finish | 16 Diagnostics (part done), 17 Docs, 18 Benchmarks | ⬜ pending | Can run alongside 2 and 3 |
+| 4 — Finish | ~~16 Diagnostics~~, ~~17 Docs~~, 18 Benchmarks | ⬜ 16—17 done | Can run alongside 2 and 3 |
 
 The shortest path to ShiftFramework being able to adopt this was
 **1 → 4 → 8 → 10 → 11 → 12 → 13 → 14 → 15**, and **all of it is done**. Steps 5, 6, 7 and 9 are

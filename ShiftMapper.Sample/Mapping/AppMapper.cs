@@ -588,15 +588,17 @@ public partial class AppMapper : ShiftMapperBase
         // ------------------------------------------------------------------
         //
         // ShiftFramework.Mock is referenced the way a NuGet package would be: a compiled assembly,
-        // no analyzer, no source. It declares two conversions with two assembly attributes, and
-        // this project picks both up without writing anything:
+        // no source. Its profile declares two conversions with the ORDINARY API — the same
+        // CreateConversion this file could use — and its own build wrote their SHAPE into the
+        // assembly as metadata. AddProfile<ShiftEntityProfile>() above is how this project takes
+        // them; the expressions arrive at run time when that profile's constructor runs.
         //
-        //   string        -> List<ShiftFileDTO>   (a JSON column becoming files)
+        //   string        -> List<ShiftFileDTO>   (a JSON column becoming files; memory form only)
         //   long          -> string               (hash ids, which BEAT the built-in conversion)
         //
-        // The one line below is the whole of this project's involvement. What the generator emits
-        // is a DIRECT CALL to the framework's static method — no reflection, no registry lookup —
-        // because a name is something metadata carries and a lambda is not.
+        // The one line below is the whole of this project's involvement in this map. The pair with
+        // no query form is what makes it in-memory only, and the build says so (SM0030) rather
+        // than leaving a projection in place that could not run.
         CreateMap<Brand, BrandFilesDto>();
 
         // ------------------------------------------------------------------

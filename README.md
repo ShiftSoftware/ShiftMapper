@@ -22,6 +22,13 @@ var page = db.Brands.ProjectTo<BrandDto>(mapper)        // in the database
 No reflection, no runtime configuration scan, no `IMapper.ConfigurationProvider`. The
 generated file is ordinary C# you can read, step through and diff.
 
+**Reference documentation** lives in [`docs/`](docs/):
+[getting started](docs/getting-started.md) —
+[conversions](docs/conversions.md) —
+[diagnostics](docs/diagnostics.md) —
+[extension points for library authors](docs/extension-points.md) —
+[migrating from AutoMapper](docs/automapper-migration.md).
+
 ---
 
 ## Install
@@ -735,10 +742,14 @@ fails the mapper's first map, including maps unrelated to it. Skipping it instea
 `MapFrom` members quietly unfilled, which is the divergence this library exists to prevent. If you
 construct mappers by hand in tests, keep their profiles parameterless.
 
-**Same compilation only.** A profile is read as SOURCE, so one compiled into a referenced package
-cannot be read at all — a generator sees a referenced assembly as metadata, and metadata has no
-method bodies. That is reported (**SM0028**), not silently mapped as nothing. Extending a mapper
-from another assembly needs a different mechanism entirely, and is what the next steps are about.
+**And a profile in a referenced package works the same way.** A generator sees a referenced
+assembly as metadata — types, signatures, attributes, never a method body — so a profile's
+`CreateMap` calls are not there to read. What makes it work anyway is that the package's OWN build
+writes the SHAPE of every declaration into its assembly as attributes, and `AddProfile` runs the
+profile's constructor at run time so the EXPRESSIONS arrive then. No lambda text is ever copied. A
+package built without the generator carries no metadata, and that is reported (**SM0028**) rather
+than silently mapped as nothing. See [Rules from a referenced assembly](#rules-from-a-referenced-assembly)
+and [docs/extension-points.md](docs/extension-points.md).
 
 ### Inheritance, polymorphism and open generics
 
@@ -962,7 +973,7 @@ will not be mapped, or will be mapped in a way worth knowing about.
 | SM0029 | Warning | `ConfigureDefaults` on a profile has no effect |
 | SM0030 | Warning | A conversion has no query form, so `ProjectTo` cannot use the map |
 | SM0031 | **Error** | Two referenced assemblies declare a conversion for the same type pair |
-| SM0032 | Warning | A declared conversion could not be read (bad signature, orphan query form) |
+| SM0032 | Warning | A package's declared-conversion metadata could not be read (a version skew between its generator and this one) |
 | SM0033 | Warning | A referenced assembly declares a newer ShiftMapper contract |
 | SM0034 | Warning | A member convention could not fill the member it claimed |
 | SM0035 | **Error** | A declaration cannot be honoured where it is written |
@@ -1002,9 +1013,10 @@ dotnet_diagnostic.SM0001.severity = none
 - The generator targets `netstandard2.0`, as every Roslyn component must — the compiler loads
   it as a plugin and the compiler itself runs on `netstandard2.0`. You never reference it
   directly.
-- Versions are **pre-1.0**. The declaration API still grows — profiles, global conversions and
-  member conventions are all planned (see [PLAN.md](PLAN.md)) — so a `0.x` minor bump is
-  allowed to change it. `1.0` is when that layer is finished.
+- Versions are **pre-1.0**. The declaration API — profiles, global conversions, member
+  conventions and the metadata that carries them across a package boundary — is complete, but a
+  `0.x` minor bump is still allowed to change it while it has a consumer's worth of use behind it.
+  `1.0` is when it has.
 - Both halves ship in one package on one version number. There is no combination of versions to
   get wrong.
 
@@ -1012,9 +1024,11 @@ dotnet_diagnostic.SM0001.severity = none
 
 ## Status
 
-What works today is listed above. What does not exist yet — `NullSubstitute`, inheritance, open
-generics, and the global configuration layer a library needs — is laid out in order in
-[PLAN.md](PLAN.md), which is the roadmap this repository is built from.
+What works today is listed above, and is everything ShiftFramework needs from this library.
+What does not exist is `NullSubstitute` — deliberately, see
+[Migrating from AutoMapper](docs/automapper-migration.md) — and the code fixes for rules other
+than SM0001 and SM0011. What remains on the roadmap is benchmarks. [PLAN.md](PLAN.md) is the
+record of how each step was decided and what was measured on the way.
 
 ## License
 

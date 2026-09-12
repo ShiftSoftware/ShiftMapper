@@ -61,8 +61,10 @@ public class BrandDto
     ///
     /// And that is the problem. An id past 2,147,483,647 comes out as a different, entirely
     /// plausible-looking number, with nothing in the code to say so and no exception when it
-    /// happens. Hit <c>GET /api/brands</c> on a seeded database and brand 1 reports
-    /// <c>-294967295</c> where the entity holds <c>4000000001</c>.
+    /// happens: 4,000,000,001 would arrive as <c>-294967295</c>. The seeded ids sit inside
+    /// <c>int</c> range on purpose — this DTO is also reached by nested projections, and SQL
+    /// Server raises an arithmetic overflow error there rather than wrapping — so put one above
+    /// <c>int.MaxValue</c> into <c>SeedData.cs</c> to watch <c>Map</c> wrap it.
     ///
     /// That is why SM0010 is a WARNING and not a note like SM0008 — a null becoming zero, or a
     /// HashSet dropping duplicates, is a rule you chose; this is a value quietly changing.
