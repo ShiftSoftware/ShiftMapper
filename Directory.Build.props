@@ -5,6 +5,27 @@
     innermost file last, so anything here can still be overridden in a .csproj.
   -->
 
+  <!--
+    ShiftMapper is published by the Shift Framework pipeline (ShiftTemplates/azure-pipeline.yml), and
+    the version it ships with is the ShiftMapperVersion entry in ShiftFrameworkGlobalSettings.props -
+    one of the standalone entries there, next to TypeAuth's, so it moves independently of the
+    framework version. Both imports are conditional: a clone that stands alone never sees the file
+    and builds exactly as before. The second path exists because the Azure pipeline checks
+    ShiftTemplates out into a directory called 's'.
+  -->
+  <Import Project="..\ShiftTemplates\ShiftFrameworkGlobalSettings.props" Condition="Exists('..\ShiftTemplates\ShiftFrameworkGlobalSettings.props')" />
+  <Import Project="..\s\ShiftFrameworkGlobalSettings.props" Condition="Exists('..\s\ShiftFrameworkGlobalSettings.props')" />
+
+  <!--
+    The framework props turns XML documentation on for every project it is imported into. This
+    repository documents the library alone - ShiftMapper.csproj switches it on for itself, and a
+    .csproj is evaluated after this file - so the generator, the fixes and the tests keep building
+    without a doc file, and without the CS157x noise that comes with one.
+  -->
+  <PropertyGroup>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
   <PropertyGroup>
     <!-- ================= Identity =================================================== -->
     <Product>ShiftMapper</Product>
@@ -23,8 +44,13 @@
       Pre-1.0 on purpose: the declaration API is complete but has yet to accumulate a consumer's
       worth of use, and a 0.x minor is allowed to change it until it has. See the versioning
       section of README.md.
+
+      The number itself lives in ShiftFrameworkGlobalSettings.props (imported above) when this
+      repository sits beside ShiftTemplates - that is the version the pipeline publishes. The value
+      here is only the fallback for a standalone clone, where nothing consumes the package.
     -->
-    <Version>0.1.0</Version>
+    <ShiftMapperVersion Condition="'$(ShiftMapperVersion)' == ''">0.1.0</ShiftMapperVersion>
+    <Version>$(ShiftMapperVersion)</Version>
 
     <!--
       Nothing is packable unless it says so. Exactly one project opts back in - ShiftMapper -
@@ -37,10 +63,11 @@
       A deterministic build produces byte-identical output from identical input, which is what
       makes a published package verifiable against its source. The path mapping half of it is
       only correct on a build machine, where every checkout lives somewhere different, so it is
-      switched on there rather than locally.
+      switched on there rather than locally. GITHUB_ACTIONS is the CI in this repository;
+      TF_BUILD is the Azure pipeline in ShiftTemplates that publishes the package.
     -->
     <Deterministic>true</Deterministic>
-    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true' Or '$(TF_BUILD)' == 'true'">true</ContinuousIntegrationBuild>
 
     <!--
       SourceLink. Since .NET 8 it is part of the SDK, so there is no package to reference: these

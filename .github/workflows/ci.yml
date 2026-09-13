@@ -54,6 +54,7 @@ jobs:
           echo "$contents"
           for required in \
             analyzers/dotnet/cs/ShiftMapper.Generator.dll \
+            analyzers/dotnet/cs/ShiftMapper.CodeFixes.dll \
             lib/net10.0/ShiftMapper.dll \
             lib/net10.0/ShiftMapper.xml \
             README.md \

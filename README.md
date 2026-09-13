@@ -1108,6 +1108,11 @@ dotnet_diagnostic.SM0001.severity = none
   `1.0` is when it has.
 - Both halves ship in one package on one version number. There is no combination of versions to
   get wrong.
+- The published number is `ShiftMapperVersion` in the Shift Framework's
+  `ShiftTemplates/ShiftFrameworkGlobalSettings.props`, and releases come from that repository's
+  Azure pipeline on a `release-shiftmapper` or `release-all` tag. `Directory.Build.props` imports
+  that file when the two repositories sit side by side; the number it carries itself is only the
+  fallback for a standalone clone.
 
 ---
 
