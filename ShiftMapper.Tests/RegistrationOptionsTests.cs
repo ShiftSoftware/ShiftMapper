@@ -114,6 +114,74 @@ public class RegistrationOptionsTests
         Assert.Contains("registered twice", error.Message);
     }
 
+    // -----------------------------------------------------------------
+    // WHO OWNS A PAIR IN IShiftMapper.
+    // -----------------------------------------------------------------
+
+    /// <summary>
+    /// THE SAME DECLARATION REACHED TWO WAYS is allowed: a mapper and one that includes it, both
+    /// registered. The interface answers with the first registered, and it is the same map.
+    /// </summary>
+    [Fact]
+    public void A_mapper_and_one_that_includes_it_may_both_be_registered()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IInvoiceNumbering, InvoiceNumbering>();
+        services.AddShiftMapper(o =>
+        {
+            o.AddMapper<IncludingMapper>();     // includes NumberedMapper
+            o.AddMapper<NumberedMapper>();
+        });
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        IShiftMapper mapper = provider.GetRequiredService<IShiftMapper>();
+
+        Assert.True(mapper.CanMap(typeof(Doodad), typeof(DoodadDto)));
+        Assert.Equal("IQ/thing", mapper.Map<DoodadDto>(new Doodad { Name = "thing" }).Label);
+    }
+
+    /// <summary>
+    /// TWO INDEPENDENT DECLARATIONS of one pair, both registered, fail at REGISTRATION — not on the
+    /// request that happens to go through the interface — naming both mappers. The build reports
+    /// the same thing (SM0040, an error); it is silenced here on purpose so the runtime half of
+    /// the rule — the one that catches registrations made from different projects — is tested.
+    /// </summary>
+    [Fact]
+    public void Two_mappers_each_declaring_a_pair_fail_at_registration()
+    {
+        var services = new ServiceCollection();
+
+        #pragma warning disable SM0040
+        InvalidOperationException error = Assert.Throws<InvalidOperationException>(() =>
+            services.AddShiftMapper(o =>
+            {
+                o.AddMapper<PublicTrinketMapper>();
+                o.AddMapper<AdminTrinketMapper>();
+            }));
+        #pragma warning restore SM0040
+
+        Assert.Contains("PublicTrinketMapper", error.Message);
+        Assert.Contains("AdminTrinketMapper", error.Message);
+        Assert.Contains("Trinket", error.Message);
+    }
+
+    /// <summary>And across two calls: the second call fails.</summary>
+    [Fact]
+    public void Two_mappers_each_declaring_a_pair_fail_across_calls()
+    {
+        var services = new ServiceCollection();
+
+        #pragma warning disable SM0040
+        services.AddShiftMapper<PublicTrinketMapper>();
+
+        InvalidOperationException error = Assert.Throws<InvalidOperationException>(() =>
+            services.AddShiftMapper<AdminTrinketMapper>());
+        #pragma warning restore SM0040
+
+        Assert.Contains("AdminTrinketMapper", error.Message);
+    }
+
     /// <summary>
     /// A PACKAGE MAPPER REGISTERED DIRECTLY resolves to the ADAPTER this project's generator wrote
     /// for it — a subclass with this call's packs baked in — so the package's <c>long</c> becomes

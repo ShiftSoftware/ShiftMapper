@@ -1,6 +1,6 @@
 # Diagnostics
 
-Every ShiftMapper message is `SM####`, reported by a `DiagnosticAnalyzer` rather than by the generator, so `.editorconfig` tunes them per folder and the IDE shows them live. Forty rules in use, SM0001 to SM0041 (SM0029 is retired); seven stop the build (SM0011, SM0012, SM0016, SM0028, SM0031, SM0035, SM0039). The [README table](../README.md#diagnostics) is the one-line summary; this page gives each rule what it is protecting, what is still generated, and how to answer it.
+Every ShiftMapper message is `SM####`, reported by a `DiagnosticAnalyzer` rather than by the generator, so `.editorconfig` tunes them per folder and the IDE shows them live. Forty-one rules in use, SM0001 to SM0042 (SM0029 is retired); nine stop the build (SM0011, SM0012, SM0016, SM0028, SM0031, SM0035, SM0039, SM0040, SM0042). The [README table](../README.md#diagnostics) is the one-line summary; this page gives each rule what it is protecting, what is still generated, and how to answer it.
 
 <a id="sm0001"></a>
 ## SM0001 — Destination property is not mapped
@@ -690,12 +690,14 @@ two closures of the same line, the second over a pair declared in a different fi
 <a id="sm0027"></a>
 ## SM0027 — A map is declared both in an included mapper and in the mapper that includes it
 
-**Warning.** Reported at the class declaration of the including mapper part. There is a defined
+**Warning.** Reported at the losing `CreateMap` — the one in the included mapper. There is a defined
 answer, and both halves of the library give the same one: the including mapper's declaration is the
 one that runs, in the generated code and in the runtime store alike.
 
-A warning rather than an error because nothing is undefined. What it cannot be is silent — the
-losing declaration reads exactly like the winning one, and a `ForMember` on it does nothing.
+A warning rather than an error because nothing is undefined: the including mapper is the
+composition root, and nearer. What it cannot be is silent — the losing declaration reads exactly
+like the winning one, and a `ForMember` on it does nothing. When neither declaration is nearer —
+two included mappers, or one mapper twice — that is SM0042, an error.
 
 ```csharp
 public partial class BrandMapper : ShiftMapperBase
@@ -1183,31 +1185,53 @@ for reuse should not be sealed — or include it in a mapper of this project, wh
 into that mapper and needs nothing overridden.
 
 <a id="sm0040"></a>
-## SM0040 — Two registered mappers declare the same pair
+## SM0040 — Two registered mappers declare their own map for the same pair
 
-**Warning.** Reported at the second `AddMapper` in one `AddShiftMapper` call, naming both mappers
-and the pair; also reported when one call registers the same mapper twice.
+**Error.** Reported at the later `AddMapper` (or `AddShiftMapper<T>`) call, naming both mappers and
+the pair; also reported, with its own wording, when one call registers the same mapper twice. One
+of the rules that stop the build.
 
 With several mappers registered, `IShiftMapper` is a composite that asks each mapper `CanMap` and
-dispatches to the first that answers — first registered first. That is a defined answer, but a pair
-two mappers both declare is usually a mistake rather than a choice, and the second way of mapping it
-is unreachable through the interface. The check is per call: two calls may well build two different
-containers, and the generator cannot tell.
+dispatches to the first that answers. Two situations look alike from the outside and are treated
+differently:
+
+- **One declaration reached two ways.** `AppMapper` includes `CatalogMapper`, and both are
+  registered so a catalogue service can inject `CatalogMapper` directly. Both can map
+  `CatalogItem -> CatalogItemDto`, but it is one `CreateMap`, written once; whichever mapper
+  answers the interface runs that map. **Not reported.** First registered answers.
+- **Two independent declarations.** `AppMapper` and `AdminMapper` each write
+  `CreateMap<User, UserDto>()`, differently, and both are registered — in the same call or in two
+  calls anywhere in the project. A library calling `IShiftMapper.Map<UserDto>(user)` would
+  silently get one of two mappings, decided by registration order — the silent default this
+  library refuses everywhere else. **Error.**
+
+Each mapper still generates its own code for the pair; injecting either by its type does what that
+class says. Only the interface is at stake, and the rule is that a registered pair has one owner.
 
 ```csharp
+public partial class AppMapper   : ShiftMapperBase { public AppMapper()   => CreateMap<User, UserDto>(); }
+public partial class AdminMapper : ShiftMapperBase { public AdminMapper() => CreateMap<User, UserDto>().ForMember(d => d.Email, o => o.Ignore()); }
+
 services.AddShiftMapper(o =>
 {
-    o.AddMapper<AppMapper>();        // includes CatalogMapper, so it maps CatalogItem -> CatalogItemDto
-    o.AddMapper<CatalogMapper>();    // and so does this one
+    o.AddMapper<AppMapper>();
+    o.AddMapper<AdminMapper>();     // SM0040
 });
 ```
 
-> warning SM0040: 'CatalogMapper' and 'AppMapper' both declare a map from 'CatalogItem' to
-> 'CatalogItemDto'; IShiftMapper answers with 'AppMapper', which was registered first
+> error SM0040: 'AdminMapper' and 'AppMapper' each declare their own map from 'User' to 'UserDto'
+> and both are registered, so IShiftMapper cannot choose between them. Declare the pair in one
+> mapper — have one include the other instead of both writing it — or register only one of them
 
-**The fix** is to register each pair in one mapper — drop the direct registration of a mapper another
-registered mapper already includes, or stop including it — or to accept the order and inject the
-specific mapper where the choice matters.
+The check covers every `AddShiftMapper` call in the project. The same rule runs again in
+`AddShiftMapper` itself, over every mapper registered so far, from the declaration metadata each
+mapper's build emitted — so a conflict between registrations made from different projects fails at
+startup, naming both mappers, rather than on a later request. Open generic closures are not in
+that metadata and are not checked at run time. `ReverseMap` declares the other direction, and it
+counts. A mapper that writes the same pair but is not registered anywhere is not reported.
+
+**The fix** is to give the pair one owner: declare it in one mapper and have the other
+`IncludeMapper` it, or register only one of the two.
 
 <a id="sm0041"></a>
 ## SM0041 — A mapper is registered with different includes or packs in two calls
@@ -1239,3 +1263,46 @@ services.AddShiftMapper<AppMapper>();          // gets PlatformConversions anywa
 
 **The fix** is to register the mapper the same way everywhere, or to move the composition into the
 mapper's constructor, where there is only one place for it to be written.
+
+<a id="sm0042"></a>
+## SM0042 — A map is declared twice with nothing to choose between the two
+
+**Error.** Reported at the second `CreateMap`, naming the pair and the two places. One of the rules
+that stop the build. The first declaration is kept so the generated file still compiles.
+
+A pair is one map. When the mapper being generated declares it itself and an included mapper does
+too, the mapper's own is nearer and wins (SM0027, a warning). When neither declaration is nearer
+than the other — two mappers this mapper includes each wrote it, or this mapper wrote it twice —
+the only way to pick one is the order the lines happened to be written in, and a map that silently
+depends on which `IncludeMapper` came first is exactly what this library refuses.
+
+```csharp
+public partial class CatalogMapper      : ShiftMapperBase { public CatalogMapper()      => CreateMap<CatalogItem, CatalogItemDto>(); }
+public partial class InvoiceLabelMapper : ShiftMapperBase { public InvoiceLabelMapper() => CreateMap<CatalogItem, CatalogItemDto>(); }
+
+public partial class AppMapper : ShiftMapperBase
+{
+    public AppMapper()
+    {
+        IncludeMapper<CatalogMapper>();
+        IncludeMapper<InvoiceLabelMapper>();    // SM0042, at InvoiceLabelMapper's CreateMap
+    }
+}
+```
+
+> error SM0042: 'CatalogItem' to 'CatalogItemDto' is declared in both 'CatalogMapper' and
+> 'InvoiceLabelMapper', which 'AppMapper' includes, and nothing says which one it should use.
+> Declare the pair in one of them, or in 'AppMapper' itself
+
+The same rule covers one mapper writing a pair twice — in one constructor, across the parts of a
+partial class, or as a `ReverseMap` plus an explicit `CreateMap` of the reversed pair — worded
+"declared twice in 'AppMapper'".
+
+What is NOT this: the same declaration reached twice. Two parts that each include one mapper, or a
+diamond of includes, deliver one `CreateMap` two ways, and it collapses silently. An explicit
+`CreateMap` for a pair an open generic would also close is the explicit one, silently — that is what
+closures are for.
+
+**The fix** is to give the pair one home: keep the `CreateMap` in one of the two included mappers,
+or declare it on the including mapper, whose own declaration wins over both (each then reports
+SM0027 so the losing lines are not forgotten).

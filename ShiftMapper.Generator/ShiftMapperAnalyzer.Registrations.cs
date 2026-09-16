@@ -116,56 +116,84 @@ public sealed partial class ShiftMapperAnalyzer
             }
         }
 
-        // SM0040 — a mapper registered twice, or a pair two registered mappers both declare —
-        // judged WITHIN ONE CALL. Two calls may well build two different containers (a test
-        // project does exactly that), and the generator cannot tell; within one call there is no
-        // doubt. Only worth the work when a call registers more than one mapper.
+        // SM0040 — the same mapper registered twice in one call, and THE OWNERSHIP RULE: two
+        // registered mappers that each wrote their own map for one pair.
         foreach (IGrouping<int, ShiftMapperGenerator.RegisteredMapper> call in registrations.Mappers.GroupBy(m => m.Call))
+            ReportDuplicateRegistrations(reporter, call);
+
+        ReportIndependentDeclarations(context.Compilation, reporter, registrations, context.CancellationToken);
+    }
+
+    private static void ReportDuplicateRegistrations(
+        DiagnosticReporter reporter,
+        IEnumerable<ShiftMapperGenerator.RegisteredMapper> call)
+    {
+        var registeredTypes = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (ShiftMapperGenerator.RegisteredMapper registered in call)
         {
-            if (call.Count() < 2)
+            if (registeredTypes.Add(registered.Mapper))
                 continue;
 
-            ReportAmbiguities(context.Compilation, reporter, call, context.CancellationToken);
+            reporter.Report(
+                DiagnosticDescriptors.RegistrationAmbiguous,
+                registered.Site,
+                $"'{registered.Type.Name}' is registered more than once; each mapper is registered " +
+                "once, with every include and pack it needs on that one registration");
         }
     }
 
-    private static void ReportAmbiguities(
+    /// <summary>
+    /// THE OWNERSHIP RULE for <c>IShiftMapper</c>. Two registered mappers may both map a pair when
+    /// it is ONE declaration reached through inclusion — a mapper and one that includes it —
+    /// because whichever answers runs the same map. Two mappers that each WROTE a map for the pair
+    /// is an error: through the interface a library would be handed one of two different mappings,
+    /// chosen by registration order. Judged over EVERY <c>AddShiftMapper</c> call in the project:
+    /// a mapper registered anywhere is registered.
+    /// </summary>
+    private static void ReportIndependentDeclarations(
         Compilation compilation,
         DiagnosticReporter reporter,
-        IEnumerable<ShiftMapperGenerator.RegisteredMapper> registrations,
+        ShiftMapperGenerator.RegistrationModel registrations,
         System.Threading.CancellationToken cancellationToken)
     {
-        var owners = new Dictionary<string, ShiftMapperGenerator.RegisteredMapper>(StringComparer.Ordinal);
-        var registeredTypes = new HashSet<string>(StringComparer.Ordinal);
+        // Each registered mapper once, however many calls name it.
+        List<ShiftMapperGenerator.RegisteredMapper> mappers = registrations.Mappers
+            .GroupBy(m => m.Mapper, StringComparer.Ordinal)
+            .Select(g => g.First())
+            .ToList();
 
-        foreach (ShiftMapperGenerator.RegisteredMapper registered in registrations)
+        if (mappers.Count < 2)
+            return;
+
+        // pair -> the declaring mapper and the registered mapper that reached it first
+        var owners = new Dictionary<string, (string DeclaredBy, ShiftMapperGenerator.RegisteredMapper Mapper)>(StringComparer.Ordinal);
+        var said = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (ShiftMapperGenerator.RegisteredMapper registered in mappers)
         {
-            if (!registeredTypes.Add(registered.Mapper))
+            foreach ((string pair, string declaredBy) in ShiftMapperGenerator.DeclaredPairs(compilation, registered, cancellationToken))
             {
-                reporter.Report(
-                    DiagnosticDescriptors.RegistrationAmbiguous,
-                    registered.Site,
-                    $"'{registered.Type.Name}' is registered more than once; each mapper is registered " +
-                    "once, with every include and pack it needs on that one registration");
-
-                continue;
-            }
-
-            foreach (string pair in ShiftMapperGenerator.DeclaredPairs(compilation, registered, cancellationToken))
-            {
-                if (owners.TryGetValue(pair, out ShiftMapperGenerator.RegisteredMapper first))
+                if (!owners.TryGetValue(pair, out (string DeclaredBy, ShiftMapperGenerator.RegisteredMapper Mapper) first))
                 {
-                    reporter.Report(
-                        DiagnosticDescriptors.RegistrationAmbiguous,
-                        registered.Site,
-                        $"'{registered.Type.Name}' and '{first.Type.Name}' both declare a map from " +
-                        $"'{Readable(pair, 0)}' to '{Readable(pair, 1)}'; IShiftMapper answers with " +
-                        $"'{first.Type.Name}', which was registered first");
-
+                    owners[pair] = (declaredBy, registered);
                     continue;
                 }
 
-                owners[pair] = registered;
+                // The same declaration, reached two ways: either answer is that map.
+                if (first.DeclaredBy == declaredBy || first.Mapper == registered)
+                    continue;
+
+                if (!said.Add(registered.Mapper + "|" + first.Mapper.Mapper + "|" + pair))
+                    continue;
+
+                reporter.Report(
+                    DiagnosticDescriptors.RegistrationAmbiguous,
+                    registered.Site,
+                    $"'{registered.Type.Name}' and '{first.Mapper.Type.Name}' each declare their own map " +
+                    $"from '{Readable(pair, 0)}' to '{Readable(pair, 1)}' and both are registered, so " +
+                    "IShiftMapper cannot choose between them. Declare the pair in one mapper — have one " +
+                    "include the other instead of both writing it — or register only one of them");
             }
         }
     }

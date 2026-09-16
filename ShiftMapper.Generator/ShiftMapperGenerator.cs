@@ -413,10 +413,13 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                              ownModel, invocation, createMap, mapExpression, memberOptions,
                              allMemberOptions, mapOptions, ownDefaults.CaseSensitive,
                              ownDefaults.AllowNullCollections, ownDefaults.Flattening, ownDefaults.Naming,
-                             Lookup, ownConversions, ownConventions, declaredProblems, cancellationToken))
+                             Lookup, ownConversions, ownConventions, declaredProblems, set.Own.Name, cancellationToken))
                 {
-                    if (seen.Add(map.Key))
-                        maps.Add(map);
+                    // EVERY declaration is kept, duplicates included: which one survives, and
+                    // whether a duplicate is a clash or the same declaration reached twice, is
+                    // decided once all parts are in hand — in MergeAndResolve.
+                    seen.Add(map.Key);
+                    maps.Add(map);
                 }
             }
         }
@@ -427,15 +430,15 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                          compilation, recovered, set.Own.Name, DefaultsFor(set.Own), ownConversions,
                          ownConventions, Lookup, declaredProblems, location))
             {
-                if (seen.Add(recoveredMap.Key))
-                    maps.Add(recoveredMap);
+                seen.Add(recoveredMap.Key);
+                maps.Add(recoveredMap);
             }
         }
 
-        // THE INCLUDED MAPPERS, read exactly as the mapper's own declaration was and merged after
-        // it — so a pair written in both places keeps the one written HERE. The runtime folds them
-        // in the same order for the same reason, which is what lets the clash below be a warning
-        // rather than an error: both halves already agree on the answer.
+        // THE INCLUDED MAPPERS, read exactly as the mapper's own declaration was and listed after
+        // it. Which declaration of a pair survives — the mapper's own over an included one, and
+        // whether two included ones are a clash — is decided in MergeAndResolve, once every part
+        // is in hand, where each map's DeclaredBy says who wrote it.
         //
         // Each map takes ITS DECLARING MAPPER's defaults and rules: one mapper, one set of
         // defaults, and it is the mapper that wrote the map, not the one that included it.
@@ -451,16 +454,8 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
 
             foreach (MapModel map in included)
             {
-                if (seen.Add(map.Key))
-                {
-                    maps.Add(map);
-                    continue;
-                }
-
-                includeProblems.Add(
-                    $"SM0027|'{map.SourceName}' to '{map.DestinationName}' is declared in " +
-                    $"'{scope.Type.Name}' and again in '{classSymbol.Name}'; the one in " +
-                    $"'{classSymbol.Name}' is the one that runs");
+                seen.Add(map.Key);
+                maps.Add(map);
             }
         }
 
@@ -522,7 +517,8 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                     conversions: scopeConversions,
                     memberConventions: scopeConventions,
                     declaredProblems: declaredProblems,
-                    isOpenGenericClosure: true);
+                    isOpenGenericClosure: true,
+                    declaredBy: scope.Name);
 
                 if (seen.Add(closed.Key))
                     maps.Add(closed);
@@ -736,7 +732,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                              model, invocation, createMap, mapExpression, memberOptions, allMemberOptions,
                              mapOptions, defaults.CaseSensitive, defaults.AllowNullCollections,
                              defaults.Flattening, defaults.Naming, lookup, conversions, memberConventions,
-                             declaredProblems, cancellationToken))
+                             declaredProblems, scope.Name, cancellationToken))
                 {
                     yield return map;
                 }
@@ -2261,6 +2257,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         ConversionTable conversions,
         List<MemberConventions.Convention> memberConventions,
         List<string> declaredProblems,
+        string declaredBy,
         CancellationToken cancellationToken)
     {
         TypeSyntax sourceSyntax = createMap.TypeArgumentList.Arguments[0];
@@ -2326,7 +2323,8 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             unresolvedBases: unresolvedForward,
             conversions: conversions,
             memberConventions: memberConventions,
-            declaredProblems: declaredProblems);
+            declaredProblems: declaredProblems,
+            declaredBy: declaredBy);
 
         if (chain.ReverseMapName is null)
             yield break;
@@ -2376,7 +2374,8 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             unresolvedBases: unresolvedReverse,
             conversions: conversions,
             memberConventions: memberConventions,
-            declaredProblems: declaredProblems);
+            declaredProblems: declaredProblems,
+            declaredBy: declaredBy);
     }
 
     /// <summary>The configure lambda passed to a call, or null when it was left off.</summary>
@@ -2644,7 +2643,8 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         ConversionTable? conversions = null,
         List<MemberConventions.Convention>? memberConventions = null,
         List<string>? declaredProblems = null,
-        bool isOpenGenericClosure = false)
+        bool isOpenGenericClosure = false,
+        string declaredBy = "")
     {
         List<MemberConventions.Convention> conventionList =
             memberConventions ?? new List<MemberConventions.Convention>();
@@ -2709,7 +2709,8 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             asConcrete: refinements.AsConcrete,
             asConcreteRejected: refinements.AsConcreteRejected,
             projectionRefusals: projectionRefusals,
-            isOpenGenericClosure: isOpenGenericClosure);
+            isOpenGenericClosure: isOpenGenericClosure,
+            declaredBy: declaredBy);
     }
 
     /// <summary>The result of comparing one source type against one destination type.</summary>
@@ -4266,20 +4267,96 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         IEnumerable<MapperClassModel> parts,
         DiagnosticReporter? report)
     {
-        var merged = ImmutableArray.CreateBuilder<MapModel>();
-        var seen = new HashSet<string>();
+        List<MapperClassModel> partList = parts.ToList();
+        string mapper = partList.Count > 0 ? partList[0].FullyQualifiedName : string.Empty;
 
-        foreach (MapperClassModel part in parts)
+        // Key -> the declaration that survives, in first-seen order. WHICH one survives:
+        //
+        //   * the mapper's own declaration beats an included mapper's (SM0027, a warning: the
+        //     mapper is the composition root, and nearer);
+        //   * an explicit declaration beats an open generic closure, silently — that is what
+        //     closures are for;
+        //   * the same included declaration arriving twice (two parts including one mapper, or a
+        //     diamond) collapses, silently — it is one CreateMap;
+        //   * anything else is TWO declarations of one pair with nothing to choose between them —
+        //     two included mappers, or two CreateMap calls in this mapper — and that is SM0042, an
+        //     error. The first is kept so the generated file still compiles.
+        var survivors = new Dictionary<string, MapModel>(StringComparer.Ordinal);
+        var order = new List<string>();
+
+        foreach (MapperClassModel part in partList)
         {
             foreach (MapModel map in part.Maps)
             {
-                if (seen.Add(map.Key))
-                    merged.Add(map);
+                if (!survivors.TryGetValue(map.Key, out MapModel existing))
+                {
+                    survivors[map.Key] = map;
+                    order.Add(map.Key);
+                    continue;
+                }
+
+                if (map.IsOpenGenericClosure)
+                    continue;
+
+                if (existing.IsOpenGenericClosure)
+                {
+                    survivors[map.Key] = map;
+                    continue;
+                }
+
+                bool existingOwn = existing.DeclaredBy == mapper;
+                bool incomingOwn = map.DeclaredBy == mapper;
+
+                if (!existingOwn && existing.DeclaredBy == map.DeclaredBy)
+                    continue;
+
+                if (existingOwn && !incomingOwn)
+                {
+                    report?.Report(
+                        DiagnosticDescriptors.IncludedMapDeclaredTwice,
+                        map.Location,
+                        $"'{map.SourceName}' to '{map.DestinationName}' is declared in " +
+                        $"'{ShortName(map.DeclaredBy)}' and again in '{ShortName(mapper)}'; the one in " +
+                        $"'{ShortName(mapper)}' is the one that runs");
+
+                    continue;
+                }
+
+                if (!existingOwn && incomingOwn)
+                {
+                    report?.Report(
+                        DiagnosticDescriptors.IncludedMapDeclaredTwice,
+                        existing.Location,
+                        $"'{map.SourceName}' to '{map.DestinationName}' is declared in " +
+                        $"'{ShortName(existing.DeclaredBy)}' and again in '{ShortName(mapper)}'; the one in " +
+                        $"'{ShortName(mapper)}' is the one that runs");
+
+                    survivors[map.Key] = map;
+                    continue;
+                }
+
+                report?.Report(
+                    DiagnosticDescriptors.MapDeclaredTwice,
+                    map.Location,
+                    existingOwn
+                        ? $"'{map.SourceName}' to '{map.DestinationName}' is declared twice in " +
+                          $"'{ShortName(mapper)}'. Delete one of the two; there is no merging of two " +
+                          "declarations for one pair"
+                        : $"'{map.SourceName}' to '{map.DestinationName}' is declared in both " +
+                          $"'{ShortName(existing.DeclaredBy)}' and '{ShortName(map.DeclaredBy)}', which " +
+                          $"'{ShortName(mapper)}' includes, and nothing says which one it should use. " +
+                          "Declare the pair in one of them, or in '" + ShortName(mapper) + "' itself");
             }
         }
 
+        var merged = ImmutableArray.CreateBuilder<MapModel>(order.Count);
+
+        foreach (string key in order)
+            merged.Add(survivors[key]);
+
         return ResolveNested(report, merged.ToImmutable());
     }
+
 
     /// <summary>
     /// Settles every nested object property, now that all of the mapper's maps are known.

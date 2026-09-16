@@ -157,7 +157,7 @@ public static class ShiftMapperServiceCollectionExtensions
                     "generated (see SM0035 and SM0028).");
             }
 
-            if (!registry.TryAdd(mapper, options.Lifetime))
+            if (!registry.TryAdd(mapper, options.Lifetime, registering))
             {
                 throw new InvalidOperationException(
                     $"ShiftMapper: '{mapper.Name}' is registered twice. Each mapper is registered " +
@@ -222,9 +222,82 @@ public static class ShiftMapperServiceCollectionExtensions
                 services.TryAdd(new ServiceDescriptor(pack, sp => ActivatorUtilities.CreateInstance(sp, pack), options.Lifetime));
         }
 
+        CheckInterfaceOwnership(registry);
         RegisterInterface(services, registry);
 
         return services;
+    }
+
+    /// <summary>
+    /// Every pair a mapper's generated code can map, tagged with the mapper that DECLARED it — read
+    /// once from the metadata its build emitted.
+    /// </summary>
+    private static readonly ConcurrentDictionary<(Type Mapper, Assembly Registering), IReadOnlyList<(Type Source, Type Destination, Type DeclaredBy)>> DeclaredPairsByType = new();
+
+    /// <summary>
+    /// THE OWNERSHIP RULE for <see cref="IShiftMapper"/>: a pair several registered mappers can map
+    /// is fine when it is ONE declaration reached through inclusion — whichever mapper answers runs
+    /// the same map — and an error when two mappers each wrote their OWN map for it, because the
+    /// interface would then hand a library one of two different mappings, chosen by registration
+    /// order. The build reports the same rule (SM0040) over every registration it can see in a
+    /// project; this catches registrations made from different projects, at startup rather than on
+    /// some later request.
+    ///
+    /// <para>Open generic closures are not in the metadata and are not checked here.</para>
+    /// </summary>
+    private static void CheckInterfaceOwnership(Registry registry)
+    {
+        var owners = new Dictionary<(Type Source, Type Destination), (Type DeclaredBy, Type Mapper)>();
+
+        foreach (Registry.Entry entry in registry.Mappers)
+        {
+            foreach ((Type source, Type destination, Type declaredBy) in DeclaredPairsOf(entry.Mapper, entry.Registering))
+            {
+                if (!owners.TryGetValue((source, destination), out (Type DeclaredBy, Type Mapper) first))
+                {
+                    owners[(source, destination)] = (declaredBy, entry.Mapper);
+                    continue;
+                }
+
+                if (first.DeclaredBy == declaredBy || first.Mapper == entry.Mapper)
+                    continue;
+
+                throw new InvalidOperationException(
+                    $"ShiftMapper: '{entry.Mapper.Name}' and '{first.Mapper.Name}' each declare their own " +
+                    $"map from '{source.Name}' to '{destination.Name}' and both are registered, so " +
+                    "IShiftMapper cannot choose between them. Declare the pair in one mapper — have one " +
+                    "include the other instead of both writing it — or register only one of them.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// The pairs one registered mapper can map: what it declares itself, and what every mapper it
+    /// composes declares, each tagged with the declaring mapper.
+    /// </summary>
+    private static IReadOnlyList<(Type Source, Type Destination, Type DeclaredBy)> DeclaredPairsOf(Type mapper, Assembly registering)
+    {
+        return DeclaredPairsByType.GetOrAdd((mapper, registering), key =>
+        {
+            var composed = new List<Type>();
+            CollectComposition(key.Mapper, key.Registering, new List<Type>(), composed, new HashSet<Type>());
+
+            var declaringTypes = new List<Type> { key.Mapper };
+            declaringTypes.AddRange(composed.Where(t => typeof(ShiftMapperBase).IsAssignableFrom(t)));
+
+            var pairs = new List<(Type, Type, Type)>();
+
+            foreach (Type declaring in declaringTypes)
+            {
+                foreach (ShiftMapperDeclaredMapAttribute map in declaring.Assembly.GetCustomAttributes<ShiftMapperDeclaredMapAttribute>())
+                {
+                    if (map.DeclaredBy == declaring && !pairs.Contains((map.Source, map.Destination, declaring)))
+                        pairs.Add((map.Source, map.Destination, declaring));
+                }
+            }
+
+            return pairs;
+        });
     }
 
     /// <summary>
@@ -286,15 +359,15 @@ public static class ShiftMapperServiceCollectionExtensions
 
         if (registry.Mappers.Count == 1)
         {
-            (Type single, ServiceLifetime lifetime) = registry.Mappers[0];
+            Registry.Entry single = registry.Mappers[0];
 
             // Resolved THROUGH the registration above rather than built again, so a scoped mapper
             // is one object per scope however it is asked for. Same lifetime, or a singleton
             // library holding IShiftMapper would capture one scope's mapper forever.
             services.Add(new ServiceDescriptor(
                 typeof(IShiftMapper),
-                serviceProvider => (IShiftMapper)serviceProvider.GetRequiredService(single),
-                lifetime));
+                serviceProvider => (IShiftMapper)serviceProvider.GetRequiredService(single.Mapper),
+                single.Lifetime));
 
             return;
         }
@@ -338,21 +411,38 @@ public static class ShiftMapperServiceCollectionExtensions
         return registry;
     }
 
-    /// <summary>Every mapper registered so far, in order, with the lifetime it was given.</summary>
+    /// <summary>Every mapper registered so far, in order, with how it was registered.</summary>
     private sealed class Registry
     {
-        private readonly List<(Type Mapper, ServiceLifetime Lifetime)> _mappers = new();
+        private readonly List<Entry> _mappers = new();
 
-        public IReadOnlyList<(Type Mapper, ServiceLifetime Lifetime)> Mappers => _mappers;
+        public IReadOnlyList<Entry> Mappers => _mappers;
 
-        public bool TryAdd(Type mapper, ServiceLifetime lifetime)
+        public bool TryAdd(Type mapper, ServiceLifetime lifetime, Assembly registering)
         {
             if (_mappers.Any(entry => entry.Mapper == mapper))
                 return false;
 
-            _mappers.Add((mapper, lifetime));
+            _mappers.Add(new Entry(mapper, lifetime, registering));
 
             return true;
+        }
+
+        public sealed class Entry
+        {
+            public Entry(Type mapper, ServiceLifetime lifetime, Assembly registering)
+            {
+                Mapper = mapper;
+                Lifetime = lifetime;
+                Registering = registering;
+            }
+
+            public Type Mapper { get; }
+
+            public ServiceLifetime Lifetime { get; }
+
+            /// <summary>The assembly that registered it — where an adapter and its compositions live.</summary>
+            public Assembly Registering { get; }
         }
     }
 }

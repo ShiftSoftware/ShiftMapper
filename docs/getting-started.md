@@ -237,7 +237,8 @@ mapper's own constructor dependencies through `ActivatorUtilities`, fills in
 strongly typed methods), registers **everything a mapper includes and every pack it adds** under
 their own types so they can be injected on their own and take dependencies, and registers
 **`IShiftMapper`** for libraries that cannot name your class — the mapper itself when there is one,
-a composite that dispatches by pair when there are several. Scoped is the default so a mapper may
+a composite that dispatches by pair when there are several (two registered mappers each declaring
+their own map for one pair is a build error, SM0040). Scoped is the default so a mapper may
 safely depend on a `DbContext`.
 
 **The generator reads the lambda.** Anything composed in it — an include, a pack for one mapper, a
@@ -280,8 +281,8 @@ mappers by hand in tests, keep what they include parameterless.
 ## 5. Reading the build output
 
 Every ShiftMapper message is `SM####`, from a real `DiagnosticAnalyzer` — so the IDE shows them
-live, `.editorconfig` tunes them per folder, and CI sees the same list. Forty rules in use today (SM0029 is retired);
-seven stop the build. The
+live, `.editorconfig` tunes them per folder, and CI sees the same list. Forty-one rules in use today (SM0029 is retired);
+nine stop the build. The
 [summary table in the README](../README.md#diagnostics) lists all of them, and
 [diagnostics.md](diagnostics.md) goes through them one at a time.
 

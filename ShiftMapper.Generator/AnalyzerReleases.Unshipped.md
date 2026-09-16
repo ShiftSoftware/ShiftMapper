@@ -44,5 +44,6 @@ SM0036 | ShiftMapper | Warning | Map cannot be projected because a map it nests 
 SM0037 | ShiftMapper | Warning | ProjectTo cannot be used for this pair
 SM0038 | ShiftMapper | Warning | This member convention fills nothing
 SM0039 | ShiftMapper | Error | A sealed mapper from a referenced assembly cannot be registered here
-SM0040 | ShiftMapper | Warning | Two registered mappers declare the same pair
+SM0040 | ShiftMapper | Error | Two registered mappers declare their own map for the same pair
 SM0041 | ShiftMapper | Warning | A mapper is registered with different includes or packs in two calls
+SM0042 | ShiftMapper | Error | A map is declared twice with nothing to choose between the two

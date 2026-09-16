@@ -337,7 +337,8 @@ public sealed partial class ShiftMapperGenerator
                 unresolvedBases: unresolved,
                 conversions: conversions,
                 memberConventions: memberConventions,
-                declaredProblems: declaredProblems);
+                declaredProblems: declaredProblems,
+                declaredBy: declaredBy);
         }
     }
 

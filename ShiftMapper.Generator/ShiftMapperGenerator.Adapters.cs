@@ -209,15 +209,16 @@ public sealed partial class ShiftMapperGenerator
     }
 
     /// <summary>
-    /// Every pair a registered mapper can map, as <c>"global::A-&gt;global::B"</c> keys — its own,
-    /// what it includes, and what the registration adds to it — for the SM0040 comparison.
+    /// Every pair a registered mapper can map, as <c>"global::A-&gt;global::B"</c> keys, each with
+    /// the mapper that DECLARED it — its own, what it includes, and what the registration adds to
+    /// it, reverse maps included — for the SM0040 rule.
     /// </summary>
-    internal static List<string> DeclaredPairs(
+    internal static List<(string Pair, string DeclaredBy)> DeclaredPairs(
         Compilation compilation,
         RegisteredMapper registered,
         CancellationToken cancellationToken)
     {
-        var pairs = new List<string>();
+        var pairs = new List<(string, string)>();
 
         INamedTypeSymbol? baseClass = compilation.GetTypeByMetadataName(BaseClassMetadataName);
 
@@ -237,8 +238,47 @@ public sealed partial class ShiftMapperGenerator
 
         ApplyCompositions(set, recovered, cancellationToken);
 
-        foreach ((INamedTypeSymbol source, INamedTypeSymbol destination) in ReadAllPairs(compilation, set, recovered, baseClass, cancellationToken))
-            pairs.Add(FullName(source) + "->" + FullName(destination));
+        INamedTypeSymbol? mapExpression = compilation.GetTypeByMetadataName(MapExpressionMetadataName);
+        INamedTypeSymbol? memberOptions = compilation.GetTypeByMetadataName(MemberOptionsMetadataName);
+        INamedTypeSymbol? allMemberOptions = compilation.GetTypeByMetadataName(AllMemberOptionsMetadataName);
+        INamedTypeSymbol? mapOptions = compilation.GetTypeByMetadataName(MapOptionsMetadataName);
+
+        foreach (DeclarationScope scope in set.MapScopes)
+        {
+            foreach (ClassDeclarationSyntax part in scope.Parts)
+            {
+                SemanticModel model = compilation.GetSemanticModel(part.SyntaxTree);
+
+                foreach (InvocationExpressionSyntax invocation in OwnInvocations(part))
+                {
+                    GenericNameSyntax? createMap = GetCreateMapName(model, invocation, baseClass, cancellationToken);
+
+                    if (createMap is null)
+                        continue;
+
+                    if (model.GetSymbolInfo(createMap.TypeArgumentList.Arguments[0], cancellationToken).Symbol
+                            is not INamedTypeSymbol source
+                        || model.GetSymbolInfo(createMap.TypeArgumentList.Arguments[1], cancellationToken).Symbol
+                            is not INamedTypeSymbol destination)
+                    {
+                        continue;
+                    }
+
+                    pairs.Add((FullName(source) + "->" + FullName(destination), scope.Name));
+
+                    // A chained ReverseMap declares the other direction too.
+                    ChainInfo chain = ReadChain(
+                        model, invocation, mapExpression, memberOptions, allMemberOptions, mapOptions,
+                        source, destination, allowNullCollections: false, cancellationToken);
+
+                    if (chain.ReverseMapName is not null)
+                        pairs.Add((FullName(destination) + "->" + FullName(source), scope.Name));
+                }
+            }
+        }
+
+        foreach (DeclaredMappers.RecoveredMap map in recovered.Maps)
+            pairs.Add((FullName(map.Source) + "->" + FullName(map.Destination), map.DeclaredBy));
 
         return pairs;
     }

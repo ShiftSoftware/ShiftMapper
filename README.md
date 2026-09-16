@@ -626,9 +626,15 @@ mappers may include each other; the result is the union of what they declare.
 
 **Each map keeps its own mapper's defaults and rules.** `ConfigureDefaults` on `CatalogMapper`
 governs `CatalogMapper`'s maps wherever they end up; so do its `CreateConversion`s and member
-conventions (see [Packs](#packs-rules-shared-between-mappers)). A pair declared both in an included
-mapper and in the mapper that includes it keeps the including mapper's, and the clash is reported
-(**SM0027**) rather than left to be discovered.
+conventions (see [Packs](#packs-rules-shared-between-mappers)).
+
+**One declaration per pair.** A pair declared both in an included mapper and in the mapper that
+includes it keeps the including mapper's — it is the composition root, and nearer — and the clash
+is reported (**SM0027**, a warning) rather than left to be discovered. A pair declared in two
+included mappers, or twice in one mapper, has nothing nearer to settle it and is an **error**
+(**SM0042**): picking by include order would make a map silently depend on which line came first.
+The same declaration reached twice — two parts including one mapper, a diamond of includes — is one
+`CreateMap` and collapses silently.
 
 **Dependencies work, and are resolved late:**
 
@@ -764,8 +770,15 @@ builder.Services.AddShiftMapper(o =>
 and every pack it adds under theirs, so they can be injected on their own and take constructor
 dependencies without a registration of their own; and `IShiftMapper`, which resolves to the mapper
 when there is one and to a composite over all of them when there are several — it asks each mapper
-`CanMap` and dispatches, first registered first. Two mappers in one call declaring the same pair is
-reported (**SM0040**).
+`CanMap` and dispatches, first registered first.
+
+**One owner per pair in `IShiftMapper`.** Two registered mappers may both map a pair when it is ONE
+declaration reached two ways — `AppMapper` includes `CatalogMapper` and both are registered so
+either can be injected; whichever answers runs that same map. Two mappers each writing their OWN
+`CreateMap` for a pair, both registered anywhere in the project, is a build **error** (**SM0040**,
+and the same check runs at startup for registrations made from other projects): a library going
+through the interface would otherwise be handed one of two different mappings, chosen by line
+order. Declare the pair in one mapper — have the other include it — or register only one of them.
 
 **The lambda has to be readable.** It is baked at compile time, so it must be an inline lambda of
 plain statements, in the same project as the mappers it configures; a method group, a delegate
@@ -988,7 +1001,8 @@ public interface IShiftMapper
 `AddShiftMapper` registers it alongside the mapper's own type, and with one mapper both resolve to
 the same instance. With several, `IShiftMapper` is a composite that asks each registered mapper
 `CanMap` and dispatches — first registered first — so a library still reaches every pair the
-application mapped:
+application mapped. It never chooses between two *different* mappings of one pair: two registered
+mappers each declaring their own map for a pair is refused at build time and at startup (SM0040).
 
 ```csharp
 public class Repository<TEntity, TDto>(IShiftMapper mapper, DbContext db)
@@ -1159,8 +1173,9 @@ will not be mapped, or will be mapped in a way worth knowing about.
 | SM0037 | Warning | `ProjectTo` called on a pair that cannot be projected |
 | SM0038 | Warning | A member convention fills nothing |
 | SM0039 | **Error** | A sealed mapper from a referenced assembly cannot be registered here |
-| SM0040 | Warning | Two mappers registered in one call declare the same pair |
+| SM0040 | **Error** | Two registered mappers each declare their own map for the same pair |
 | SM0041 | Warning | A mapper is registered with different includes or packs in two calls |
+| SM0042 | **Error** | A map is declared twice with nothing to choose between the two |
 
 `SM0011` is an error because a null nested object in a response looks exactly like a null in the
 database. Two ways forward, both one line: declare the map, or `opt.Ignore()` the property.

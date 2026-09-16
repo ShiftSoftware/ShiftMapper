@@ -137,9 +137,16 @@ public class RegistrationTests
            .Emits("public sealed class Framework_PackageMapper_Adapter : global::Framework.PackageMapper");
     }
 
-    /// <summary>SM0040 — two mappers in ONE call declaring the same pair.</summary>
+    // -----------------------------------------------------------------
+    // WHO OWNS A PAIR IN IShiftMapper.
+    // -----------------------------------------------------------------
+
+    /// <summary>
+    /// SM0040 — two registered mappers each declaring their OWN map for the same pair. An ERROR:
+    /// the interface would hand a library one of two different mappings, chosen by line order.
+    /// </summary>
     [Fact]
-    public void Two_mappers_in_one_call_declaring_a_pair_is_reported()
+    public void Two_registered_mappers_each_declaring_a_pair_is_an_error()
     {
         GeneratorRun run = Run(
             """
@@ -166,7 +173,138 @@ public class RegistrationTests
 
         run.Compiles();
 
-        Assert.Contains("OtherMapper", run.Single("SM0040").GetMessage());
+        Diagnostic problem = run.Single("SM0040");
+
+        Assert.Equal(DiagnosticSeverity.Error, problem.Severity);
+        Assert.Contains("OtherMapper", problem.GetMessage());
+        Assert.Contains("TestMapper", problem.GetMessage());
+    }
+
+    /// <summary>
+    /// Registered ANYWHERE in the project counts — two calls, two mappers, one pair written twice.
+    /// </summary>
+    [Fact]
+    public void Two_mappers_registered_in_different_calls_each_declaring_a_pair_is_an_error()
+    {
+        GeneratorRun run = Run(
+            """
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper() => CreateMap<Brand, BrandDto>();
+            }
+
+            public partial class OtherMapper : ShiftMapperBase
+            {
+                public OtherMapper() => CreateMap<Brand, BrandDto>();
+            }
+
+            public static class Startup
+            {
+                public static void ConfigureApi(IServiceCollection services) => services.AddShiftMapper<TestMapper>();
+
+                public static void ConfigureJobs(IServiceCollection services) => services.AddShiftMapper<OtherMapper>();
+            }
+            """);
+
+        run.Compiles();
+
+        Assert.Equal(DiagnosticSeverity.Error, run.Single("SM0040").Severity);
+    }
+
+    /// <summary>
+    /// THE SAME DECLARATION REACHED TWO WAYS is not a conflict: a mapper and one that includes it,
+    /// both registered so either can be injected. Whichever answers the interface runs that map.
+    /// </summary>
+    [Fact]
+    public void A_mapper_and_one_that_includes_it_may_both_be_registered()
+    {
+        GeneratorRun run = Run(
+            """
+            public partial class StockMapper : ShiftMapperBase
+            {
+                public StockMapper() => CreateMap<Stock, StockDto>();
+            }
+
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+                    IncludeMapper<StockMapper>();
+                    CreateMap<Brand, BrandDto>();
+                }
+            }
+
+            public static class Startup
+            {
+                public static void Configure(IServiceCollection services) =>
+                    services.AddShiftMapper(o =>
+                    {
+                        o.AddMapper<TestMapper>();
+                        o.AddMapper<StockMapper>();
+                    });
+            }
+            """);
+
+        run.Compiles();
+        run.None("SM0040");
+    }
+
+    /// <summary>Two mappers writing the same pair is fine as long as only one of them is registered.</summary>
+    [Fact]
+    public void An_unregistered_mapper_declaring_the_same_pair_is_not_reported()
+    {
+        GeneratorRun run = Run(
+            """
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper() => CreateMap<Brand, BrandDto>();
+            }
+
+            public partial class OtherMapper : ShiftMapperBase
+            {
+                public OtherMapper() => CreateMap<Brand, BrandDto>();
+            }
+
+            public static class Startup
+            {
+                public static void Configure(IServiceCollection services) => services.AddShiftMapper<TestMapper>();
+            }
+            """);
+
+        run.Compiles();
+        run.None("SM0040");
+    }
+
+    /// <summary>A ReverseMap declares the other direction, and it counts.</summary>
+    [Fact]
+    public void A_reverse_map_conflicting_with_another_mappers_map_is_reported()
+    {
+        GeneratorRun run = Run(
+            """
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper() => CreateMap<BrandDto, Brand>().ReverseMap();   // declares Brand -> BrandDto too
+            }
+
+            public partial class OtherMapper : ShiftMapperBase
+            {
+                public OtherMapper() => CreateMap<Brand, BrandDto>();
+            }
+
+            public static class Startup
+            {
+                public static void Configure(IServiceCollection services) =>
+                    services.AddShiftMapper(o =>
+                    {
+                        o.AddMapper<TestMapper>();
+                        o.AddMapper<OtherMapper>();
+                    });
+            }
+            """);
+
+        run.Compiles();
+
+        Assert.Contains("'Brand' to 'BrandDto'", run.Single("SM0040").GetMessage());
     }
 
     /// <summary>

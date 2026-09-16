@@ -134,3 +134,21 @@ public partial class RightMapper : ShiftMapperBase
         IncludeMapper<LeftMapper>();
     }
 }
+
+/// <summary>
+/// Two mappers that each declare their OWN map for the same pair — the case IShiftMapper refuses
+/// to choose between. Registered together only inside the ownership tests, which silence the
+/// build's own SM0040 to show the runtime half of the rule.
+/// </summary>
+public partial class PublicTrinketMapper : ShiftMapperBase
+{
+    public PublicTrinketMapper() => CreateMap<Trinket, TrinketDto>();
+}
+
+/// <inheritdoc cref="PublicTrinketMapper"/>
+public partial class AdminTrinketMapper : ShiftMapperBase
+{
+    public AdminTrinketMapper() =>
+        CreateMap<Trinket, TrinketDto>()
+            .ForMember(d => d.Name, opt => opt.MapFrom(s => "admin:" + s.Name));
+}

@@ -385,6 +385,219 @@ public class IncludeTests
         Assert.DoesNotContain("Customizations.Value<global::Brand, global::BrandDto, string>(\"Name\")", testMapperFile);
     }
 
+    /// <summary>
+    /// SM0042 — the same pair written in TWO INCLUDED mappers, with nothing to choose between them.
+    /// An ERROR, where SM0027 is a warning: the including mapper's own declaration is nearer and
+    /// wins, but between two includes there is no nearer, and picking by order would make the map
+    /// silently depend on which IncludeMapper was written first.
+    /// </summary>
+    [Fact]
+    public void A_pair_declared_in_two_included_mappers_is_an_error()
+    {
+        GeneratorRun run = Run(
+            """
+            public partial class BrandMapper : ShiftMapperBase
+            {
+                public BrandMapper() => CreateMap<Brand, BrandDto>();
+            }
+
+            public partial class OtherMapper : ShiftMapperBase
+            {
+                public OtherMapper() =>
+                    CreateMap<Brand, BrandDto>()
+                        .ForMember(d => d.Name, opt => opt.MapFrom(s => "other:" + s.Name));
+            }
+
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+                    IncludeMapper<BrandMapper>();
+                    IncludeMapper<OtherMapper>();
+                }
+            }
+            """);
+
+        // The generated file still compiles: the first declaration is kept.
+        run.Compiles();
+
+        Microsoft.CodeAnalysis.Diagnostic problem = run.Single("SM0042");
+
+        Assert.Equal(Microsoft.CodeAnalysis.DiagnosticSeverity.Error, problem.Severity);
+        Assert.Contains("BrandMapper", problem.GetMessage());
+        Assert.Contains("OtherMapper", problem.GetMessage());
+        Assert.Contains("TestMapper", problem.GetMessage());
+
+        // Reported at the SECOND declaration — the CreateMap in OtherMapper.
+        Assert.Contains("other:", run.Source.Substring(problem.Location.SourceSpan.Start, 200));
+    }
+
+    /// <summary>Declaring the pair on the including mapper settles it: its own wins, SM0027 says so, no SM0042.</summary>
+    [Fact]
+    public void The_including_mappers_own_declaration_settles_two_included_ones()
+    {
+        GeneratorRun run = Run(
+            """
+            public partial class BrandMapper : ShiftMapperBase
+            {
+                public BrandMapper() => CreateMap<Brand, BrandDto>();
+            }
+
+            public partial class OtherMapper : ShiftMapperBase
+            {
+                public OtherMapper() => CreateMap<Brand, BrandDto>();
+            }
+
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+                    CreateMap<Brand, BrandDto>();
+                    IncludeMapper<BrandMapper>();
+                    IncludeMapper<OtherMapper>();
+                }
+            }
+            """);
+
+        run.Compiles();
+        run.None("SM0042");
+        Assert.Equal(2, run.All("SM0027").Length);
+    }
+
+    /// <summary>SM0042 — the same pair written twice in ONE mapper.</summary>
+    [Fact]
+    public void A_pair_declared_twice_in_one_mapper_is_an_error()
+    {
+        GeneratorRun run = Run(
+            """
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+                    CreateMap<Brand, BrandDto>();
+                    CreateMap<Stock, StockDto>();
+                    CreateMap<Brand, BrandDto>().ForMember(d => d.Name, opt => opt.Ignore());
+                }
+            }
+            """);
+
+        run.Compiles();
+
+        Assert.Contains("declared twice in 'TestMapper'", run.Single("SM0042").GetMessage());
+    }
+
+    /// <summary>A ReverseMap declares the other direction; writing that direction again is the same error.</summary>
+    [Fact]
+    public void A_reverse_map_and_an_explicit_map_for_the_same_pair_is_an_error()
+    {
+        GeneratorRun run = Run(
+            """
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+                    CreateMap<Brand, BrandDto>().ReverseMap();
+                    CreateMap<BrandDto, Brand>();
+                }
+            }
+            """);
+
+        run.Compiles();
+
+        Assert.Contains("'BrandDto' to 'Brand'", run.Single("SM0042").GetMessage());
+    }
+
+    /// <summary>And across the PARTS of a partial mapper, which only the merge can see.</summary>
+    [Fact]
+    public void A_pair_declared_in_two_parts_of_one_mapper_is_an_error()
+    {
+        GeneratorRun run = Run(
+            """
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper() => CreateMap<Brand, BrandDto>();
+            }
+
+            public partial class TestMapper
+            {
+                private void More() => CreateMap<Brand, BrandDto>();
+            }
+            """);
+
+        run.Compiles();
+
+        Assert.Contains("declared twice", run.Single("SM0042").GetMessage());
+    }
+
+    /// <summary>
+    /// The SAME included declaration arriving twice — two parts each including one mapper, or a
+    /// diamond of includes — is one CreateMap and collapses silently.
+    /// </summary>
+    [Fact]
+    public void The_same_included_declaration_reached_twice_is_not_reported()
+    {
+        GeneratorRun run = Run(
+            """
+            public partial class BrandMapper : ShiftMapperBase
+            {
+                public BrandMapper() => CreateMap<Brand, BrandDto>();
+            }
+
+            public partial class LeftMapper : ShiftMapperBase
+            {
+                public LeftMapper() => IncludeMapper<BrandMapper>();
+            }
+
+            public partial class RightMapper : ShiftMapperBase
+            {
+                public RightMapper() => IncludeMapper<BrandMapper>();
+            }
+
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+                    IncludeMapper<LeftMapper>();
+                    IncludeMapper<RightMapper>();
+                }
+            }
+
+            public partial class TestMapper
+            {
+                private void More() => IncludeMapper<BrandMapper>();
+            }
+            """);
+
+        run.Compiles();
+        run.None("SM0042");
+        run.None("SM0027");
+        Assert.Equal(1, Occurrences(run.GeneratedFiles.Single(file => file.Contains("partial class TestMapper")), "public virtual global::BrandDto MapToBrandDto("));
+    }
+
+    /// <summary>An explicit map for a pair an open generic would also close is the explicit one, silently.</summary>
+    [Fact]
+    public void An_explicit_map_over_an_open_generic_closure_is_not_reported()
+    {
+        GeneratorRun run = Run(
+            """
+            public class Page<T> { public List<T> Items { get; set; } = new(); }
+            public class PageDto<T> { public List<T> Items { get; set; } = new(); }
+
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+                    CreateMap<Brand, BrandDto>();
+                    CreateMap(typeof(Page<>), typeof(PageDto<>));
+                    CreateMap<Page<Brand>, PageDto<BrandDto>>();
+                }
+            }
+            """);
+
+        run.Compiles();
+        run.None("SM0042");
+    }
+
     /// <summary>A mapper that includes nothing says nothing about includes.</summary>
     [Fact]
     public void A_mapper_without_includes_reports_nothing()

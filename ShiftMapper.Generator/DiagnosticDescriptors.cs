@@ -861,21 +861,23 @@ internal static class DiagnosticDescriptors
                      "with IncludeMapper instead of registering it directly.");
 
     /// <summary>
-    /// SM0040 — two registered mappers both declare a pair, or one mapper is registered twice.
+    /// SM0040 — two registered mappers each declare their OWN map for one pair, or one mapper is
+    /// registered twice in a call.
     ///
-    /// A WARNING: IShiftMapper dispatches to the first registered mapper that can map the pair,
-    /// which is a defined answer, but a pair mapped two ways is usually a mistake rather than a
-    /// choice, and the second way is unreachable through the interface.
+    /// AN ERROR: a library going through IShiftMapper would be handed one of two different
+    /// mappings, chosen by registration order — the silent default this library refuses. One
+    /// declaration reached through inclusion by several mappers is not this: whichever answers
+    /// runs the same map, and nothing is reported.
     /// </summary>
     public static readonly DiagnosticDescriptor RegistrationAmbiguous = new(
         id: "SM0040",
-        title: "Two registered mappers declare the same pair",
+        title: "Two registered mappers declare their own map for the same pair",
         messageFormat: "ShiftMapper: {0}",
         category: Category,
-        defaultSeverity: DiagnosticSeverity.Warning,
+        defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true,
-        description: "IShiftMapper answers with the first mapper registered. Declare the pair in " +
-                     "one mapper, or register each mapper once.");
+        description: "Declare the pair in one mapper and have the other include it, register only " +
+                     "one of the two, or register each mapper once.");
 
     /// <summary>
     /// SM0041 — one mapper registered in two calls that compose it differently.
@@ -894,6 +896,24 @@ internal static class DiagnosticDescriptors
         description: "What the generator bakes into a mapper is the union of every registration " +
                      "in the project, and every call applies that union. Register the mapper the " +
                      "same way everywhere, or move the composition into its constructor.");
+
+    /// <summary>
+    /// SM0042 — one pair declared twice, with nothing to choose between the two: two included
+    /// mappers that each wrote it, or two CreateMap calls in one mapper.
+    ///
+    /// AN ERROR, where SM0027 is a warning: there the mapper's own declaration is nearer and wins,
+    /// here neither declaration is nearer than the other, and picking by order would make a map
+    /// silently depend on which include was written first.
+    /// </summary>
+    public static readonly DiagnosticDescriptor MapDeclaredTwice = new(
+        id: "SM0042",
+        title: "A map is declared twice with nothing to choose between the two",
+        messageFormat: "ShiftMapper: {0}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true,
+        description: "Declare the pair once. When two included mappers both declare it, keep it in " +
+                     "one of them, or declare it on the including mapper, whose own declaration wins.");
 
     public static readonly ImmutableArray<DiagnosticDescriptor> All = ImmutableArray.Create(
         NoSourceProperty,
@@ -935,6 +955,7 @@ internal static class DiagnosticDescriptors
         MemberConventionIsEmpty,
         MapperCannotBeAdapted,
         RegistrationAmbiguous,
-        RegistrationsDiffer);
+        RegistrationsDiffer,
+        MapDeclaredTwice);
 }
 

@@ -50,8 +50,10 @@ internal sealed class MapModel
         string? asConcreteRejected,
         ImmutableArray<string> projectionRefusals = default,
         ImmutableArray<string> nestedProjectionRefusals = default,
-        bool isOpenGenericClosure = false)
+        bool isOpenGenericClosure = false,
+        string declaredBy = "")
     {
+        DeclaredBy = declaredBy;
         IsOpenGenericClosure = isOpenGenericClosure;
 
         NestedProjectionRefusals = nestedProjectionRefusals.IsDefault
@@ -474,6 +476,16 @@ internal sealed class MapModel
     public string Key => SourceType + "->" + DestinationType;
 
     /// <summary>
+    /// The mapper whose constructor DECLARED this map, fully qualified — the mapper being generated
+    /// for its own maps, an included mapper for a map that arrived through <c>IncludeMapper</c>.
+    ///
+    /// <para>What tells one declaration reached two ways (the same included mapper, in two parts)
+    /// from two declarations of one pair (two included mappers, or two <c>CreateMap</c> calls in one
+    /// class) — the first collapses, the second is an error (SM0042).</para>
+    /// </summary>
+    public string DeclaredBy { get; }
+
+    /// <summary>
     /// The same map with its nested properties settled, produced by the resolve pass.
     ///
     /// A new instance rather than a mutation, so the analysis stays immutable — an incremental
@@ -491,7 +503,7 @@ internal sealed class MapModel
             // CARRIED, like every other field. The resolve pass rebuilds a model to settle its
             // nested members; anything it forgets to copy is silently lost, which is what happened
             // to this one the first time and is why the sample was the test that caught it.
-            AsConcreteRejected, ProjectionRefusals, NestedProjectionRefusals, IsOpenGenericClosure);
+            AsConcreteRejected, ProjectionRefusals, NestedProjectionRefusals, IsOpenGenericClosure, DeclaredBy);
 
     /// <summary>
     /// The same map with a constructor argument's nested value settled, produced by the resolve
@@ -512,7 +524,7 @@ internal sealed class MapModel
             // CARRIED, like every other field. The resolve pass rebuilds a model to settle its
             // nested members; anything it forgets to copy is silently lost, which is what happened
             // to this one the first time and is why the sample was the test that caught it.
-            AsConcreteRejected, ProjectionRefusals, NestedProjectionRefusals, IsOpenGenericClosure);
+            AsConcreteRejected, ProjectionRefusals, NestedProjectionRefusals, IsOpenGenericClosure, DeclaredBy);
 
     /// <summary>
     /// The same map, told that something it nests cannot be projected.
@@ -529,5 +541,5 @@ internal sealed class MapModel
             Constructor, ConstructionProblems, ConstructsWithFactory, ConditionedMembers,
             RefusedConditions, ConvertsWithExpression, HasBeforeMap, HasAfterMap, DeadConfiguration,
             FlattenedMembers, AmbiguousFlattening, UnresolvedBases, IncludedDerived, AsConcrete,
-            AsConcreteRejected, ProjectionRefusals, nestedProjectionRefusals, IsOpenGenericClosure);
+            AsConcreteRejected, ProjectionRefusals, nestedProjectionRefusals, IsOpenGenericClosure, DeclaredBy);
 }

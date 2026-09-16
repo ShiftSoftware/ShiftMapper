@@ -15,9 +15,11 @@ namespace ShiftMapper;
 /// the interface. So this asks each mapper, in registration order, and remembers the answer per
 /// pair.</para>
 ///
-/// <para>FIRST REGISTERED WINS when two mappers both declare a pair. The build says so (SM0040)
-/// where it can see both declarations, because a pair mapped two ways is usually a mistake rather
-/// than a choice.</para>
+/// <para>FIRST REGISTERED WINS when two mappers can both map a pair — and by the time this runs,
+/// that can only be ONE declaration reached two ways (a mapper and one that includes it), where
+/// either answer runs the same map. Two mappers each declaring their own map for a pair is refused
+/// before this is built: by the build (SM0040) for every registration it can see in a project, and
+/// by <c>AddShiftMapper</c> at startup for registrations made from different projects.</para>
 ///
 /// <para>With a single mapper this class is not used at all: the interface resolves to the mapper
 /// itself, as it always has.</para>
