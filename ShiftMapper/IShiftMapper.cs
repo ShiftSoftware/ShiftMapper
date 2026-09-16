@@ -36,8 +36,10 @@ namespace ShiftMapper;
 /// class as EXPLICIT interface members. Explicit on purpose: they stay invisible on the class
 /// itself, so <c>mapper.Map&lt;SomeDto&gt;(thing)</c> keeps failing to compile when there is no
 /// map, instead of quietly binding to the <c>object</c> overload and throwing at runtime.
-/// <c>AddShiftMapper&lt;TMapper&gt;()</c> registers the mapper under this interface as well as
-/// under its own type, and both resolve to the same instance.
+/// <c>AddShiftMapper</c> registers the mapper under this interface as well as under its own
+/// type, and both resolve to the same instance. With several mappers registered the interface
+/// resolves to a <see cref="CompositeShiftMapper"/>, which asks each mapper <see cref="CanMap"/>
+/// and dispatches to the first that answers.
 /// </summary>
 public interface IShiftMapper
 {

@@ -18,7 +18,7 @@ namespace ShiftMapper.Generator.Tests;
 /// </summary>
 public class DeadRuleTests
 {
-    /// <summary>A package that declares one conversion, parameterised so two can disagree.</summary>
+    /// <summary>A package whose pack declares one conversion, parameterised so two can disagree.</summary>
     private static string Package(string profileName, string prefix) =>
         $$"""
         using ShiftMapper;
@@ -30,7 +30,7 @@ public class DeadRuleTests
             public static string ToText(long value) => "{{prefix}}" + value;
         }
 
-        public sealed class {{profileName}} : ShiftMapperProfile
+        public sealed class {{profileName}} : ShiftMapperConversions
         {
             public {{profileName}}()
             {
@@ -65,8 +65,8 @@ public class DeadRuleTests
             {
                 public TestMapper()
                 {
-                    AddProfile<FirstProfile>();
-                    AddProfile<SecondProfile>();
+                    AddConversions<FirstProfile>();
+                    AddConversions<SecondProfile>();
                     CreateMap<Source, Destination>();
                 }
             }
@@ -75,9 +75,9 @@ public class DeadRuleTests
         string message = run.Single("SM0031").GetMessage();
 
         // It NAMES BOTH CULPRITS. "a conversion is ambiguous" would leave the developer hunting
-        // through every package they reference.
-        Assert.Contains("ShiftMapperPackage", message);
-        Assert.Contains("ShiftMapperPackage2", message);
+        // through every pack they added.
+        Assert.Contains("FirstProfile", message);
+        Assert.Contains("SecondProfile", message);
         Assert.Contains("long", message);
         Assert.Contains("string", message);
     }
@@ -102,7 +102,7 @@ public class DeadRuleTests
             {
                 public TestMapper()
                 {
-                    AddProfile<OnlyProfile>();
+                    AddConversions<OnlyProfile>();
                     CreateMap<Source, Destination>();
                 }
             }
@@ -131,7 +131,7 @@ public class DeadRuleTests
             {
                 public TestMapper()
                 {
-                    AddProfile<FirstProfile>();
+                    AddConversions<FirstProfile>();
                     CreateMap<Source, Destination>();
                 }
             }
@@ -162,8 +162,8 @@ public class DeadRuleTests
             {
                 public TestMapper()
                 {
-                    AddProfile<FirstProfile>();
-                    AddProfile<SecondProfile>();
+                    AddConversions<FirstProfile>();
+                    AddConversions<SecondProfile>();
 
                     // This project's own answer, which beats both.
                     CreateConversion<long, string>(id => "local" + id, id => "local" + id);
@@ -201,7 +201,7 @@ public class DeadRuleTests
             // different version of the generator leaves behind. The profile itself is ordinary.
             [assembly: ShiftMapperDeclaredConversion(typeof(BrokenProfile), null, null)]
 
-            public sealed class BrokenProfile : ShiftMapperProfile
+            public sealed class BrokenProfile : ShiftMapperConversions
             {
             }
             """,
@@ -216,7 +216,7 @@ public class DeadRuleTests
             {
                 public TestMapper()
                 {
-                    AddProfile<BrokenProfile>();
+                    AddConversions<BrokenProfile>();
                     CreateMap<Source, Destination>();
                 }
             }

@@ -43,7 +43,7 @@ The obvious shape is **one page per `SM` id**, on the reasoning that an id is wh
 for. It is one page with a section and a stable anchor per id instead —
 [`diagnostics.md#sm0011`](diagnostics.md) — for two reasons worth writing down:
 
-- **Completeness is checkable.** There are 38 rules and the set grows. One file can be diffed
+- **Completeness is checkable.** There are 40 rules in use and the set grows. One file can be diffed
   against `DiagnosticDescriptors.All` in a single pass; thirty-eight files drift, and a missing page
   looks exactly like a rule that was never added.
 - **The library is pre-1.0.** Per-id pages buy search placement, which is worth having once there

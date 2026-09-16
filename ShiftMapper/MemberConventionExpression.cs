@@ -39,9 +39,9 @@ public enum MappingDirection
 /// ordinary inline member-init, which a database translates like any other expression — one code
 /// path, one answer.</para>
 ///
-/// <para><b>Declare it in a mapper's constructor, or in a <see cref="ShiftMapperProfile"/></b> — and
-/// a profile carries it across an assembly like everything else, so a framework ships one rule and
-/// every application that adds the profile gets it.</para>
+/// <para><b>Declare it in a mapper's constructor, or in a <see cref="ShiftMapperConversions"/> pack</b> — and
+/// a pack carries it across an assembly like everything else, so a framework ships one rule and
+/// every application that adds the pack gets it.</para>
 ///
 /// <para>Like the rest of the declaration API this does NOTHING at run time. The generator reads
 /// the chain at compile time and the calls are markers.</para>

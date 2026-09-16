@@ -5,11 +5,12 @@
     consumes as a compiled assembly, the way a NuGet package is consumed.
 
     A source generator compiling the sample sees this assembly as METADATA — types, signatures,
-    attributes, never a method body — so the CreateMap and CreateConversion calls in its profile
-    are not there to read. That is why THIS project references the generator too (below): it does
-    not write a mapper here, there is none; it writes this project's DECLARATIONS into the
-    assembly as attributes, which is the only thing a consumer's generator can see. The
-    expressions themselves arrive at run time, when AddProfile runs the profile's constructor.
+    attributes, never a method body — so the CreateMap and CreateConversion calls in its mapper and
+    pack are not there to read. That is why THIS project references the generator too (below): it
+    writes the Map methods onto PlatformMapper, as it would for any mapper, AND writes this
+    project's DECLARATIONS into the assembly as attributes, which is the only thing a consumer's
+    generator can see. The expressions themselves arrive at run time, when the consumer includes or
+    registers the mapper and its constructor runs.
   -->
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -27,9 +28,9 @@
   <ItemGroup>
     <ProjectReference Include="..\ShiftMapper\ShiftMapper.csproj" />
 
-    <!-- THE GENERATOR, referenced as an analyzer exactly as an application does. It does not write
-         a mapper for this project - there is none - it writes this project's DECLARATIONS into the
-         assembly as metadata, which is the only thing a generator compiling a CONSUMER can read. -->
+    <!-- THE GENERATOR, referenced as an analyzer exactly as an application does. It generates
+         PlatformMapper's own Map methods and writes this project's DECLARATIONS into the assembly
+         as metadata, which is the only thing a generator compiling a CONSUMER can read. -->
     <ProjectReference Include="..\ShiftMapper.Generator\ShiftMapper.Generator.csproj"
                       OutputItemType="Analyzer"
                       ReferenceOutputAssembly="false" />

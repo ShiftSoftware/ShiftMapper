@@ -604,56 +604,41 @@ internal static class DiagnosticDescriptors
                      "the closed CreateMap calls out instead.");
 
     /// <summary>
-    /// SM0027 — one type pair declared in a profile AND outside it.
+    /// SM0027 — one type pair declared in an included mapper AND in the mapper that includes it.
     ///
     /// A warning rather than an error because there IS a defined answer, and both halves of the
-    /// library give the same one: the declaration outside the profile wins, in the generated code
+    /// library give the same one: the including mapper's declaration wins, in the generated code
     /// and in the runtime store alike. What it cannot be is silent — the losing declaration reads
     /// exactly like the winning one.
     /// </summary>
-    public static readonly DiagnosticDescriptor ProfileMapDeclaredTwice = new(
+    public static readonly DiagnosticDescriptor IncludedMapDeclaredTwice = new(
         id: "SM0027",
-        title: "A map is declared both in a profile and outside it",
+        title: "A map is declared both in an included mapper and in the mapper that includes it",
         messageFormat: "ShiftMapper: {0}",
         category: Category,
         defaultSeverity: DiagnosticSeverity.Warning,
         isEnabledByDefault: true,
-        description: "The declaration outside the profile is the one that runs. Delete whichever " +
+        description: "The including mapper's declaration is the one that runs. Delete whichever " +
                      "of the two you did not mean to keep.");
 
     /// <summary>
-    /// SM0028 — a profile that arrived as metadata rather than source.
+    /// SM0028 — a mapper or pack from a referenced assembly that carries no declaration metadata.
     ///
-    /// The one profile failure with no consuming-side workaround, so the message says what the
-    /// limitation IS rather than only that it was hit.
+    /// AN ERROR: a package that says nothing would otherwise be included, registered or added and
+    /// contribute nothing, in silence — the exact outcome this library exists to prevent. The one
+    /// failure with no consuming-side workaround, so the message says what the limitation IS.
     /// </summary>
-    public static readonly DiagnosticDescriptor ProfileNotInSource = new(
+    public static readonly DiagnosticDescriptor DeclarationsNotInMetadata = new(
         id: "SM0028",
         title: "A referenced assembly carries no ShiftMapper declaration metadata",
         messageFormat: "ShiftMapper: {0}",
         category: Category,
-        defaultSeverity: DiagnosticSeverity.Warning,
+        defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true,
-        description: "A package that declares maps or conversions must be built with the " +
-                     "ShiftMapper generator referenced as an analyzer, which is what writes its " +
-                     "declarations into the assembly where a consuming generator can read them.");
-
-    /// <summary>
-    /// SM0029 — ConfigureDefaults overridden on a profile, where it configures nothing.
-    ///
-    /// Defaults are read from the MAPPER's type, so one mapper has one set of them whichever file
-    /// a map was written in. An override on a profile is a reasonable guess that happens to be
-    /// wrong, which is precisely the kind this library reports rather than ignores.
-    /// </summary>
-    public static readonly DiagnosticDescriptor ProfileDefaultsIgnored = new(
-        id: "SM0029",
-        title: "ConfigureDefaults on a profile has no effect",
-        messageFormat: "ShiftMapper: {0}",
-        category: Category,
-        defaultSeverity: DiagnosticSeverity.Warning,
-        isEnabledByDefault: true,
-        description: "A map takes its defaults from the mapper that added the profile. Override " +
-                     "ConfigureDefaults on the mapper, or set the option on each CreateMap.");
+        description: "A package whose mappers or packs are used from another project must be " +
+                     "built with the ShiftMapper generator referenced as an analyzer, which is what " +
+                     "writes its declarations into the assembly where a consuming generator can " +
+                     "read them.");
 
     /// <summary>
     /// SM0030 — a map uses a global conversion that has no query form.
@@ -676,20 +661,21 @@ internal static class DiagnosticDescriptors
                      "Map rather than ProjectTo for maps that touch the pair.");
 
     /// <summary>
-    /// SM0031 — two referenced assemblies declaring a conversion for the same type pair.
+    /// SM0031 — two packs at the same distance from a map declaring a conversion for one pair.
     ///
     /// AN ERROR, unlike almost everything else here, because there is no answer to pick. Whichever
     /// won, half the maps in the application would convert the other way and nobody reading either
-    /// package could see why. The fix is a decision, and it has to be made by a person.
+    /// pack could see why. The fix is a decision, and it has to be made by a person — a
+    /// declaration nearer to the map settles it.
     /// </summary>
     public static readonly DiagnosticDescriptor DeclaredConversionConflict = new(
         id: "SM0031",
-        title: "Two assemblies declare a conversion for the same type pair",
+        title: "Two packs declare a conversion for the same type pair",
         messageFormat: "ShiftMapper: {0}",
         category: Category,
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true,
-        description: "Remove one of the declarations, or declare the pair in this project with " +
+        description: "Remove one of the packs, or declare the pair on the mapper with " +
                      "CreateConversion, which wins over both.");
 
     /// <summary>
@@ -707,26 +693,27 @@ internal static class DiagnosticDescriptors
         defaultSeverity: DiagnosticSeverity.Warning,
         isEnabledByDefault: true,
         description: "A package's build records each CreateConversion as a " +
-                     "ShiftMapperDeclaredConversion attribute naming the profile, the source type " +
-                     "and the destination type. One that does not have that shape was written by a " +
-                     "different version of the generator, and the pair it described is not applied.");
+                     "ShiftMapperDeclaredConversion attribute naming the declaring type, the source " +
+                     "type and the destination type. One that does not have that shape was written " +
+                     "by a different version of the generator, and the pair it described is not " +
+                     "applied.");
 
     /// <summary>
-    /// SM0033 — a package built against a NEWER contract than this generator understands.
+    /// SM0033 — a package built against a DIFFERENT contract than this generator reads.
     ///
-    /// Its conversions are ignored rather than half-read. A generator that guessed at a shape it
+    /// Its declarations are ignored rather than half-read. A generator that guessed at a shape it
     /// does not know would emit code that fails to compile in a file the developer cannot edit,
     /// which is the worst outcome available.
     /// </summary>
-    public static readonly DiagnosticDescriptor DeclaredContractTooNew = new(
+    public static readonly DiagnosticDescriptor DeclaredContractMismatch = new(
         id: "SM0033",
-        title: "A referenced assembly declares a newer ShiftMapper contract",
+        title: "A referenced assembly declares a different ShiftMapper contract",
         messageFormat: "ShiftMapper: {0}",
         category: Category,
         defaultSeverity: DiagnosticSeverity.Warning,
         isEnabledByDefault: true,
-        description: "Update the ShiftMapper package in this project to the version the referenced " +
-                     "package was built against.");
+        description: "Build the referenced package and this project against the same ShiftMapper " +
+                     "version.");
 
     /// <summary>
     /// SM0034 — a member convention claimed a member and could not fill it.
@@ -855,6 +842,59 @@ internal static class DiagnosticDescriptors
     /// report, so this is the one place that has to stay in step with the fields below — and
     /// with AnalyzerReleases.Unshipped.md, which the release-tracking analyzers check for us.
     /// </summary>
+    /// <summary>
+    /// SM0039 — a mapper from a referenced assembly that this project cannot adapt.
+    ///
+    /// A mapper registered from another project is handed out through a generated SUBCLASS with
+    /// this project's packs baked in. A sealed mapper has no virtual members to override — C#
+    /// refuses them — so there is nothing to generate, and registering the package's own class
+    /// would quietly ignore every pack written here.
+    /// </summary>
+    public static readonly DiagnosticDescriptor MapperCannotBeAdapted = new(
+        id: "SM0039",
+        title: "A sealed mapper from a referenced assembly cannot be registered here",
+        messageFormat: "ShiftMapper: {0}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true,
+        description: "Unseal the mapper in the package, or include it in a mapper of this project " +
+                     "with IncludeMapper instead of registering it directly.");
+
+    /// <summary>
+    /// SM0040 — two registered mappers both declare a pair, or one mapper is registered twice.
+    ///
+    /// A WARNING: IShiftMapper dispatches to the first registered mapper that can map the pair,
+    /// which is a defined answer, but a pair mapped two ways is usually a mistake rather than a
+    /// choice, and the second way is unreachable through the interface.
+    /// </summary>
+    public static readonly DiagnosticDescriptor RegistrationAmbiguous = new(
+        id: "SM0040",
+        title: "Two registered mappers declare the same pair",
+        messageFormat: "ShiftMapper: {0}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "IShiftMapper answers with the first mapper registered. Declare the pair in " +
+                     "one mapper, or register each mapper once.");
+
+    /// <summary>
+    /// SM0041 — one mapper registered in two calls that compose it differently.
+    ///
+    /// A mapper is generated ONCE per project, with the union of everything any call composes into
+    /// it, and the runtime applies that same union whichever call resolves it. So a call that
+    /// leaves an include or a pack out still gets it — which is consistent, and worth knowing.
+    /// </summary>
+    public static readonly DiagnosticDescriptor RegistrationsDiffer = new(
+        id: "SM0041",
+        title: "A mapper is registered with different includes or packs in two calls",
+        messageFormat: "ShiftMapper: {0}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "What the generator bakes into a mapper is the union of every registration " +
+                     "in the project, and every call applies that union. Register the mapper the " +
+                     "same way everywhere, or move the composition into its constructor.");
+
     public static readonly ImmutableArray<DiagnosticDescriptor> All = ImmutableArray.Create(
         NoSourceProperty,
         NotConvertible,
@@ -882,17 +922,19 @@ internal static class DiagnosticDescriptors
         IncludeIsNotProjectable,
         ConcreteTypeCannotStandIn,
         OpenGenericNotClosed,
-        ProfileMapDeclaredTwice,
-        ProfileNotInSource,
-        ProfileDefaultsIgnored,
+        IncludedMapDeclaredTwice,
+        DeclarationsNotInMetadata,
         ConversionHasNoQueryForm,
         DeclaredConversionConflict,
         DeclaredConversionMalformed,
-        DeclaredContractTooNew,
+        DeclaredContractMismatch,
         MemberConventionFailed,
         DeclarationNotBakeable,
         NestedMapIsNotProjectable,
         ProjectToIsNotSupported,
-        MemberConventionIsEmpty);
+        MemberConventionIsEmpty,
+        MapperCannotBeAdapted,
+        RegistrationAmbiguous,
+        RegistrationsDiffer);
 }
 

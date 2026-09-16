@@ -1,24 +1,57 @@
 ﻿using System.Text.Json;
+using ShiftMapper;
 
 namespace Contoso.Platform;
 
 /// <summary>
-/// The conversions a framework package wants EVERY application that references it to map by —
-/// as plain static methods, which is what <see cref="PlatformProfile"/> hands to
-/// <c>CreateConversion</c>.
+/// The RULES a framework package wants every application that references it to map by — a PACK:
+/// type-pair conversions and a member convention, and no maps.
 ///
-/// <para><b>Nothing here is special to ShiftMapper.</b> These are ordinary methods a framework
-/// would have anyway; the profile is what turns them into rules. That is the point of the split:
-/// the framework keeps its conversion logic where it always was, and one profile declares which
-/// pairs it applies to, in the same vocabulary an application uses.</para>
+/// <para>Written with the ORDINARY API, the same CreateConversion and CreateMemberConvention a
+/// mapper uses. This project's own build emits what these lines DECLARE into the assembly as
+/// metadata, and an application adds the pack with one line — to one mapper, or to every mapper it
+/// registers:</para>
 ///
-/// <para>Which of them has a QUERY form is a decision made in the profile, not here. <c>ToFiles</c>
-/// parses JSON into objects, which no database can do, so the profile declares that pair with the
-/// memory form only — and every map that touches it is reported as in-memory only (SM0030) rather
-/// than left with a projection that could not run.</para>
+/// <code>
+/// AddConversions&lt;PlatformConversions&gt;();          // in a mapper's constructor
+/// o.AddConversions&lt;PlatformConversions&gt;();        // at registration, for every mapper in the call
+/// </code>
+///
+/// <para>Which pair has a QUERY form is decided here. <see cref="ToFiles"/> parses JSON into
+/// objects, which no database can do, so that pair is declared with the memory form only — and
+/// every map that touches it is reported as in-memory only (SM0030) rather than left with a
+/// projection that could not run.</para>
 /// </summary>
-public static class PlatformConversions
+public class PlatformConversions : ShiftMapperConversions
 {
+    public PlatformConversions()
+    {
+        // Hash ids. long -> string already converts, so this also exercises the rule that a
+        // declared pair beats the built-in table.
+        CreateConversion<long, string>(
+            memory: id => "H" + id,
+            query: id => "H" + id);
+
+        // A JSON column becoming files, with NO query form: no database can parse JSON into
+        // objects, so the honest declaration is memory-only, and every map that touches the pair
+        // is told at build time that it lost its projection (SM0030).
+        CreateConversion<string?, List<FileDto>>(memory: ToFiles!);
+
+        // A MEMBER-SHAPED RULE, and the one a conversion cannot express. Any destination member of
+        // type SelectDto is filled from {Member}ID plus the member the RELATED ENTITY
+        // itself nominates — so this names no application type at all and still serves every one
+        // of them.
+        CreateMemberConvention<SelectDto>()
+            .NameFrom<KeyAndNameAttribute>(nameof(KeyAndNameAttribute.Text))
+            .Fill(d => d.Value, "{Member}ID")
+            // FillIfPossible, not Fill — ONE rule for both shapes. Where the source has the
+            // navigation, the text comes with it; where it has only a foreign key (a request body,
+            // a list that leaves the name to whatever renders it) the entry is dropped and the id
+            // is still set. A required Fill there would be SM0034 and an unmapped member, and the
+            // framework would need a second rule.
+            .FillIfPossible(d => d.Text, "{Member}.{NameOf}");
+    }
+
     private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web);
 
     // ------------------------------------------------------------------
@@ -26,9 +59,8 @@ public static class PlatformConversions
     // ------------------------------------------------------------------
 
     /// <summary>
-    /// The MEMORY form: a public static method with exactly one parameter and a return value. That
-    /// signature IS the declaration — the pair it converts is <c>(string, List&lt;FileDto&gt;)</c>,
-    /// read straight off the method.
+    /// The MEMORY form of the JSON pair — an ordinary static method the constructor above hands to
+    /// <c>CreateConversion</c>.
     /// </summary>
     public static List<FileDto> ToFiles(string? json) =>
         string.IsNullOrWhiteSpace(json)
@@ -80,4 +112,7 @@ public class FileDto
     public string Name { get; set; } = string.Empty;
 
     public string? Url { get; set; }
+
+    /// <summary>Bytes — a <c>long</c> a consumer's hash-id rule may or may not reach.</summary>
+    public long Size { get; set; }
 }

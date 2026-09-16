@@ -45,19 +45,21 @@ equivalent; Part two says why.
 
 | AutoMapper | ShiftMapper |
 |---|---|
-| `class CatalogProfile : Profile` with `CreateMap` in its constructor | `class CatalogProfile : ShiftMapperProfile`, same shape; a mapper adds it with `AddProfile<CatalogProfile>()` |
-| `new MapperConfiguration(cfg => cfg.AddProfile<CatalogProfile>())` | a `partial class AppMapper : ShiftMapperBase` whose constructor declares maps and calls `AddProfile<T>()` |
-| `services.AddAutoMapper(typeof(Startup).Assembly)` — assembly scanning | `services.AddShiftMapper<AppMapper>()` — one explicit mapper, profiles named by `AddProfile<T>()`, no scanning |
+| `class CatalogProfile : Profile` with `CreateMap` in its constructor | `partial class CatalogMapper : ShiftMapperBase`, same shape — and a mapper in its own right, injectable on its own; another mapper takes its maps with `IncludeMapper<CatalogMapper>()` |
+| `new MapperConfiguration(cfg => cfg.AddProfile<CatalogProfile>())` | a `partial class AppMapper : ShiftMapperBase` that calls `IncludeMapper<T>()` for each — or `services.AddShiftMapper(o => o.AddMapper<AppMapper>(m => m.IncludeMapper<T>()))`, which the generator reads the same way |
+| `services.AddAutoMapper(typeof(Startup).Assembly)` — assembly scanning | `services.AddShiftMapper(o => { o.AddMapper<AppMapper>(); ... })` — explicit mappers, no scanning |
 | `CreateMap<TSource, TDestination>()` | `CreateMap<TSource, TDestination>()` |
 | `CreateMap<TSource, TDestination>(MemberList.Source)` / `.ValidateMemberList(...)` | none — validation is per destination member, always on (SM0001); tune severity per folder in `.editorconfig` |
 | `CreateMap(typeof(Wrapper<>), typeof(WrapperDto<>))` — open generics | `CreateMap(typeof(Wrapper<>), typeof(WrapperDto<>))`; one type parameter a side (SM0026), closed over the pairs the mapper already declares |
 | `cfg.AllowNullCollections = true` | `CreateMap<A, B>(o => o.AllowNullCollections = true)`, or once in `ConfigureDefaults`; same default as AutoMapper (off — a null source collection becomes an empty one) |
 | `cfg.ShouldMapProperty` / `cfg.ShouldMapField` | none — public, non-static, non-indexer properties are mapped; a non-public setter is SM0003; fields are not mapped |
 
-A profile in ShiftMapper is a place to write declarations, not a second mapper — nothing is
-generated onto it, and there is no `CatalogProfile.Map`. Its maps become the maps of whichever
-mapper adds it. The one thing that does not carry across from AutoMapper's model is discovery:
-there is no scan, because the generator has to be able to point at the line that declared each map.
+There is one concept in ShiftMapper where AutoMapper has two: every class deriving from
+`ShiftMapperBase` is a mapper with generated `Map` methods of its own, and a mapper may include
+another's maps. An AutoMapper `Profile` becomes a mapper; the `MapperConfiguration` that gathered
+profiles becomes a mapper that includes them, or a registration that does. The one thing that does
+not carry across is discovery: there is no scan, because the generator has to be able to point at
+the line that declared each map.
 
 ### Per-member configuration (`ForMember`)
 
@@ -148,7 +150,7 @@ through `IncludeBase` as `UPPER([c].[Sku])`.
 | `mapper.Map<TDestination>(source, opts => opts.Items["key"] = value)` | none |
 | `query.ProjectTo<TDto>(mapper.ConfigurationProvider)` | `query.ProjectTo<TDto>(mapper)` or `mapper.ProjectTo<TDto>(query)` — one parameter, no `parameters`, no `membersToExpand` |
 | `mapper.ConfigurationProvider` / `IConfigurationProvider` | none — there is no configuration object at run time |
-| `cfg.ConstructServicesUsing(type => provider.GetService(type))` | constructor injection on the mapper or profile; `ShiftMapperBase.Services` for what you only discover while mapping |
+| `cfg.ConstructServicesUsing(type => provider.GetService(type))` | constructor injection on the mapper, included or not; `ShiftMapperBase.Services` for what you only discover while mapping |
 
 ### Extension points and validation
 
@@ -159,7 +161,7 @@ through `IncludeBase` as `UPPER([c].[Sku])`.
 | `IValueResolver` reading a service | a `MapFrom` closing over an injected field; in a projection a row-independent service *value* becomes a SQL parameter, a row-dependent *call* is client-evaluated by EF, and filtering on such a member throws |
 | `cfg.AssertConfigurationIsValid()` | none — the build is the assertion |
 | `[AutoMap(typeof(Source))]`, `[IgnoreMap]`, `[SourceMember("X")]` | none — declarations are C# calls the compiler checks; the `ShiftMapper*` attributes in the package are emitted by the generator, never written by hand |
-| an AutoMapper `Profile` in a referenced package, picked up by scanning | a `ShiftMapperProfile` in a package **built with the ShiftMapper generator**, added with `AddProfile<T>()`; a package built without it is SM0028 |
+| an AutoMapper `Profile` in a referenced package, picked up by scanning | a mapper (or a `ShiftMapperConversions` pack of rules) in a package **built with the ShiftMapper generator**, included with `IncludeMapper<T>()`, registered with `o.AddMapper<T>()`, or added with `AddConversions<T>()`; a package built without it is SM0028 |
 
 `CreateMemberConvention<TMember>()` has no AutoMapper counterpart in either direction. It is a rule
 about a member *shape* — "any destination member of type `SelectDto` is filled from
@@ -291,17 +293,19 @@ Three more you may meet, in order of likelihood:
   at run time, or at validation; ShiftMapper stops the build. A code fix offers the declaration.
 - **SM0030 / SM0036** — a global conversion with no query form, or a map that nests a map which
   cannot project. The message names the child; that is the map to fix.
-- **SM0028** — a profile in a package that was built without the ShiftMapper generator. The
-  package's own build has to write its declarations into metadata; add the analyzer reference there
-  and rebuild.
+- **SM0028** — a mapper or pack in a package that was built without the ShiftMapper generator.
+  The package's own build has to write its declarations into metadata; add the analyzer reference
+  there and rebuild.
 
 A workable order for the port itself:
 
-1. Turn each `Profile` into a `ShiftMapperProfile`, and the `MapperConfiguration` into one partial
-   mapper class that calls `AddProfile<T>()` for each. Replace `AddAutoMapper(...)` with
-   `AddShiftMapper<AppMapper>()`. Everything inside the profiles that is `CreateMap`, `ForMember`,
-   `MapFrom`, `Ignore`, `ReverseMap`, `Include`, `IncludeBase`, `As` and open-generic `CreateMap`
-   compiles unchanged.
+1. Turn each `Profile` into a `partial class : ShiftMapperBase`, and the `MapperConfiguration`
+   into one partial mapper class that calls `IncludeMapper<T>()` for each. Replace
+   `AddAutoMapper(...)` with `AddShiftMapper<AppMapper>()`. Everything inside the profiles that is
+   `CreateMap`, `ForMember`, `MapFrom`, `Ignore`, `ReverseMap`, `Include`, `IncludeBase`, `As` and
+   open-generic `CreateMap` compiles unchanged. A `CreateConversion` written in a profile now
+   reaches only that mapper's maps; move the ones meant for everything into a
+   `ShiftMapperConversions` pack and add it once at registration.
 2. Rewrite what does not compile: `ForPath`, `ForCtorParam`, resolver and converter types, the
    context overloads of the hooks. The table above says what each becomes.
 3. Build. Work through SM0001 and SM0018 as above; leave SM0020 (flattening chose a path) at Info

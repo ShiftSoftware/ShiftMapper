@@ -65,7 +65,7 @@ public class ShiftMapperInterfaceTests
            .Emits("bool global::ShiftMapper.IShiftMapper.CanMap(global::System.Type source, global::System.Type destination)")
 
            // The same members in their implicit spelling would be the bug this guards against.
-           .DoesNotEmit("public TDestination Map<TDestination>(object source)")
+           .DoesNotEmit("public virtual TDestination Map<TDestination>(object source)")
            .DoesNotEmit("public bool CanMap(");
     }
 

@@ -29,17 +29,19 @@ public sealed class DatabaseFixture : IDisposable
         var services = new ServiceCollection();
         services.AddSingleton<IInvoiceNumbering, InvoiceNumbering>();
 
-        // A profile with a dependency is resolved like any other service. One without a dependency
-        // needs no registration at all — GadgetProfile is deliberately left unregistered to prove
-        // that fallback works.
-        services.AddTransient<NumberedProfile>();
-        services.AddShiftMapper<ProfileMapper>();
-        services.AddShiftMapper<ConversionMapper>();
-        services.AddShiftMapper<DeclaredMapper>();
-
         // Registered exactly as an application would, so the tests exercise the real path:
-        // constructor injection, plus the Services property AddShiftMapper fills in.
-        services.AddShiftMapper<TestMapper>();
+        // constructor injection, plus the Services property AddShiftMapper fills in. What each
+        // mapper includes (NumberedMapper, with its dependency; GadgetMapper, without) is
+        // registered along with it — nothing is registered by hand.
+        //
+        // FOUR mappers, so IShiftMapper resolves to a composite over all of them.
+        services.AddShiftMapper(o =>
+        {
+            o.AddMapper<IncludingMapper>();
+            o.AddMapper<ConversionMapper>();
+            o.AddMapper<DeclaredMapper>();
+            o.AddMapper<TestMapper>();
+        });
 
         _services = services.BuildServiceProvider();
 
@@ -51,10 +53,10 @@ public sealed class DatabaseFixture : IDisposable
     /// <summary>A mapper resolved from DI, the way application code gets one.</summary>
     public TestMapper Mapper => _services.GetRequiredService<TestMapper>();
 
-    /// <summary>The mapper carrying the profile that needs DI.</summary>
-    public ProfileMapper ProfileMapper => _services.GetRequiredService<ProfileMapper>();
+    /// <summary>The mapper including the mapper that needs DI.</summary>
+    public IncludingMapper IncludingMapper => _services.GetRequiredService<IncludingMapper>();
 
-    /// <summary>The mapper carrying the global type-pair conversions.</summary>
+    /// <summary>The mapper carrying the pack of type-pair conversions.</summary>
     public ConversionMapper ConversionMapper => _services.GetRequiredService<ConversionMapper>();
 
     /// <summary>The mapper whose conversions come from a referenced assembly.</summary>

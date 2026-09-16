@@ -3,35 +3,46 @@
 namespace ShiftMapper.Generator;
 
 /// <summary>
-/// What one <see cref="ShiftMapperProfile"/> DECLARES, as the metadata emitter needs it.
+/// What one mapper or pack DECLARES, as the metadata emitter needs it.
 ///
 /// <para>Deliberately not <see cref="MapModel"/>. A MapModel is the result of matching every
 /// property of two types and deciding how each one is filled; that work belongs to the compilation
 /// that will EMIT the mapping, and doing it here would be doing it twice and throwing the first
 /// answer away. What travels across an assembly is the DECLARATION — the pairs, the refinements and
 /// the options — and the consuming generator does its own analysis from that, exactly as it does
-/// for a profile written in its own source.</para>
+/// for a mapper written in its own source.</para>
 ///
 /// <para>Strings only, like every other cached model here.</para>
 /// </summary>
-internal sealed class ProfileDeclarationModel
+internal sealed class DeclarationModel
 {
-    public ProfileDeclarationModel(
-        string profileType,
+    public DeclarationModel(
+        string declaringType,
+        bool isPack,
         ImmutableArray<DeclaredMapModel> maps,
         ImmutableArray<DeclaredConversionModel> conversions,
         ImmutableArray<(string Source, string Destination)> openMaps,
-        ImmutableArray<DeclaredConventionModel> conventions)
+        ImmutableArray<DeclaredConventionModel> conventions,
+        ImmutableArray<string> composed,
+        DeclaredDefaults defaults,
+        bool isFirstPart)
     {
-        ProfileType = profileType;
+        IsFirstPart = isFirstPart;
+        DeclaringType = declaringType;
+        IsPack = isPack;
         Maps = maps;
         Conversions = conversions;
         OpenMaps = openMaps;
         Conventions = conventions;
+        Composed = composed;
+        Defaults = defaults;
     }
 
-    /// <summary>Fully qualified profile type, e.g. <c>global::Contoso.Platform.PlatformProfile</c>.</summary>
-    public string ProfileType { get; }
+    /// <summary>Fully qualified mapper or pack type, e.g. <c>global::Contoso.Platform.PlatformMapper</c>.</summary>
+    public string DeclaringType { get; }
+
+    /// <summary>A <c>ShiftMapperConversions</c> rather than a mapper: rules only, never maps.</summary>
+    public bool IsPack { get; }
 
     public ImmutableArray<DeclaredMapModel> Maps { get; }
 
@@ -43,12 +54,50 @@ internal sealed class ProfileDeclarationModel
     /// <summary>Member-shaped rules from <c>CreateMemberConvention</c>.</summary>
     public ImmutableArray<DeclaredConventionModel> Conventions { get; }
 
-    /// <summary>Nothing to say about this type, so nothing is emitted for it.</summary>
-    public bool IsEmpty =>
-        Maps.IsEmpty && Conversions.IsEmpty && OpenMaps.IsEmpty && Conventions.IsEmpty;
+    /// <summary>What the constructor composes: <c>IncludeMapper</c> targets and <c>AddConversions</c> packs, fully qualified.</summary>
+    public ImmutableArray<string> Composed { get; }
+
+    /// <summary>What the mapper's <c>ConfigureDefaults</c> set.</summary>
+    public DeclaredDefaults Defaults { get; }
+
+    /// <summary>
+    /// Whether this is the first part of the (possibly partial) class — the one that carries the
+    /// marker and the defaults, so a mapper split over files announces itself once.
+    /// </summary>
+    public bool IsFirstPart { get; }
 }
 
-/// <summary>One <c>CreateMap</c> a profile declared, with everything that is not an expression.</summary>
+/// <summary>A mapper's <c>ConfigureDefaults</c>, as it travels: three-state options and naming.</summary>
+internal readonly struct DeclaredDefaults
+{
+    public static readonly DeclaredDefaults None = new(null, null, null, ImmutableArray<string>.Empty, ImmutableArray<string>.Empty);
+
+    public DeclaredDefaults(
+        bool? caseSensitive,
+        bool? allowNullCollections,
+        bool? flattening,
+        ImmutableArray<string> prefixes,
+        ImmutableArray<string> postfixes)
+    {
+        CaseSensitive = caseSensitive;
+        AllowNullCollections = allowNullCollections;
+        Flattening = flattening;
+        Prefixes = prefixes.IsDefault ? ImmutableArray<string>.Empty : prefixes;
+        Postfixes = postfixes.IsDefault ? ImmutableArray<string>.Empty : postfixes;
+    }
+
+    public bool? CaseSensitive { get; }
+
+    public bool? AllowNullCollections { get; }
+
+    public bool? Flattening { get; }
+
+    public ImmutableArray<string> Prefixes { get; }
+
+    public ImmutableArray<string> Postfixes { get; }
+}
+
+/// <summary>One <c>CreateMap</c> a mapper declared, with everything that is not an expression.</summary>
 internal sealed class DeclaredMapModel
 {
     public DeclaredMapModel(
@@ -120,10 +169,9 @@ internal sealed class DeclaredMapModel
     /// <summary>
     /// What the map's own options lambda SAID, or null for "said nothing".
     ///
-    /// <para>Null has to survive the trip. A profile's own <c>ConfigureDefaults</c> configures
-    /// nothing (SM0029) — the mapper that ADDS the profile supplies the defaults — so a
-    /// declaration travelling as a resolved <c>false</c> would overwrite the consuming mapper's
-    /// setting with a value nobody wrote.</para>
+    /// <para>Null has to survive the trip. The declaring mapper's <c>ConfigureDefaults</c> travels
+    /// separately and is applied underneath, so a declaration travelling as a resolved
+    /// <c>false</c> would bake a value nobody wrote.</para>
     /// </summary>
     public bool? CaseSensitive { get; }
 
@@ -138,7 +186,7 @@ internal sealed class DeclaredMapModel
     public ImmutableArray<string> Postfixes { get; }
 }
 
-/// <summary>One <c>CreateMemberConvention</c> a profile declared — entirely shape.</summary>
+/// <summary>One <c>CreateMemberConvention</c> a mapper or pack declared — entirely shape.</summary>
 internal sealed class DeclaredConventionModel
 {
     public DeclaredConventionModel(
@@ -171,7 +219,7 @@ internal sealed class DeclaredConventionModel
     public int Direction { get; }
 }
 
-/// <summary>One <c>CreateConversion</c> a profile declared.</summary>
+/// <summary>One <c>CreateConversion</c> a mapper or pack declared.</summary>
 internal sealed class DeclaredConversionModel
 {
     public DeclaredConversionModel(

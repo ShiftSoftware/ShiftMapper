@@ -818,60 +818,64 @@ Accept: application/json
 GET {{HostAddress}}/api/catalog/paged-brands
 Accept: application/json
 
-### 1q. PROFILES — the same request as 1p, and nothing about it changed.
+### 1q. INCLUDED MAPPERS — the same request as 1p, and nothing about it changed.
 #
 #      That is the point. Every catalogue map moved out of AppMapper's constructor into
-#      Mapping/CatalogProfile.cs, added with one line:
+#      Mapping/CatalogMapper.cs — a mapper of its own — and AppMapper takes them with one line:
 #
-#          AddProfile<CatalogProfile>();
+#          IncludeMapper<CatalogMapper>();
 #
-#      AppMapper's constructor was 638 lines. A profile is a place to WRITE declarations, not a
-#      second mapper: these are still AppMapper's maps, and there is no CatalogProfile.Map to
-#      call. The response below is byte-for-byte what request 1p returned before the split.
+#      AppMapper's constructor was 638 lines. There is one concept, not two: CatalogMapper has
+#      its own generated Map methods and can be injected by a service that only deals with the
+#      catalogue, AND its maps are AppMapper's maps too. The response below is byte-for-byte what
+#      request 1p returned before the split.
 #
 #      Note what crossed the boundary without being asked to. The open generic at the foot of
-#      CatalogProfile closes over Brand → BrandDto, declared in AppMapper itself
+#      CatalogMapper closes over Brand → BrandDto, declared in AppMapper itself
 #      (/api/catalog/paged-brands still works), and the IncludeBase chain resolves across both
-#      files. A profile is a place to write, not a wall.
+#      files. An included mapper is a place to write, not a wall.
 GET {{HostAddress}}/api/catalog
 Accept: application/json
 
-### 1q2. A PROFILE WITH A DEPENDENCY — the half that needed designing rather than moving text.
+### 1q2. AN INCLUDED MAPPER WITH A DEPENDENCY — the half that needed designing rather than moving text.
 #
-#      Mapping/InvoiceLabelProfile.cs takes IInvoiceNumbering:
+#      Mapping/InvoiceLabelMapper.cs takes IInvoiceNumbering:
 #
-#          public InvoiceLabelProfile(IInvoiceNumbering numbering) =>
+#          public InvoiceLabelMapper(IInvoiceNumbering numbering) =>
 #              CreateMap<Invoice, InvoiceLabelDto>()
 #                  .ConstructUsing(s => new InvoiceLabelDto(numbering.Prefix + s.Number));
 #
 #      It CANNOT be built while AppMapper's constructor runs: a mapper's Services is assigned by
 #      AddShiftMapper AFTER the constructor returns, because the object has to exist before
-#      anything can be set on it. So AddProfile only records the type, and profiles are built the
-#      first time something is actually mapped — by which point DI is in place.
+#      anything can be set on it. So IncludeMapper only records the type, and included mappers
+#      are built the first time something is actually mapped — by which point DI is in place.
+#      Nothing registered it by hand: AddShiftMapper registers what AppMapper includes.
 #
 #      The "IQ/" in the label below is that having worked: the prefix came from a service, through
-#      a profile, into a map declared in a different file from the mapper that owns it.
+#      an included mapper, into a map declared in a different file from the mapper that owns it.
 #
-#      One consequence worth knowing: a profile taking dependencies makes the WHOLE mapper
-#      DI-only, because all profiles are built together and one that cannot be built fails the
-#      first map. Skipping it would leave its members quietly unfilled, which is the divergence
-#      this library exists to prevent — so it throws, naming the profile and what to register.
+#      One consequence worth knowing: an include taking dependencies makes the WHOLE mapper
+#      DI-only, because everything a mapper includes is built together and one that cannot be
+#      built fails the first map. Skipping it would leave its members quietly unfilled, which is
+#      the divergence this library exists to prevent — so it throws, naming the mapper.
 GET {{HostAddress}}/api/invoices/1/label
 Accept: application/json
 
-### 1r. GLOBAL TYPE-PAIR CONVERSIONS — one rule, written once, for every map.
+### 1r. A PACK OF TYPE-PAIR CONVERSIONS — one rule, written once, for every map of the mapper that adds it.
 #
 #      Everything before this configures a MEMBER of a MAP. A ForMember is written per member per
 #      map, so a rule that really belongs to a TYPE gets written as many times as the type is used
-#      — and forgotten once. This is written once:
+#      — and forgotten once. This is written once, in Mapping/ConversionPack.cs:
 #
 #          CreateConversion<DateTime, string>(
 #              memory: issued => issued.Year + "/" + issued.Month + "/" + issued.Day,
 #              query:  issued => issued.Year + "/" + issued.Month + "/" + issued.Day);
 #
-#      InvoiceStampDto below configures NOTHING. Its map is one line, it says not a word about
-#      dates, and IssuedAt still comes back formatted — because the pair converts now, everywhere,
-#      including in maps written tomorrow by people who never saw the rule.
+#      and AppMapper adds the pack with AddConversions<ConversionPack>(). InvoiceStampDto below
+#      configures NOTHING. Its map is one line, it says not a word about dates, and IssuedAt still
+#      comes back formatted — because the pair converts now, in every map this mapper declares,
+#      including maps written tomorrow by people who never saw the rule. A rule reaches the maps
+#      of the mapper that has it and no further, which is what makes a rule from a package safe.
 #
 #      It plugs into the same resolver that already knows int -> string, so it also applies through
 #      collections, dictionaries and nested maps. And a registered pair BEATS the built-in table:
@@ -930,19 +934,21 @@ Accept: application/json
 #
 #      Contoso.Platform — the sample's stand-in for a framework package, modelled on
 #      ShiftFramework — is a separate project, referenced the way a NuGet package would be: a
-#      compiled assembly, no source. This project declares NO conversion for these pairs and never
-#      names the framework's conversion class. It adds ONE profile, and the package's own build
-#      wrote what that profile declares into the assembly as metadata:
+#      compiled assembly, no source. This project declares NO conversion for these pairs. Its
+#      Program.cs gives the framework's PACK to every mapper it registers, with one line —
+#      o.AddConversions<PlatformConversions>() — and the package's own build wrote what that pack
+#      declares into the assembly as metadata:
 #
-#          [assembly: ShiftMapperContract(1)]
-#          [assembly: ShiftMapperDeclaredConversion(typeof(PlatformProfile), typeof(long), typeof(string), HasQueryForm = true)]
-#          [assembly: ShiftMapperDeclaredConversion(typeof(PlatformProfile), typeof(string), typeof(List<FileDto>), HasQueryForm = false)]
+#          [assembly: ShiftMapperContract(2)]
+#          [assembly: ShiftMapperDeclaredPack(typeof(PlatformConversions))]
+#          [assembly: ShiftMapperDeclaredConversion(typeof(PlatformConversions), typeof(long), typeof(string), HasQueryForm = true)]
+#          [assembly: ShiftMapperDeclaredConversion(typeof(PlatformConversions), typeof(string), typeof(List<FileDto>), HasQueryForm = false)]
 #
-#      THAT IS HOW A PROFILE CROSSES AN ASSEMBLY. A generator sees a reference as METADATA with no
-#      method bodies, so the profile's CreateConversion calls are not there to read — but their
-#      SHAPE is, written by the package's own build, and AddProfile runs the constructor at run
-#      time so the expressions arrive then. A package built without the generator carries none of
-#      this, and the build says so (SM0028) rather than mapping nothing in silence.
+#      THAT IS HOW A PACK CROSSES AN ASSEMBLY. A generator sees a reference as METADATA with no
+#      method bodies, so the pack's CreateConversion calls are not there to read — but their
+#      SHAPE is, written by the package's own build, and adding the pack runs its constructor at
+#      run time so the expressions arrive then. A package built without the generator carries none
+#      of this, and the build says so (SM0028) rather than mapping nothing in silence.
 #
 #      "externalIds" below is a List<long> on the entity and a List<string> here, converted by the
 #      framework's hash-id rule. Note that long → string ALREADY converts — 10010 would have been
@@ -957,9 +963,9 @@ Accept: application/json
 #        OUTER APPLY OPENJSON([b].[ExternalIds]) AS [e]
 #
 #      That N'H' travelled from another assembly, as an expression tree, through an attribute, into
-#      SQL Server. The MEMORY form of the same pair is called directly by name in the generated
-#      code — no lookup, no delegate — which makes the metadata route faster than declaring the
-#      same rule in this project, as well as the only one that crosses an assembly.
+#      SQL Server. The generated code names the pack as the scope it looks the rule up in —
+#      Customizations.Conversion<long, string>(typeof(PlatformConversions)) — so the runtime reads
+#      exactly the store the generator resolved, and the two cannot disagree.
 GET {{HostAddress}}/api/brands/hashed?sql=true
 
 ### 1s3. THE OTHER RULE THE SAME PACKAGE SHIPS, and the more interesting one.
@@ -985,6 +991,20 @@ Accept: application/json
 GET {{HostAddress}}/api/brands/files?project=true
 Accept: application/json
 
+### 1s5. THE PACKAGE'S OWN MAPPER, INJECTED — through the adapter this project generated.
+#
+#      Program.cs registers PlatformMapper directly: o.AddMapper<PlatformMapper>(). Its Map methods
+#      were compiled inside Contoso.Platform and cannot pick up this project's packs — so this
+#      project's generator wrote a SUBCLASS, Generated/.../Contoso_Platform_PlatformMapper_Adapter,
+#      with the same maps re-baked and this project's packs applied, and AddShiftMapper hands it
+#      out wherever PlatformMapper is asked for. "resolved" below names it.
+#
+#      FileSummary.Size is a long in the package. The package's own code would have rendered it
+#      "42"; this one renders "H42", because Program.cs gave every mapper the hash-id pack. The
+#      package's Trim() MapFrom still runs — it arrived at run time, like any MapFrom.
+GET {{HostAddress}}/api/framework/files
+Accept: application/json
+
 ### 1t. A MEMBER-SHAPED CONVENTION — the last piece, and the one an AfterMap cannot do.
 #
 #      This project's entire involvement is one line:
@@ -992,7 +1012,7 @@ Accept: application/json
 #          CreateMap<Product, ProductListDto>();
 #
 #      ProductListDto has two SelectDto members, Brand and Stock. NOTHING here fills
-#      them. The framework declared one rule, once, in its own profile:
+#      them. The framework declared one rule, once, in its own pack:
 #
 #          CreateMemberConvention<SelectDto>()
 #              .NameFrom<KeyAndNameAttribute>(nameof(KeyAndNameAttribute.Text))

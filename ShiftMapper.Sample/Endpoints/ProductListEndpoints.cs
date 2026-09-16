@@ -11,7 +11,7 @@ namespace ShiftMapper.Sample.Endpoints;
 ///
 /// <para>The map is <c>CreateMap&lt;Product, ProductListDto&gt;()</c> and nothing else. Two members
 /// of the DTO are <c>SelectDto</c>, and both are filled by a rule that assembly declared
-/// once in its own profile — a rule that names no application type at all.</para>
+/// once in its own pack — a rule that names no application type at all.</para>
 /// </summary>
 public static class ProductListEndpoints
 {

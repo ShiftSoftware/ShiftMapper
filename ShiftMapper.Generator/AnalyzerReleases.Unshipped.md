@@ -32,15 +32,17 @@ SM0023 | ShiftMapper | Warning | Include cannot dispatch to the derived pair
 SM0024 | ShiftMapper | Warning | Map cannot be projected because it dispatches on the runtime type
 SM0025 | ShiftMapper | Warning | As names a type that cannot stand in for the destination
 SM0026 | ShiftMapper | Warning | Open generic map was not closed
-SM0027 | ShiftMapper | Warning | A map is declared both in a profile and outside it
-SM0028 | ShiftMapper | Warning | A referenced assembly carries no ShiftMapper declaration metadata
-SM0029 | ShiftMapper | Warning | ConfigureDefaults on a profile has no effect
+SM0027 | ShiftMapper | Warning | A map is declared both in an included mapper and in the mapper that includes it
+SM0028 | ShiftMapper | Error | A referenced assembly carries no ShiftMapper declaration metadata
 SM0030 | ShiftMapper | Warning | Map cannot be projected because a conversion has no query form
-SM0031 | ShiftMapper | Error | Two assemblies declare a conversion for the same type pair
+SM0031 | ShiftMapper | Error | Two packs declare a conversion for the same type pair
 SM0032 | ShiftMapper | Warning | A declared conversion could not be read
-SM0033 | ShiftMapper | Warning | A referenced assembly declares a newer ShiftMapper contract
+SM0033 | ShiftMapper | Warning | A referenced assembly declares a different ShiftMapper contract
 SM0034 | ShiftMapper | Warning | A member convention could not fill the member it claimed
 SM0035 | ShiftMapper | Error | A declaration cannot be honoured where it is written
 SM0036 | ShiftMapper | Warning | Map cannot be projected because a map it nests cannot
 SM0037 | ShiftMapper | Warning | ProjectTo cannot be used for this pair
 SM0038 | ShiftMapper | Warning | This member convention fills nothing
+SM0039 | ShiftMapper | Error | A sealed mapper from a referenced assembly cannot be registered here
+SM0040 | ShiftMapper | Warning | Two registered mappers declare the same pair
+SM0041 | ShiftMapper | Warning | A mapper is registered with different includes or packs in two calls

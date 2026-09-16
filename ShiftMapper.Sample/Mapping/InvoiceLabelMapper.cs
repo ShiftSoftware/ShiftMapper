@@ -5,28 +5,29 @@ using ShiftMapper.Sample.Services;
 namespace ShiftMapper.Sample.Mapping;
 
 /// <summary>
-/// A profile WITH A DEPENDENCY, which is the half of the feature that needed designing rather than
-/// merely moving text.
+/// An included mapper WITH A DEPENDENCY, which is the half of the feature that needed designing
+/// rather than merely moving text.
 ///
 /// <code>
-/// public InvoiceLabelProfile(IInvoiceNumbering numbering) =&gt; ...
+/// public InvoiceLabelMapper(IInvoiceNumbering numbering) =&gt; ...
 /// </code>
 ///
 /// <para><b>IT CANNOT BE BUILT WHILE APPMAPPER'S CONSTRUCTOR RUNS.</b> A mapper's
 /// <c>Services</c> is assigned by <c>AddShiftMapper</c> AFTER the constructor returns — the
-/// object has to exist before anything can be set on it — so a profile resolved eagerly from
-/// <c>AddProfile</c> would have nowhere to resolve from. Profiles are therefore materialised on
-/// FIRST USE: the <c>AddProfile</c> call records the type, and the profile is constructed the first
-/// time anything is actually mapped, by which point DI is in place.</para>
+/// object has to exist before anything can be set on it — so a mapper resolved eagerly from
+/// <c>IncludeMapper</c> would have nowhere to resolve from. Included mappers are therefore
+/// materialised on FIRST USE: the <c>IncludeMapper</c> call records the type, and the mapper is
+/// constructed the first time anything is actually mapped, by which point DI is in place.</para>
 ///
-/// <para>That is also why this one is registered in Program.cs
-/// (<c>AddTransient&lt;InvoiceLabelProfile&gt;()</c>) and <see cref="CatalogProfile"/> is not: a
-/// profile with a parameterless constructor is built directly and needs no registration, which
-/// keeps a hand-built mapper usable in a test.</para>
+/// <para>Nothing has to be registered for that: <c>AddShiftMapper</c> registers what AppMapper
+/// includes, and even an included mapper it does not know about is constructed with its
+/// dependencies injected. What it does mean is that AppMapper is DI-only — a hand-built
+/// <c>new AppMapper()</c> in a test would fail its first map, naming this class and its
+/// dependency, rather than quietly mapping without it.</para>
 /// </summary>
-public class InvoiceLabelProfile : ShiftMapperProfile
+public partial class InvoiceLabelMapper : ShiftMapperBase
 {
-    public InvoiceLabelProfile(IInvoiceNumbering numbering)
+    public InvoiceLabelMapper(IInvoiceNumbering numbering)
     {
     // CONSTRUCTUSING, for the case convention cannot reach: no constructor ShiftMapper could
     // pick would know about the numbering service. It replaces CONSTRUCTION and nothing else

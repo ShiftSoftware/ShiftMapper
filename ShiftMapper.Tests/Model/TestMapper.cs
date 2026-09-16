@@ -96,18 +96,18 @@ public partial class TestMapper : ShiftMapperBase
         // Page<Widget> -> PageDto<WidgetDto>, and so on.
         CreateMap(typeof(Page<>), typeof(PageDto<>));
 
-        // PROFILES — maps written outside this class, in Model/Profiles.cs. They become THIS
-        // mapper's maps: mapper.Map<GadgetDto>(gadget) and ProjectTo work exactly as if the
-        // CreateMap had been written on the line below.
+        // INCLUDED MAPPERS — maps written in mappers of their own, in Model/IncludedMappers.cs.
+        // They become THIS mapper's maps: mapper.Map<GadgetDto>(gadget) and ProjectTo work
+        // exactly as if the CreateMap had been written on the line below.
         //
-        // Both of these are PARAMETERLESS, deliberately. A profile that takes a dependency can
-        // only be built from a service provider, and a mapper cannot build ANY of its profiles
-        // without one — so a single DI-only profile would make this whole mapper DI-only, and
+        // Both of these are PARAMETERLESS, deliberately. A mapper that takes a dependency can
+        // only be built from a service provider, and a mapper cannot build ANYTHING it includes
+        // without one — so a single DI-only include would make this whole mapper DI-only, and
         // every `new TestMapper(...)` in this suite would throw on its first map. That consequence
-        // is real and worth knowing; NumberedProfile lives on ProfileMapper to demonstrate it
+        // is real and worth knowing; NumberedMapper lives on IncludingMapper to demonstrate it
         // without imposing it here.
-        AddProfile<GadgetProfile>();
-        AddProfile<PremiumGadgetProfile>();
+        IncludeMapper<GadgetMapper>();
+        IncludeMapper<PremiumGadgetMapper>();
 
         // CONVERTUSING — the expression IS the map, and the one map-level hook that projects.
         // No member is matched, so Label is never reported unmapped; and the tree is exactly what

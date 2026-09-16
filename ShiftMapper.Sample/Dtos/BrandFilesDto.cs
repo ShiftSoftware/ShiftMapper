@@ -12,10 +12,10 @@ namespace ShiftMapper.Sample.Dtos;
 /// CreateMap&lt;Brand, BrandFilesDto&gt;();
 /// </code>
 ///
-/// <para><b>NO PROFILE, NO CONVERSION, NO ForMember.</b> Both conversions arrive from
-/// <c>Contoso.Platform</c>, a compiled assembly referenced like any NuGet package, through two
-/// assembly attributes and a class of ordinary static methods. The generator read them out of
-/// METADATA — which is all it can see of a reference — and emitted direct calls:</para>
+/// <para><b>NO CONVERSION OF ITS OWN, NO ForMember.</b> Both conversions arrive from
+/// <c>Contoso.Platform</c>, a compiled assembly referenced like any NuGet package, through the
+/// pack the mapper adds. The generator read them out of METADATA — which is all it can see of a
+/// reference — and emitted the lookups:</para>
 ///
 /// <code>
 /// Files       = global::Contoso.Platform.PlatformConversions.ToFiles(source.Files),

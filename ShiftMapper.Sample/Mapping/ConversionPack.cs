@@ -3,7 +3,8 @@
 namespace ShiftMapper.Sample.Mapping;
 
 /// <summary>
-/// GLOBAL TYPE-PAIR CONVERSIONS — one rule, written once, answering wherever the pair appears.
+/// A PACK of type-pair conversions — one rule, written once, answering wherever the pair appears
+/// in every mapper that adds it.
 ///
 /// <para><b>THIS IS THE ONE THAT SCALES.</b> Every earlier step configures a MEMBER of a MAP: a
 /// <c>ForMember</c> is written per member per map, so a rule that really belongs to a TYPE gets
@@ -18,13 +19,15 @@ namespace ShiftMapper.Sample.Mapping;
 /// otherwise a rule for a pair that already converts, which is precisely what a hash-id rule is,
 /// would be ignored in silence.</para>
 ///
-/// <para>Added by <c>AddProfile&lt;ConversionProfile&gt;()</c> in <see cref="AppMapper"/>, which is
-/// the shape that matters: a framework ships the profile, an application adds one line, and every
-/// map in the application picks the rules up without repeating anything.</para>
+/// <para>Added by <c>AddConversions&lt;ConversionPack&gt;()</c> in <see cref="AppMapper"/>, which
+/// is the shape that matters: a framework ships the pack, an application adds one line, and every
+/// map in that mapper picks the rules up without repeating anything. A pack holds RULES and no
+/// maps, so adding one cannot bring maps along, and the same line at registration —
+/// <c>o.AddConversions&lt;ConversionPack&gt;()</c> — gives it to every mapper registered.</para>
 /// </summary>
-public class ConversionProfile : ShiftMapperProfile
+public class ConversionPack : ShiftMapperConversions
 {
-    public ConversionProfile()
+    public ConversionPack()
     {
         // ------------------------------------------------------------------
         // TWO FORMS, BECAUSE THERE ARE TWO BACKENDS.

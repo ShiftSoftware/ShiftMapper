@@ -60,12 +60,13 @@ public class VaultDto
 }
 
 /// <summary>
-/// The conversions, in a PROFILE — which is the shape that matters. A framework ships this, an
-/// application adds it, and every map in the application picks the rules up without repeating them.
+/// The conversions, in a PACK — which is the shape that matters. A framework ships this, an
+/// application adds it, and every map of the mapper that adds it picks the rules up without
+/// repeating them.
 /// </summary>
-public class ConversionProfile : ShiftMapperProfile
+public class ConversionPack : ShiftMapperConversions
 {
-    public ConversionProfile()
+    public ConversionPack()
     {
         // A pair the built-in table refuses outright. Two forms, so it projects.
         CreateConversion<Money, string>(
@@ -93,12 +94,12 @@ public class ConversionProfile : ShiftMapperProfile
     }
 }
 
-/// <summary>The mapper that adds the profile above.</summary>
+/// <summary>The mapper that adds the pack above.</summary>
 public partial class ConversionMapper : ShiftMapperBase
 {
     public ConversionMapper()
     {
-        AddProfile<ConversionProfile>();
+        AddConversions<ConversionPack>();
 
         CreateMap<Catalogue, CatalogueDto>();
         CreateMap<Vault, VaultDto>();

@@ -183,7 +183,7 @@ public class DiagnosticTests
         // still perfectly possible, and is still emitted.
         run.Compiles()
            .DoesNotEmit("new global::Destination")
-           .Emits("public global::Destination Map(global::Source source, global::Destination destination)");
+           .Emits("public virtual global::Destination Map(global::Source source, global::Destination destination)");
     }
 
     // -----------------------------------------------------------------

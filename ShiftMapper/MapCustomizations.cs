@@ -123,11 +123,18 @@ public sealed class MapCustomizations
     internal MapCustomizations(Type owner) => _owner = owner;
 
     /// <summary>
-    /// GLOBAL TYPE-PAIR CONVERSIONS — what <c>CreateConversion</c> registers.
+    /// TYPE-PAIR CONVERSIONS — what <c>CreateConversion</c> registers — kept PER DECLARING SCOPE.
     ///
-    /// <para>Keyed by the PAIR rather than by a member, which is the whole point: a rule written
-    /// once for <c>string → List&lt;FileDTO&gt;</c> answers for every member of those types in
-    /// every map, including ones declared in code that has never heard of it.</para>
+    /// <para>The outer key is the mapper or pack that DECLARED the conversion. A rule applies to the
+    /// maps of the mapper that wrote it, or to whatever a pack was added to; it never leaks into a
+    /// map that merely shares the store because one mapper included another. The generator works
+    /// out at compile time which scope answers for each member and writes that scope into the
+    /// generated call, so the lookup here is one dictionary, never a search through several.</para>
+    ///
+    /// <para>Inside a scope the key is the PAIR rather than a member, which is the whole point: a
+    /// rule written once for <c>string → List&lt;FileDTO&gt;</c> answers for every member of those
+    /// types in every map of that scope, including ones declared in code that has never heard of
+    /// it.</para>
     ///
     /// <para>Two forms, because the two backends are not the same place. The MEMORY form is a
     /// delegate the generated map methods call. The QUERY form is an expression tree spliced into
@@ -137,11 +144,11 @@ public sealed class MapCustomizations
     ///
     /// Written from constructors, like everything else here, so a plain dictionary is right.
     /// </summary>
-    private readonly Dictionary<(Type Source, Type Destination), TypeConversion> _typeConversions = new();
+    private readonly Dictionary<Type, Dictionary<(Type Source, Type Destination), TypeConversion>> _typeConversions = new();
 
     /// <summary>Resolved <see cref="Conversion{TSource, TDestination}"/> answers, including the
     /// assignability walk, so a pair costs that search once per mapper instance.</summary>
-    private Dictionary<(Type Source, Type Destination), Delegate>? _resolvedConversions;
+    private Dictionary<(Type Scope, Type Source, Type Destination), Delegate>? _resolvedConversions;
 
     /// <summary>One registered type-pair conversion.</summary>
     private readonly struct TypeConversion
@@ -155,11 +162,10 @@ public sealed class MapCustomizations
         /// <summary>
         /// The delegate the in-memory maps call, or null.
         ///
-        /// <para>NULL for a conversion declared by a referenced assembly through
-        /// <c>[ShiftMapperConversions]</c>. There the generator knows the method's name at compile
-        /// time and emits a DIRECT CALL to it, so nothing needs to be looked up at run time and
-        /// only the query form has to live here. Faster than the source-declared path, and the
-        /// reason metadata is worth the ceremony.</para>
+        /// <para>NULL for a conversion whose memory form the generator could name directly — a
+        /// declared conversion lifted into a static method (see
+        /// <c>ShiftMapperDeclaredConversionAttribute.MemoryCall</c>). There nothing needs to be
+        /// looked up at run time and only the query form has to live here.</para>
         /// </summary>
         public Delegate? Memory { get; }
 
@@ -168,18 +174,17 @@ public sealed class MapCustomizations
     }
 
     /// <summary>
-    /// Records a global conversion. Internal because the only supported way here is
-    /// <c>CreateConversion</c> on a mapper or a profile.
+    /// Records a conversion under the scope that declared it. Internal because the only supported
+    /// way here is <c>CreateConversion</c> on a mapper or a pack.
     /// </summary>
-    internal void RegisterConversion(Type source, Type destination, Delegate memory, LambdaExpression? query)
+    internal void RegisterConversion(Type scope, Type source, Type destination, Delegate memory, LambdaExpression? query)
     {
-        _typeConversions[(source, destination)] = new TypeConversion(memory, query);
+        Bucket(scope)[(source, destination)] = new TypeConversion(memory, query);
         _resolvedConversions = null;
     }
 
     /// <summary>
-    /// Records only the QUERY form of a conversion — what a referenced assembly's
-    /// <c>[ShiftMapperQueryForm]</c> member supplies.
+    /// Records only the QUERY form of a conversion — what a lifted declared conversion supplies.
     ///
     /// <para>There is no memory form to record because there is nothing to look up: the generator
     /// read the method's name out of metadata and emitted a direct call to it. This is here so the
@@ -188,23 +193,56 @@ public sealed class MapCustomizations
     /// <para>Public because the GENERATED half of a mapper calls it, and that code lives in the
     /// developer's own namespace rather than in this one.</para>
     /// </summary>
-    public void RegisterQueryConversion(Type source, Type destination, LambdaExpression query)
+    public void RegisterQueryConversion(Type scope, Type source, Type destination, LambdaExpression query)
     {
+        if (scope is null)
+            throw new ArgumentNullException(nameof(scope));
+
         if (query is null)
             throw new ArgumentNullException(nameof(query));
 
-        // A conversion the application declared in its own source WINS. It is nearer to the
-        // developer than a rule arriving from a package, and the generator resolves the pair by the
-        // same precedence, so the two halves cannot disagree about which one runs.
-        if (!_typeConversions.ContainsKey((source, destination)))
-            _typeConversions[(source, destination)] = new TypeConversion(memory: null, query);
+        // A conversion the scope's own constructor registered WINS over one arriving as metadata
+        // for the same scope; the generator resolves the pair by the same precedence, so the two
+        // halves cannot disagree about which one runs.
+        Dictionary<(Type, Type), TypeConversion> bucket = Bucket(scope);
+
+        if (!bucket.ContainsKey((source, destination)))
+            bucket[(source, destination)] = new TypeConversion(memory: null, query);
 
         _resolvedConversions = null;
+    }
+
+    private Dictionary<(Type Source, Type Destination), TypeConversion> Bucket(Type scope)
+    {
+        if (!_typeConversions.TryGetValue(scope, out Dictionary<(Type, Type), TypeConversion>? bucket))
+            _typeConversions[scope] = bucket = new Dictionary<(Type, Type), TypeConversion>();
+
+        return bucket;
+    }
+
+    /// <summary>Whether any scope has registered a conversion — the cheap test before any walk.</summary>
+    private bool HasConversions
+    {
+        get
+        {
+            foreach (Dictionary<(Type, Type), TypeConversion> bucket in _typeConversions.Values)
+            {
+                if (bucket.Count > 0)
+                    return true;
+            }
+
+            return false;
+        }
     }
 
     /// <summary>
     /// The delegate that converts <typeparamref name="TSource"/> to
     /// <typeparamref name="TDestination"/>, as the generated map methods call it.
+    ///
+    /// <para><paramref name="scope"/> is the mapper or pack that DECLARED the conversion — the
+    /// generator resolved which one answers when it compiled the map, and wrote it into the call.
+    /// Looking in exactly that scope is what keeps the two halves agreeing: a runtime search across
+    /// every scope could find a registration the generator never considered.</para>
     ///
     /// <para><b>EXACT PAIR FIRST, THEN ASSIGNABILITY.</b> A conversion registered for a BASE type
     /// answers for everything that derives from it — which is what lets a framework write one
@@ -216,25 +254,29 @@ public sealed class MapCustomizations
     /// <para>Public because the generated code calls it; the generator resolves the same pair by
     /// the same rule at compile time, so the two cannot disagree about which registration wins.</para>
     /// </summary>
-    public Func<TSource, TDestination> Conversion<TSource, TDestination>()
+    public Func<TSource, TDestination> Conversion<TSource, TDestination>(Type scope)
     {
-        (Type, Type) key = (typeof(TSource), typeof(TDestination));
+        if (scope is null)
+            throw new ArgumentNullException(nameof(scope));
 
-        _resolvedConversions ??= new Dictionary<(Type, Type), Delegate>();
+        (Type, Type, Type) key = (scope, typeof(TSource), typeof(TDestination));
+
+        _resolvedConversions ??= new Dictionary<(Type, Type, Type), Delegate>();
 
         if (_resolvedConversions.TryGetValue(key, out Delegate? cached))
             return (Func<TSource, TDestination>)cached;
 
-        if (Registered(typeof(TSource), typeof(TDestination))?.Memory is null)
+        if (Registered(scope, typeof(TSource), typeof(TDestination))?.Memory is not { } memory)
         {
             throw new InvalidOperationException(
                 $"ShiftMapper: no conversion is registered from '{typeof(TSource).Name}' to " +
-                $"'{typeof(TDestination).Name}'. It was declared with CreateConversion when this " +
-                "mapper was compiled, so the declaration has been removed or moved to a profile " +
-                "this mapper no longer adds.");
+                $"'{typeof(TDestination).Name}' by '{scope.Name}'. It was declared with " +
+                "CreateConversion when this mapper was compiled, so the declaration has been " +
+                "removed, or the mapper no longer includes the mapper or adds the pack that " +
+                "declared it.");
         }
 
-        var typed = (Func<TSource, TDestination>)Registered(typeof(TSource), typeof(TDestination))!.Value.Memory!;
+        var typed = (Func<TSource, TDestination>)memory;
 
         _resolvedConversions[key] = typed;
 
@@ -242,22 +284,25 @@ public sealed class MapCustomizations
     }
 
     /// <summary>
-    /// The registration that answers for a pair — exact match, else the nearest registered
-    /// SOURCE type this one is assignable to.
+    /// The registration in one scope that answers for a pair — exact match, else the nearest
+    /// registered SOURCE type this one is assignable to.
     ///
     /// <para>Nearest by inheritance distance so that a rule for a derived type beats one for its
     /// base, which is the only ordering that lets a general rule be narrowed. Destination is
     /// matched exactly: a conversion's whole identity is what it produces.</para>
     /// </summary>
-    private TypeConversion? Registered(Type source, Type destination)
+    private TypeConversion? Registered(Type scope, Type source, Type destination)
     {
-        if (_typeConversions.TryGetValue((source, destination), out TypeConversion exact))
+        if (!_typeConversions.TryGetValue(scope, out Dictionary<(Type, Type), TypeConversion>? bucket))
+            return null;
+
+        if (bucket.TryGetValue((source, destination), out TypeConversion exact))
             return exact;
 
         TypeConversion? best = null;
         int bestDistance = int.MaxValue;
 
-        foreach (KeyValuePair<(Type Source, Type Destination), TypeConversion> entry in _typeConversions)
+        foreach (KeyValuePair<(Type Source, Type Destination), TypeConversion> entry in bucket)
         {
             if (entry.Key.Destination != destination
                 || !entry.Key.Source.IsAssignableFrom(source))
@@ -294,14 +339,15 @@ public sealed class MapCustomizations
     /// <para>Inlined rather than invoked for the reason stated on <c>Converted</c>: a delegate call
     /// is opaque to EF, and the difference is one SELECT against loading the table.</para>
     /// </summary>
-    public static TDestination Splice<TSource, TDestination>(TSource value) =>
+    public static TDestination Splice<TSource, TDestination>(TSource value, Type scope) =>
         throw new InvalidOperationException(
             "ShiftMapper: MapCustomizations.Splice is a marker for the projection composer and is " +
             "never called. Reaching it means a generated projection was used without being composed.");
 
     /// <summary>
     /// Replaces every <see cref="Splice{TSource, TDestination}"/> marker in a generated projection
-    /// with the query form of the conversion registered for that pair.
+    /// with the query form of the conversion registered for that pair, in the scope the marker
+    /// names.
     /// </summary>
     private sealed class SpliceRewriter : ExpressionVisitor
     {
@@ -323,14 +369,24 @@ public sealed class MapCustomizations
             // rewritten by the time this one wraps it.
             Expression value = Visit(node.Arguments[0])!;
 
-            TypeConversion? found = _owner.Registered(arguments[0], arguments[1]);
+            // The scope is written as typeof(X) by the generator, which the compiler turns into a
+            // constant in the tree. Anything else is a hand-built tree nobody supports.
+            if (node.Arguments[1] is not ConstantExpression { Value: Type scope })
+            {
+                throw new InvalidOperationException(
+                    "ShiftMapper: a Splice marker's scope must be a typeof() constant. The " +
+                    "projection was not produced by the ShiftMapper generator.");
+            }
+
+            TypeConversion? found = _owner.Registered(scope, arguments[0], arguments[1]);
 
             if (found?.Query is not { } query)
             {
                 throw new InvalidOperationException(
                     $"ShiftMapper: the conversion from '{arguments[0].Name}' to " +
-                    $"'{arguments[1].Name}' has no query form, so it cannot be used in a " +
-                    "projection. Give CreateConversion a query argument, or use Map instead.");
+                    $"'{arguments[1].Name}' declared by '{scope.Name}' has no query form, so it " +
+                    "cannot be used in a projection. Give CreateConversion a query argument, or " +
+                    "use Map instead.");
             }
 
             return Converted(value, query);
@@ -342,50 +398,56 @@ public sealed class MapCustomizations
         typeof(MapCustomizations).GetMethod(nameof(Splice))!.GetGenericMethodDefinition();
 
     /// <summary>
-    /// Folds a PROFILE's registrations into this store.
+    /// Folds an INCLUDED mapper's or an added PACK's registrations into this store.
     ///
-    /// <para>A profile builds its own <see cref="MapCustomizations"/> while its constructor runs —
-    /// it has to, because <c>CreateMap</c> needs somewhere to put a <c>MapFrom</c> tree before
-    /// anyone knows which mapper will use it. This is where those trees join the mapper's own, and
-    /// after it the profile object has no further part to play.</para>
+    /// <para>An included mapper builds its own <see cref="MapCustomizations"/> while its
+    /// constructor runs — it has to, because <c>CreateMap</c> needs somewhere to put a
+    /// <c>MapFrom</c> tree before anyone knows which mapper will use it. This is where those trees
+    /// join the including mapper's own, and after it the included object has no further part to
+    /// play.</para>
     ///
     /// <para><b>WHAT IS ALREADY HERE WINS</b>, and that is what makes the runtime agree with the
     /// generator. The mapper's own constructor has already run, so a pair declared both on the
-    /// mapper and in a profile keeps the mapper's version — the same precedence the generator
-    /// applies when it reads the two declarations, and the reason it is safe for the build to
-    /// report the clash as a warning rather than an error.</para>
+    /// mapper and in an included mapper keeps the mapper's version — the same precedence the
+    /// generator applies when it reads the two declarations, and the reason it is safe for the
+    /// build to report the clash as a warning rather than an error.</para>
+    ///
+    /// <para>Conversions arrive with their SCOPE and keep it: a whole scope that is not here yet is
+    /// taken as-is, and a scope that is (the same mapper reached along two include paths) is left
+    /// alone. Nothing is ever re-keyed, because the generated code names the declaring scope and
+    /// has to find the registration under that name.</para>
     ///
     /// <para>The owner is deliberately NOT copied. Compiled delegates are shared per mapper TYPE,
-    /// and a tree that arrived from a profile is still, as far as reuse goes, part of the mapper
-    /// that included it.</para>
+    /// and a tree that arrived from an included mapper is still, as far as reuse goes, part of the
+    /// mapper that included it.</para>
     /// </summary>
-    internal void MergeFrom(MapCustomizations profile)
+    internal void MergeFrom(MapCustomizations included)
     {
-        foreach (KeyValuePair<CustomizationKey, LambdaExpression> entry in profile._values)
+        foreach (KeyValuePair<CustomizationKey, LambdaExpression> entry in included._values)
         {
             if (!_values.ContainsKey(entry.Key))
                 _values[entry.Key] = entry.Value;
         }
 
-        foreach (KeyValuePair<CustomizationKey, Delegate> entry in profile._conditions)
+        foreach (KeyValuePair<CustomizationKey, Delegate> entry in included._conditions)
         {
             if (!_conditions.ContainsKey(entry.Key))
                 _conditions[entry.Key] = entry.Value;
         }
 
-        foreach (KeyValuePair<(Type Source, Type Destination), TypeConversion> entry
-                 in profile._typeConversions)
+        foreach (KeyValuePair<Type, Dictionary<(Type Source, Type Destination), TypeConversion>> scope
+                 in included._typeConversions)
         {
-            if (!_typeConversions.ContainsKey(entry.Key))
-                _typeConversions[entry.Key] = entry.Value;
+            if (!_typeConversions.ContainsKey(scope.Key))
+                _typeConversions[scope.Key] = new Dictionary<(Type, Type), TypeConversion>(scope.Value);
         }
 
         _resolvedConversions = null;
 
         foreach (KeyValuePair<(Type Source, Type Destination), List<(Type Source, Type Destination)>> entry
-                 in profile._inherited)
+                 in included._inherited)
         {
-            // Lineages UNION rather than overwrite. A base declared in a profile and another
+            // Lineages UNION rather than overwrite. A base declared in an included mapper and another
             // declared on the mapper are both real, and dropping either would leave an inherited
             // member resolving to nothing on one of the two backends.
             if (!_inherited.TryGetValue(entry.Key, out List<(Type, Type)>? bases))
@@ -980,9 +1042,9 @@ public sealed class MapCustomizations
         if (conversions is null)
             throw new ArgumentNullException(nameof(conversions));
 
-        // GLOBAL CONVERSIONS FIRST, and before the early return below: a map may use one and have
-        // no customizations of its own, and the markers still have to become real expressions.
-        if (_typeConversions.Count > 0)
+        // TYPE-PAIR CONVERSIONS FIRST, and before the early return below: a map may use one and
+        // have no customizations of its own, and the markers still have to become real expressions.
+        if (HasConversions)
         {
             conventions = (Expression<Func<TSource, TDestination>>)
                 new SpliceRewriter(this).Visit(conventions)!;

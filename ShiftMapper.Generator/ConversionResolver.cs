@@ -160,16 +160,20 @@ internal static class ConversionResolver
             // whole difference metadata buys: the generator read the method's name out of the
             // referenced assembly, so the generated code names it too — no dictionary, no
             // delegate, and the element lambdas of a collection stay `static`.
+            //
+            // THE SCOPE IS WRITTEN INTO THE CALL. The table resolved WHICH declaring mapper or
+            // pack answers — nearest first — and the runtime looks in exactly that scope, so the
+            // two halves cannot disagree about which registration runs.
             return new ValueConversion(
                 template: registered.MemoryCall is { } call
                     ? $"{call}({{0}})"
-                    : $"Customizations.Conversion<{source}, {destination}>()({{0}})",
+                    : $"Customizations.Conversion<{source}, {destination}>(typeof({registered.Scope}))({{0}})",
                 risk: ConversionRisk.None,
                 note: null,
                 // A MARKER, not a call. The projection is an expression tree EF reads, and the
                 // conversion it needs is a tree registered at run time; Compose replaces this with
                 // that tree, inlined. See MapCustomizations.Splice.
-                queryTemplate: $"global::ShiftMapper.MapCustomizations.Splice<{source}, {destination}>({{0}})",
+                queryTemplate: $"global::ShiftMapper.MapCustomizations.Splice<{source}, {destination}>({{0}}, typeof({registered.Scope}))",
                 projectionRefusal: registered.HasQueryForm
                     ? null
                     : $"the conversion from '{sourceType.Name}' to '{destinationType.Name}' was " +

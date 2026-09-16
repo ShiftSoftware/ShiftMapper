@@ -161,8 +161,8 @@ public sealed partial class ShiftMapperAnalyzer : DiagnosticAnalyzer
                 reporter.Report(DiagnosticDescriptors.OpenGenericNotClosed, part.Model.Location, problem);
         }
 
-        // SM0027 / SM0028 / SM0029 — the profile problems, each carrying the id that reports it.
-        // One list rather than three keeps the model from growing a limb per diagnostic.
+        // SM0027 — the include problems, each carrying the id that reports it. One list rather
+        // than one per diagnostic keeps the model from growing a limb per diagnostic.
         foreach (MapperPart part in ordered)
         {
             foreach (string problem in part.Model.ProfileProblems)
@@ -174,8 +174,7 @@ public sealed partial class ShiftMapperAnalyzer : DiagnosticAnalyzer
 
                 DiagnosticDescriptor? descriptor = problem.Substring(0, split) switch
                 {
-                    "SM0027" => DiagnosticDescriptors.ProfileMapDeclaredTwice,
-                    "SM0029" => DiagnosticDescriptors.ProfileDefaultsIgnored,
+                    "SM0027" => DiagnosticDescriptors.IncludedMapDeclaredTwice,
                     _ => null,
                 };
 
@@ -209,10 +208,10 @@ public sealed partial class ShiftMapperAnalyzer : DiagnosticAnalyzer
         //
         // EVERY PART, DEDUPED BY MESSAGE, rather than only the first. Two different kinds of fact
         // ride this one channel: a package carrying no metadata is true of the whole mapper and
-        // appears in every part that adds the profile, while an SM0034 is about ONE MAP and appears
+        // appears in every part that includes it, while an SM0034 is about ONE MAP and appears
         // only in the part that declared it. Reading the first part alone silenced every convention
         // failure written in a later file, and would have silenced a package problem too whenever
-        // the AddProfile happened to live in the second file. Deduping serves both: the
+        // the IncludeMapper happened to live in the second file. Deduping serves both: the
         // whole-mapper facts are still said once, and the per-map ones are no longer lost.
         var saidAlready = new HashSet<string>(StringComparer.Ordinal);
 
@@ -221,26 +220,7 @@ public sealed partial class ShiftMapperAnalyzer : DiagnosticAnalyzer
             if (!saidAlready.Add(problem))
                 continue;
 
-            int split = problem.IndexOf('|');
-
-            if (split < 0)
-                continue;
-
-            DiagnosticDescriptor? descriptor = problem.Substring(0, split) switch
-            {
-                // SM0028 arrives on this list too now: "the package said nothing" is discovered
-                // while reading declarations, not while walking profile syntax.
-                "SM0028" => DiagnosticDescriptors.ProfileNotInSource,
-                "SM0031" => DiagnosticDescriptors.DeclaredConversionConflict,
-                "SM0032" => DiagnosticDescriptors.DeclaredConversionMalformed,
-                "SM0033" => DiagnosticDescriptors.DeclaredContractTooNew,
-                "SM0034" => DiagnosticDescriptors.MemberConventionFailed,
-                "SM0038" => DiagnosticDescriptors.MemberConventionIsEmpty,
-                _ => null,
-            };
-
-            if (descriptor is not null)
-                reporter.Report(descriptor, first.Location, problem.Substring(split + 1));
+            ReportDeclaredProblem(reporter, problem, first.Location);
         }
 
         // Merging and resolving is what raises SM0011 and SM0012; what comes back is the graph
@@ -248,6 +228,36 @@ public sealed partial class ShiftMapperAnalyzer : DiagnosticAnalyzer
         ReportSkippedProperties(
             reporter,
             ShiftMapperGenerator.MergeAndResolve(ordered.Select(part => part.Model), reporter));
+    }
+
+    /// <summary>
+    /// Reports one problem from the declarations channel — <c>"SM00xx|message"</c> — under the
+    /// descriptor its id names.
+    /// </summary>
+    private static void ReportDeclaredProblem(DiagnosticReporter reporter, string problem, LocationInfo? location)
+    {
+        int split = problem.IndexOf('|');
+
+        if (split < 0)
+            return;
+
+        DiagnosticDescriptor? descriptor = problem.Substring(0, split) switch
+        {
+            "SM0027" => DiagnosticDescriptors.IncludedMapDeclaredTwice,
+            // SM0028 arrives on this list: "the package said nothing" is discovered while
+            // reading declarations, not while walking syntax.
+            "SM0028" => DiagnosticDescriptors.DeclarationsNotInMetadata,
+            "SM0031" => DiagnosticDescriptors.DeclaredConversionConflict,
+            "SM0032" => DiagnosticDescriptors.DeclaredConversionMalformed,
+            "SM0033" => DiagnosticDescriptors.DeclaredContractMismatch,
+            "SM0034" => DiagnosticDescriptors.MemberConventionFailed,
+            "SM0038" => DiagnosticDescriptors.MemberConventionIsEmpty,
+            "SM0039" => DiagnosticDescriptors.MapperCannotBeAdapted,
+            _ => null,
+        };
+
+        if (descriptor is not null)
+            reporter.Report(descriptor, location, problem.Substring(split + 1));
     }
 
     /// <summary>One declaration of a partial mapper, kept with enough to order it by.</summary>

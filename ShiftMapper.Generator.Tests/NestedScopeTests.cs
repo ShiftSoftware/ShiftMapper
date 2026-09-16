@@ -55,12 +55,12 @@ public class NestedScopeTests
     }
 
     /// <summary>
-    /// THE FALSE MESSAGE. A profile nested inside the mapper that adds it was read twice — once as
-    /// the profile's own declaration and once as part of the mapper's sweep — so SM0027 accused a
-    /// map declared exactly once of being declared twice.
+    /// THE FALSE MESSAGE. A mapper nested inside the mapper that includes it was read twice — once
+    /// as its own declaration and once as part of the container's sweep — so SM0027 accused a map
+    /// declared exactly once of being declared twice.
     /// </summary>
     [Fact]
-    public void A_nested_profile_is_not_accused_of_declaring_a_map_twice()
+    public void A_nested_included_mapper_is_not_accused_of_declaring_a_map_twice()
     {
         GeneratorRun run = GeneratorHarness.Run(
             """
@@ -71,9 +71,9 @@ public class NestedScopeTests
 
             public partial class TestMapper : ShiftMapperBase
             {
-                public TestMapper() => AddProfile<Maps>();
+                public TestMapper() => IncludeMapper<Maps>();
 
-                public sealed class Maps : ShiftMapperProfile
+                public sealed partial class Maps : ShiftMapperBase
                 {
                     public Maps() => CreateMap<Source, Destination>();
                 }
@@ -82,7 +82,7 @@ public class NestedScopeTests
 
         run.Compiles();
 
-        // The map still arrives — the profile is still added, and its map is still generated.
+        // The map still arrives — the mapper is still included, and its map is still generated.
         run.Emits("MapToDestination");
 
         // But nobody is accused of declaring it twice.

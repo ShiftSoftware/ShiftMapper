@@ -4,7 +4,8 @@ using Xunit;
 namespace ShiftMapper.Generator.Tests;
 
 /// <summary>
-/// GLOBAL TYPE-PAIR CONVERSIONS — one rule, written once, answering wherever the pair appears.
+/// TYPE-PAIR CONVERSIONS — one rule, written once, answering wherever the pair appears in the
+/// maps of the mapper that declared it, or of every mapper that adds the pack holding it.
 ///
 /// The question running through all of it is the one every step since 5 has come back to: does it
 /// reach BOTH backends? A conversion that only works in memory is a `foreach` with extra steps.
@@ -14,6 +15,7 @@ public class GlobalConversionTests
     private const string Types =
         """
         using ShiftMapper;
+        using Microsoft.Extensions.DependencyInjection;
         using System;
         using System.Collections.Generic;
         using System.Linq.Expressions;
@@ -63,7 +65,7 @@ public class GlobalConversionTests
 
         run.Compiles()
            // The in-memory form calls the registered delegate.
-           .Emits("Customizations.Conversion<global::Money, string>()")
+           .Emits("Customizations.Conversion<global::Money, string>(typeof(global::TestMapper))")
            // The projection carries a MARKER that Compose replaces with the registered tree.
            .Emits("global::ShiftMapper.MapCustomizations.Splice<global::Money, string>");
 
@@ -112,7 +114,7 @@ public class GlobalConversionTests
             """);
 
         run.Compiles()
-           .Emits("Customizations.Conversion<long, string>()")
+           .Emits("Customizations.Conversion<long, string>(typeof(global::TestMapper))")
            // The built-in spelling for long -> string is gone from this member.
            .DoesNotEmit("ToInvariantString(source.Id)");
     }
@@ -152,7 +154,7 @@ public class GlobalConversionTests
 
         // The lookup is emitted over the MEMBER's own types; the runtime resolves the base
         // registration and hands it back through Func's contravariance.
-        run.Compiles().Emits("Customizations.Conversion<global::Customer, global::Label>()");
+        run.Compiles().Emits("Customizations.Conversion<global::Customer, global::Label>(typeof(global::TestMapper))");
     }
 
     /// <summary>A <c>ForMember</c> on a particular member still wins over a global rule.</summary>
@@ -175,7 +177,7 @@ public class GlobalConversionTests
 
         run.Compiles()
            .Emits("Customizations.Value<global::Brand, global::BrandDto, string>(\"Price\")")
-           .DoesNotEmit("Customizations.Conversion<global::Money, string>()");
+           .DoesNotEmit("Customizations.Conversion<global::Money, string>(");
     }
 
     // -----------------------------------------------------------------
@@ -208,7 +210,7 @@ public class GlobalConversionTests
             }
             """);
 
-        run.Compiles().Emits("Customizations.Conversion<global::Money, string>()");
+        run.Compiles().Emits("Customizations.Conversion<global::Money, string>(typeof(global::TestMapper))");
 
         // THE LAMBDA CANNOT BE `static`. A global conversion reaches the mapper's own
         // Customizations, and static forbids capturing — the generated file would not compile.
@@ -239,7 +241,7 @@ public class GlobalConversionTests
             }
             """);
 
-        run.Compiles().Emits("Customizations.Conversion<global::Money, string>()");
+        run.Compiles().Emits("Customizations.Conversion<global::Money, string>(typeof(global::TestMapper))");
     }
 
     // -----------------------------------------------------------------
@@ -277,7 +279,7 @@ public class GlobalConversionTests
 
         // In memory it works exactly as before; only the projection is refused, and it THROWS
         // rather than going missing — a missing projection member is CS0103 once nested.
-        run.Emits("Customizations.Conversion<global::Money, string>()")
+        run.Emits("Customizations.Conversion<global::Money, string>(typeof(global::TestMapper))")
            .Emits("throw new global::System.InvalidOperationException");
     }
 
@@ -308,17 +310,18 @@ public class GlobalConversionTests
     // -----------------------------------------------------------------
 
     /// <summary>
-    /// DECLARED IN A PROFILE, which is the shape that matters: a framework ships the profile, the
-    /// application adds it, and every map in the application picks the rule up.
+    /// DECLARED IN A PACK, which is the shape that matters: a framework ships the pack, the
+    /// application adds it, and every map of the mapper that added it picks the rule up. The
+    /// generated call names the PACK as the scope, so the runtime looks in exactly that store.
     /// </summary>
     [Fact]
-    public void A_conversion_declared_in_a_profile_reaches_the_mappers_maps()
+    public void A_conversion_declared_in_a_pack_reaches_the_mappers_maps()
     {
         GeneratorRun run = Run(
             """
-            public class ConversionProfile : ShiftMapperProfile
+            public class ConversionPack : ShiftMapperConversions
             {
-                public ConversionProfile() =>
+                public ConversionPack() =>
                     CreateConversion<Money, string>(m => m.Amount.ToString(), m => m.Amount.ToString());
             }
 
@@ -326,29 +329,29 @@ public class GlobalConversionTests
             {
                 public TestMapper()
                 {
-                    AddProfile<ConversionProfile>();
+                    AddConversions<ConversionPack>();
                     CreateMap<Brand, BrandDto>();
                 }
             }
             """);
 
-        run.Compiles().Emits("Customizations.Conversion<global::Money, string>()");
+        run.Compiles().Emits("Customizations.Conversion<global::Money, string>(typeof(global::ConversionPack))");
         run.None("SM0002");
     }
 
     /// <summary>
-    /// A memory-only conversion declared IN A PROFILE, which is the shape the sample uses and the
+    /// A memory-only conversion declared IN A PACK, which is the shape the sample uses and the
     /// combination the two tests above miss between them: one declares memory-only on the mapper,
-    /// the other declares a full pair in a profile.
+    /// the other declares a full pair in a pack.
     /// </summary>
     [Fact]
-    public void A_memory_only_conversion_in_a_profile_still_costs_the_projection()
+    public void A_memory_only_conversion_in_a_pack_still_costs_the_projection()
     {
         GeneratorRun run = Run(
             """
-            public class ConversionProfile : ShiftMapperProfile
+            public class ConversionPack : ShiftMapperConversions
             {
-                public ConversionProfile()
+                public ConversionPack()
                 {
                     CreateConversion<Money, string>(memory: m => m.Amount.ToString());
                     CreateConversion<long, string>(id => id.ToString(), id => id.ToString());
@@ -359,7 +362,7 @@ public class GlobalConversionTests
             {
                 public TestMapper()
                 {
-                    AddProfile<ConversionProfile>();
+                    AddConversions<ConversionPack>();
                     CreateMap<Brand, BrandDto>();
                 }
             }
@@ -368,6 +371,237 @@ public class GlobalConversionTests
         run.Compiles();
 
         Assert.Contains("no query form", run.Single("SM0030").GetMessage());
+    }
+
+    // -----------------------------------------------------------------
+    // SCOPE — a rule reaches the maps of the mapper that wrote it, and nothing else.
+    // -----------------------------------------------------------------
+
+    /// <summary>
+    /// A conversion written in an INCLUDED mapper applies to that mapper's own maps and NOT to the
+    /// including mapper's: the included mapper's map converts, the includer's own map still
+    /// reports the pair as unmappable.
+    /// </summary>
+    [Fact]
+    public void An_included_mappers_conversion_stays_with_its_own_maps()
+    {
+        GeneratorRun run = Run(
+            """
+            public class Coin { public Money Price { get; set; } = new(); }
+            public class CoinDto { public string Price { get; set; } = ""; }
+
+            public partial class CoinMapper : ShiftMapperBase
+            {
+                public CoinMapper()
+                {
+                    CreateConversion<Money, string>(m => m.Amount.ToString(), m => m.Amount.ToString());
+                    CreateMap<Coin, CoinDto>();
+                }
+            }
+
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+                    IncludeMapper<CoinMapper>();
+                    CreateMap<Brand, BrandDto>();
+                }
+            }
+            """);
+
+        run.Compiles()
+           .Emits("Customizations.Conversion<global::Money, string>(typeof(global::CoinMapper))");
+
+        // Brand.Price -> BrandDto.Price is the INCLUDER's map, and the rule does not reach it.
+        Assert.Contains(run.All("SM0002"), d => d.GetMessage().Contains("BrandDto.Price"));
+    }
+
+    /// <summary>
+    /// The INCLUDING mapper's own rule reaches the maps it included — near beats far, and the
+    /// includer is the nearer authority for what it composes.
+    /// </summary>
+    [Fact]
+    public void An_including_mappers_conversion_reaches_the_included_maps()
+    {
+        GeneratorRun run = Run(
+            """
+            public class Coin { public Money Price { get; set; } = new(); }
+            public class CoinDto { public string Price { get; set; } = ""; }
+
+            public partial class CoinMapper : ShiftMapperBase
+            {
+                public CoinMapper() => CreateMap<Coin, CoinDto>();
+            }
+
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+                    CreateConversion<Money, string>(m => m.Amount.ToString(), m => m.Amount.ToString());
+                    IncludeMapper<CoinMapper>();
+                    CreateMap<Brand, BrandDto>();
+                }
+            }
+            """);
+
+        run.Compiles()
+           .Emits("Customizations.Conversion<global::Money, string>(typeof(global::TestMapper))");
+
+        // TestMapper's half converts CoinDto.Price; only CoinMapper's OWN half, which has no rule
+        // for the pair, reports it.
+        string testMapperFile = run.GeneratedFiles.Single(file => file.Contains("partial class TestMapper"));
+        Assert.Contains("Customizations.Conversion<global::Money, string>(typeof(global::TestMapper))(source.Price)", testMapperFile);
+        Assert.All(run.All("SM0002"), d => Assert.Contains("CoinDto.Price", d.GetMessage()));
+    }
+
+    /// <summary>
+    /// NEAREST WINS: the declaring mapper's own rule beats the includer's, which beats a pack the
+    /// includer added, which beats a pack the registration gave every mapper.
+    /// </summary>
+    [Fact]
+    public void The_nearest_declaration_answers()
+    {
+        GeneratorRun run = Run(
+            """
+            public class Coin { public Money Price { get; set; } = new(); }
+            public class CoinDto { public string Price { get; set; } = ""; }
+
+            public class Global : ShiftMapperConversions
+            {
+                public Global() => CreateConversion<Money, string>(m => "global", m => "global");
+            }
+
+            public class Own : ShiftMapperConversions
+            {
+                public Own() => CreateConversion<Money, string>(m => "own", m => "own");
+            }
+
+            public partial class CoinMapper : ShiftMapperBase
+            {
+                public CoinMapper()
+                {
+                    CreateConversion<Money, string>(m => "coin", m => "coin");
+                    CreateMap<Coin, CoinDto>();
+                }
+            }
+
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+                    AddConversions<Own>();
+                    IncludeMapper<CoinMapper>();
+                    CreateMap<Brand, BrandDto>();
+                }
+            }
+
+            public static class Startup
+            {
+                public static void Configure(IServiceCollection services) =>
+                    services.AddShiftMapper(o =>
+                    {
+                        o.AddMapper<TestMapper>();
+                        o.AddConversions<Global>();
+                    });
+            }
+            """);
+
+        run.Compiles()
+           // Coin's own map: its own rule.
+           .Emits("Customizations.Conversion<global::Money, string>(typeof(global::CoinMapper))")
+           // Brand's map on TestMapper: the pack it added, ahead of the registration's.
+           .Emits("Customizations.Conversion<global::Money, string>(typeof(global::Own))")
+           .DoesNotEmit("Customizations.Conversion<global::Money, string>(typeof(global::Global))");
+    }
+
+    /// <summary>
+    /// A pack given to EVERY mapper by the registration reaches a mapper that never mentions it.
+    /// </summary>
+    [Fact]
+    public void A_registration_wide_pack_reaches_every_mapper()
+    {
+        GeneratorRun run = Run(
+            """
+            public class Global : ShiftMapperConversions
+            {
+                public Global() => CreateConversion<Money, string>(m => "global", m => "global");
+            }
+
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper() => CreateMap<Brand, BrandDto>();
+            }
+
+            public static class Startup
+            {
+                public static void Configure(IServiceCollection services) =>
+                    services.AddShiftMapper(o =>
+                    {
+                        o.AddMapper<TestMapper>();
+                        o.AddConversions<Global>();
+                    });
+            }
+            """);
+
+        run.Compiles()
+           .Emits("Customizations.Conversion<global::Money, string>(typeof(global::Global))");
+        run.None("SM0002");
+    }
+
+    /// <summary>
+    /// TWO PACKS AT THE SAME DISTANCE claiming one pair is an error (SM0031) — unless something
+    /// nearer settles it.
+    /// </summary>
+    [Fact]
+    public void Two_packs_at_one_level_claiming_a_pair_is_an_error_unless_settled_nearer()
+    {
+        const string packs =
+            """
+            public class First : ShiftMapperConversions
+            {
+                public First() => CreateConversion<Money, string>(m => "first", m => "first");
+            }
+
+            public class Second : ShiftMapperConversions
+            {
+                public Second() => CreateConversion<Money, string>(m => "second", m => "second");
+            }
+            """;
+
+        GeneratorRun clash = Run(packs +
+            """
+
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+                    AddConversions<First>();
+                    AddConversions<Second>();
+                    CreateMap<Brand, BrandDto>();
+                }
+            }
+            """);
+
+        Assert.Contains("First", clash.Single("SM0031").GetMessage());
+        Assert.Contains("Second", clash.Single("SM0031").GetMessage());
+
+        GeneratorRun settled = Run(packs +
+            """
+
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+                    CreateConversion<Money, string>(m => "mine", m => "mine");
+                    AddConversions<First>();
+                    AddConversions<Second>();
+                    CreateMap<Brand, BrandDto>();
+                }
+            }
+            """);
+
+        settled.Compiles().None("SM0031");
+        settled.Emits("Customizations.Conversion<global::Money, string>(typeof(global::TestMapper))");
     }
 
     /// <summary>

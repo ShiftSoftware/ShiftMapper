@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
@@ -7,22 +7,30 @@ using Microsoft.CodeAnalysis;
 namespace ShiftMapper.Generator;
 
 /// <summary>
-/// THE READING HALF of the extension contract: what a profile compiled into a referenced assembly
-/// declared, recovered from the metadata its own build emitted.
+/// THE READING HALF of the extension contract: what a mapper or pack compiled into a referenced
+/// assembly declared, recovered from the metadata its own build emitted.
 ///
 /// <para><b>The declarations come back as the same shapes the source path produces</b> — a
 /// <c>Refinements</c> and a pair of type symbols, which then go through
-/// <c>BuildMapModel</c> exactly as a profile in this project's own source would. Everything
+/// <c>BuildMapModel</c> exactly as a mapper in this project's own source would. Everything
 /// downstream is untouched: the property matching, the conversions, the nesting, the projection,
 /// every diagnostic. A package's map is not a special kind of map.</para>
 ///
-/// <para><b>Only profiles the mapper actually ADDS are read.</b> A declaration is keyed by its
-/// profile type, so referencing a package changes nothing until an <c>AddProfile&lt;T&gt;()</c> asks
-/// for it — the same one line a profile in your own project needs, and no action at a distance.</para>
+/// <para><b>Only what the mapper actually INCLUDES, ADDS or REGISTERS is read.</b> A declaration is
+/// keyed by its declaring type, so referencing a package changes nothing until something asks for
+/// it — the same one line a mapper in your own project needs, and no action at a distance. What
+/// the asked-for type composes in ITS constructor is followed in turn, whichever assembly it lives
+/// in.</para>
 /// </summary>
-internal static class DeclaredProfiles
+internal static class DeclaredMappers
 {
     private const string ContractAttribute = "ShiftMapper.ShiftMapperContractAttribute";
+
+    private const string MapperAttribute = "ShiftMapper.ShiftMapperDeclaredMapperAttribute";
+
+    private const string PackAttribute = "ShiftMapper.ShiftMapperDeclaredPackAttribute";
+
+    private const string CompositionAttribute = "ShiftMapper.ShiftMapperDeclaredCompositionAttribute";
 
     private const string MapAttribute = "ShiftMapper.ShiftMapperDeclaredMapAttribute";
 
@@ -40,6 +48,7 @@ internal static class DeclaredProfiles
     internal sealed class RecoveredMap
     {
         public RecoveredMap(
+            string declaredBy,
             INamedTypeSymbol source,
             INamedTypeSymbol destination,
             bool? caseSensitive,
@@ -58,6 +67,7 @@ internal static class DeclaredProfiles
             bool hasAfterMap,
             bool hasAllMembersCondition)
         {
+            DeclaredBy = declaredBy;
             Source = source;
             Destination = destination;
             CaseSensitive = caseSensitive;
@@ -76,6 +86,9 @@ internal static class DeclaredProfiles
             HasAfterMap = hasAfterMap;
             HasAllMembersCondition = hasAllMembersCondition;
         }
+
+        /// <summary>The mapper that declared it, fully qualified — the scope its rules are chained from.</summary>
+        public string DeclaredBy { get; }
 
         public INamedTypeSymbol Source { get; }
 
@@ -112,39 +125,47 @@ internal static class DeclaredProfiles
         public bool HasAllMembersCondition { get; }
     }
 
-    /// <summary>Everything one set of added profiles declared.</summary>
+    /// <summary>Everything one set of referenced mappers and packs declared.</summary>
     internal sealed class Recovered
     {
         public List<RecoveredMap> Maps { get; } = new();
 
-        public List<(INamedTypeSymbol Source, INamedTypeSymbol Destination)> OpenMaps { get; } = new();
-
-        /// <summary>Member-shaped rules a package declared, ready to apply like a local one.</summary>
-        public List<MemberConventions.Convention> Conventions { get; } = new();
+        public List<(string DeclaredBy, INamedTypeSymbol Source, INamedTypeSymbol Destination)> OpenMaps { get; } = new();
 
         /// <summary>
-        /// The profiles something was actually read for.
+        /// The types something was actually read for, by key.
         ///
-        /// <para>A profile NOT in here was asked for and had nothing to say, which almost always
-        /// means its package was built without the ShiftMapper generator — and that is a problem
-        /// with an owner and a fix, so it is reported (SM0028) rather than mapping nothing quietly.</para>
+        /// <para>A type NOT in here was asked for and had nothing to say, which means its package was
+        /// built without the ShiftMapper generator — and that is a problem with an owner and a fix,
+        /// so it is reported (SM0028) rather than mapping nothing quietly.</para>
         /// </summary>
         public HashSet<string> Found { get; } = new(StringComparer.Ordinal);
+
+        /// <summary>The found types that are packs rather than mappers.</summary>
+        public HashSet<string> Packs { get; } = new(StringComparer.Ordinal);
+
+        /// <summary>What each found mapper composes in its constructor — the includes and packs to follow.</summary>
+        public Dictionary<string, List<INamedTypeSymbol>> Composed { get; } = new(StringComparer.Ordinal);
+
+        /// <summary>What each found mapper's <c>ConfigureDefaults</c> set.</summary>
+        public Dictionary<string, DeclaredDefaults> Defaults { get; } = new(StringComparer.Ordinal);
     }
 
     /// <summary>
-    /// Reads the declarations of the given profile TYPES — the ones a mapper added that turned out
-    /// to have no syntax, because they live in a referenced assembly.
+    /// Reads the declarations of the given TYPES — the mappers and packs something asked for that
+    /// turned out to have no syntax, because they live in referenced assemblies — and of everything
+    /// they compose, to a fixpoint.
     /// </summary>
     public static Recovered Read(
         Compilation compilation,
-        IReadOnlyCollection<INamedTypeSymbol> profiles,
-        ConversionTable table,
+        IReadOnlyCollection<INamedTypeSymbol> types,
+        ShiftMapperGenerator.ConversionScopes conversions,
+        ShiftMapperGenerator.ConventionScopes conventions,
         List<string> problems)
     {
         var recovered = new Recovered();
 
-        if (profiles.Count == 0)
+        if (types.Count == 0)
             return recovered;
 
         INamedTypeSymbol? mapMarker = compilation.GetTypeByMetadataName(MapAttribute);
@@ -152,6 +173,9 @@ internal static class DeclaredProfiles
         if (mapMarker is null)
             return recovered;
 
+        INamedTypeSymbol? mapperMarker = compilation.GetTypeByMetadataName(MapperAttribute);
+        INamedTypeSymbol? packMarker = compilation.GetTypeByMetadataName(PackAttribute);
+        INamedTypeSymbol? compositionMarker = compilation.GetTypeByMetadataName(CompositionAttribute);
         INamedTypeSymbol? memberMarker = compilation.GetTypeByMetadataName(MemberAttribute);
         INamedTypeSymbol? includeMarker = compilation.GetTypeByMetadataName(IncludeAttribute);
         INamedTypeSymbol? conversionMarker = compilation.GetTypeByMetadataName(ConversionAttribute);
@@ -159,61 +183,124 @@ internal static class DeclaredProfiles
         INamedTypeSymbol? conventionMarker = compilation.GetTypeByMetadataName(ConventionAttribute);
         INamedTypeSymbol? contractMarker = compilation.GetTypeByMetadataName(ContractAttribute);
 
-        // Which assemblies the wanted profiles live in, so only those are walked.
-        var wanted = new HashSet<string>(profiles.Select(Key), StringComparer.Ordinal);
+        // A WORKLIST rather than one pass: a mapper composes other mappers and packs, and those may
+        // sit in a third assembly. Each round reads what is wanted and not yet read, and adds what
+        // that composes; it ends when a round wants nothing new.
+        var wanted = new HashSet<string>(types.Select(Key), StringComparer.Ordinal);
+        var pending = new List<INamedTypeSymbol>(types);
+        var readAssemblies = new Dictionary<string, bool>(StringComparer.Ordinal);
 
-        var assemblies = new List<IAssemblySymbol>();
-
-        foreach (INamedTypeSymbol profile in profiles)
+        while (pending.Count > 0)
         {
-            if (!assemblies.Any(a => SymbolEqualityComparer.Default.Equals(a, profile.ContainingAssembly)))
-                assemblies.Add(profile.ContainingAssembly);
-        }
+            var assemblies = new List<IAssemblySymbol>();
 
-        foreach (IAssemblySymbol assembly in assemblies)
-        {
-            if (!CheckContract(assembly, contractMarker, problems))
-                continue;
-
-            var members = new List<AttributeData>();
-            var includes = new List<AttributeData>();
-            var maps = new List<AttributeData>();
-
-            foreach (AttributeData attribute in assembly.GetAttributes())
+            foreach (INamedTypeSymbol type in pending)
             {
-                INamedTypeSymbol? kind = attribute.AttributeClass;
-
-                if (Same(kind, mapMarker) && Wants(attribute, wanted))
-                {
-                    maps.Add(attribute);
-                    Note(attribute, recovered);
-                }
-                else if (Same(kind, memberMarker) && Wants(attribute, wanted))
-                    members.Add(attribute);
-                else if (Same(kind, includeMarker) && Wants(attribute, wanted))
-                    includes.Add(attribute);
-                else if (Same(kind, conversionMarker) && Wants(attribute, wanted))
-                {
-                    ReadConversion(attribute, table, assembly.Name, problems);
-                    Note(attribute, recovered);
-                }
-                else if (Same(kind, openMarker) && Wants(attribute, wanted))
-                {
-                    ReadOpenMap(attribute, recovered);
-                    Note(attribute, recovered);
-                }
-                else if (Same(kind, conventionMarker) && Wants(attribute, wanted))
-                {
-                    ReadConvention(attribute, recovered);
-                    Note(attribute, recovered);
-                }
+                if (!assemblies.Any(a => SymbolEqualityComparer.Default.Equals(a, type.ContainingAssembly)))
+                    assemblies.Add(type.ContainingAssembly);
             }
 
-            foreach (AttributeData map in maps)
-                ReadMap(map, members, includes, recovered, problems);
+            // The keys this round reads for. Fixed before reading, so a composition found mid-round
+            // is picked up by the NEXT round rather than half of this one.
+            var round = new HashSet<string>(pending.Select(Key), StringComparer.Ordinal);
+            pending = new List<INamedTypeSymbol>();
+
+            foreach (IAssemblySymbol assembly in assemblies)
+            {
+                if (!readAssemblies.TryGetValue(assembly.Name, out bool usable))
+                    readAssemblies[assembly.Name] = usable = CheckContract(assembly, contractMarker, problems);
+
+                if (!usable)
+                    continue;
+
+                var members = new List<AttributeData>();
+                var includes = new List<AttributeData>();
+                var maps = new List<AttributeData>();
+
+                foreach (AttributeData attribute in assembly.GetAttributes())
+                {
+                    INamedTypeSymbol? kind = attribute.AttributeClass;
+
+                    if (!Wants(attribute, round))
+                        continue;
+
+                    if (Same(kind, mapperMarker))
+                    {
+                        Note(attribute, recovered);
+                        ReadDefaults(attribute, recovered);
+                    }
+                    else if (Same(kind, packMarker))
+                    {
+                        Note(attribute, recovered);
+                        recovered.Packs.Add(Key((INamedTypeSymbol)attribute.ConstructorArguments[0].Value!));
+                    }
+                    else if (Same(kind, compositionMarker))
+                    {
+                        Note(attribute, recovered);
+
+                        if (attribute.ConstructorArguments.Length == 2
+                            && attribute.ConstructorArguments[0].Value is INamedTypeSymbol composer
+                            && attribute.ConstructorArguments[1].Value is INamedTypeSymbol composed)
+                        {
+                            if (!recovered.Composed.TryGetValue(Key(composer), out List<INamedTypeSymbol> list))
+                                recovered.Composed[Key(composer)] = list = new List<INamedTypeSymbol>();
+
+                            list.Add(composed);
+
+                            // Followed only when it has no syntax here: a composed type declared in
+                            // THIS compilation is read from source by the caller.
+                            if (composed.DeclaringSyntaxReferences.Length == 0 && wanted.Add(Key(composed)))
+                                pending.Add(composed);
+                        }
+                    }
+                    else if (Same(kind, mapMarker))
+                    {
+                        maps.Add(attribute);
+                        Note(attribute, recovered);
+                    }
+                    else if (Same(kind, memberMarker))
+                        members.Add(attribute);
+                    else if (Same(kind, includeMarker))
+                        includes.Add(attribute);
+                    else if (Same(kind, conversionMarker))
+                    {
+                        ReadConversion(attribute, conversions, assembly.Name, problems);
+                        Note(attribute, recovered);
+                    }
+                    else if (Same(kind, openMarker))
+                    {
+                        ReadOpenMap(attribute, recovered);
+                        Note(attribute, recovered);
+                    }
+                    else if (Same(kind, conventionMarker))
+                    {
+                        ReadConvention(attribute, conventions);
+                        Note(attribute, recovered);
+                    }
+                }
+
+                foreach (AttributeData map in maps)
+                    ReadMap(map, members, includes, recovered, problems);
+            }
         }
 
         return recovered;
+    }
+
+    private static void ReadDefaults(AttributeData attribute, Recovered recovered)
+    {
+        if (attribute.ConstructorArguments.Length != 1
+            || attribute.ConstructorArguments[0].Value is not INamedTypeSymbol mapper)
+        {
+            return;
+        }
+
+        recovered.Defaults[Key(mapper)] = new DeclaredDefaults(
+            Option(attribute, "CaseSensitive"),
+            Option(attribute, "AllowNullCollections"),
+            Option(attribute, "Flattening"),
+            Strings(attribute, "Prefixes"),
+            Strings(attribute, "Postfixes"));
     }
 
     /// <summary>
@@ -240,13 +327,13 @@ internal static class DeclaredProfiles
                 continue;
             }
 
-            if (version > ShiftMapperGenerator.DeclarationContract)
+            if (version != ShiftMapperGenerator.DeclarationContract)
             {
                 problems.Add(
                     $"SM0033|'{assembly.Name}' carries ShiftMapper declaration metadata version " +
-                    $"{version}, and this ShiftMapper understands version " +
-                    $"{ShiftMapperGenerator.DeclarationContract}. Its profiles were ignored. Update " +
-                    "the ShiftMapper package in this project.");
+                    $"{version}, and this ShiftMapper reads version " +
+                    $"{ShiftMapperGenerator.DeclarationContract}. Its mappers and packs were ignored. " +
+                    "Build the package and this project against the same ShiftMapper.");
 
                 return false;
             }
@@ -255,7 +342,7 @@ internal static class DeclaredProfiles
         }
 
         // No contract attribute at all: the package was built without the ShiftMapper generator, so
-        // nothing was written down. Reported by the caller, which knows which profile was asked for.
+        // nothing was written down. Reported by the caller, which knows which type was asked for.
         return true;
     }
 
@@ -266,17 +353,17 @@ internal static class DeclaredProfiles
         Recovered recovered,
         List<string> problems)
     {
-        if (Types(attribute, out INamedTypeSymbol? profile, out INamedTypeSymbol? source, out INamedTypeSymbol? destination))
+        if (Types(attribute, out INamedTypeSymbol? declaredBy, out INamedTypeSymbol? source, out INamedTypeSymbol? destination))
             return;
 
-        string pair = Key(profile!) + "|" + Key(source!) + "|" + Key(destination!);
+        string pair = Key(declaredBy!) + "|" + Key(source!) + "|" + Key(destination!);
 
         var customized = ImmutableArray.CreateBuilder<CustomProperty>();
 
         foreach (AttributeData member in members)
         {
-            if (!Types(member, out INamedTypeSymbol? memberProfile, out INamedTypeSymbol? memberSource, out INamedTypeSymbol? memberDestination)
-                && Key(memberProfile!) + "|" + Key(memberSource!) + "|" + Key(memberDestination!) == pair
+            if (!Types(member, out INamedTypeSymbol? memberDeclaredBy, out INamedTypeSymbol? memberSource, out INamedTypeSymbol? memberDestination)
+                && Key(memberDeclaredBy!) + "|" + Key(memberSource!) + "|" + Key(memberDestination!) == pair
                 && member.ConstructorArguments.Length == 4
                 && member.ConstructorArguments[3].Value is string name)
             {
@@ -296,7 +383,7 @@ internal static class DeclaredProfiles
         foreach (AttributeData include in includes)
         {
             if (include.ConstructorArguments.Length != 5
-                || include.ConstructorArguments[0].Value is not INamedTypeSymbol includeProfile
+                || include.ConstructorArguments[0].Value is not INamedTypeSymbol includeDeclaredBy
                 || include.ConstructorArguments[1].Value is not INamedTypeSymbol includeSource
                 || include.ConstructorArguments[2].Value is not INamedTypeSymbol includeDestination
                 || include.ConstructorArguments[3].Value is not INamedTypeSymbol derivedSource
@@ -305,7 +392,7 @@ internal static class DeclaredProfiles
                 continue;
             }
 
-            if (Key(includeProfile) + "|" + Key(includeSource) + "|" + Key(includeDestination) != pair)
+            if (Key(includeDeclaredBy) + "|" + Key(includeSource) + "|" + Key(includeDestination) != pair)
                 continue;
 
             derived.Add(new DerivedPair(
@@ -319,6 +406,7 @@ internal static class DeclaredProfiles
         }
 
         recovered.Maps.Add(new RecoveredMap(
+            Key(declaredBy!),
             source!,
             destination!,
             Option(attribute, "CaseSensitive"),
@@ -341,11 +429,12 @@ internal static class DeclaredProfiles
 
     private static void ReadConversion(
         AttributeData attribute,
-        ConversionTable table,
+        ShiftMapperGenerator.ConversionScopes conversions,
         string declaringAssembly,
         List<string> problems)
     {
         if (attribute.ConstructorArguments.Length != 3
+            || attribute.ConstructorArguments[0].Value is not INamedTypeSymbol declaredBy
             || attribute.ConstructorArguments[1].Value is not ITypeSymbol source
             || attribute.ConstructorArguments[2].Value is not ITypeSymbol destination)
         {
@@ -361,14 +450,15 @@ internal static class DeclaredProfiles
             return;
         }
 
-        table.AddDeclared(
+        conversions.AddDeclared(
+            Key(declaredBy),
             source,
             destination,
             hasQueryForm: Named(attribute, "HasQueryForm") as bool? ?? false,
             // A lifted static method when the declaring lambda captured nothing, else null and the
             // consuming code looks the expression up at run time — the same thing it does for a
             // conversion declared in its own source. There is never a query member to name: that
-            // expression is a lambda the profile's constructor registers.
+            // expression is a lambda the declaring constructor registers.
             memoryCall: Named(attribute, "MemoryCall") as string,
             declaringAssembly: declaringAssembly);
     }
@@ -380,9 +470,10 @@ internal static class DeclaredProfiles
     /// so nothing downstream can tell a package's rule from a local one — and a package's rule is
     /// therefore not a second, weaker kind of convention.</para>
     /// </summary>
-    private static void ReadConvention(AttributeData attribute, Recovered recovered)
+    private static void ReadConvention(AttributeData attribute, ShiftMapperGenerator.ConventionScopes conventions)
     {
         if (attribute.ConstructorArguments.Length != 2
+            || attribute.ConstructorArguments[0].Value is not INamedTypeSymbol declaredBy
             || attribute.ConstructorArguments[1].Value is not ITypeSymbol memberType)
         {
             return;
@@ -418,7 +509,7 @@ internal static class DeclaredProfiles
             }
         }
 
-        recovered.Conventions.Add(new MemberConventions.Convention(
+        conventions.Add(Key(declaredBy), new MemberConventions.Convention(
             memberType,
             fill,
             Named(attribute, "NameOfAttribute") as INamedTypeSymbol,
@@ -445,48 +536,49 @@ internal static class DeclaredProfiles
     private static void ReadOpenMap(AttributeData attribute, Recovered recovered)
     {
         if (attribute.ConstructorArguments.Length == 3
+            && attribute.ConstructorArguments[0].Value is INamedTypeSymbol declaredBy
             && attribute.ConstructorArguments[1].Value is INamedTypeSymbol source
             && attribute.ConstructorArguments[2].Value is INamedTypeSymbol destination)
         {
-            recovered.OpenMaps.Add((source, destination));
+            recovered.OpenMaps.Add((Key(declaredBy), source, destination));
         }
     }
 
     /// <summary>Returns TRUE when the attribute is malformed, so callers can bail with one test.</summary>
     private static bool Types(
         AttributeData attribute,
-        out INamedTypeSymbol? profile,
+        out INamedTypeSymbol? declaredBy,
         out INamedTypeSymbol? source,
         out INamedTypeSymbol? destination)
     {
-        profile = null;
+        declaredBy = null;
         source = null;
         destination = null;
 
         if (attribute.ConstructorArguments.Length < 3)
             return true;
 
-        profile = attribute.ConstructorArguments[0].Value as INamedTypeSymbol;
+        declaredBy = attribute.ConstructorArguments[0].Value as INamedTypeSymbol;
         source = attribute.ConstructorArguments[1].Value as INamedTypeSymbol;
         destination = attribute.ConstructorArguments[2].Value as INamedTypeSymbol;
 
-        return profile is null || source is null || destination is null;
+        return declaredBy is null || source is null || destination is null;
     }
 
-    /// <summary>Records that this profile did have something to say.</summary>
+    /// <summary>Records that this type was built with the generator and had something to say.</summary>
     private static void Note(AttributeData attribute, Recovered recovered)
     {
         if (attribute.ConstructorArguments.Length > 0
-            && attribute.ConstructorArguments[0].Value is INamedTypeSymbol profile)
+            && attribute.ConstructorArguments[0].Value is INamedTypeSymbol declaredBy)
         {
-            recovered.Found.Add(Key(profile));
+            recovered.Found.Add(Key(declaredBy));
         }
     }
 
     private static bool Wants(AttributeData attribute, HashSet<string> wanted) =>
         attribute.ConstructorArguments.Length > 0
-        && attribute.ConstructorArguments[0].Value is INamedTypeSymbol profile
-        && wanted.Contains(Key(profile));
+        && attribute.ConstructorArguments[0].Value is INamedTypeSymbol declaredBy
+        && wanted.Contains(Key(declaredBy));
 
     private static bool Same(INamedTypeSymbol? a, INamedTypeSymbol? b) =>
         b is not null && SymbolEqualityComparer.Default.Equals(a, b);

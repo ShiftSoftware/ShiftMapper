@@ -14,8 +14,8 @@ namespace ShiftMapper.Sample.Dtos;
 ///
 /// <para><b>No ForMember. No conversion. This project never names the rule.</b> Two members below
 /// are filled by a MEMBER-SHAPED convention that a framework package declared once, in its own
-/// assembly, for types it has never seen — including these. It arrives through the same profile the sample
-/// already adds.</para>
+/// assembly, for types it has never seen — including these. It arrives through the same pack the
+/// sample already adds.</para>
 ///
 /// <para>What the generator writes for <c>Brand</c>:</para>
 ///

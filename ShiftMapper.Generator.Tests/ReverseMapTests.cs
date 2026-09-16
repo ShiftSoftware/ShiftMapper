@@ -183,8 +183,8 @@ public class ReverseMapTests
         run.Compiles()
            .Emits("Id = global::ShiftMapper.ValueConverter.ToInvariantString(source.Id)")
            .Emits("Id = global::ShiftMapper.ValueConverter.Parse<int>(source.Id, \"Destination.Id -> Source.Id\")")
-           .Emits("public TDestination Map<TDestination>(global::Source source)")
-           .Emits("public TDestination Map<TDestination>(global::Destination source)");
+           .Emits("public virtual TDestination Map<TDestination>(global::Source source)")
+           .Emits("public virtual TDestination Map<TDestination>(global::Destination source)");
     }
 
     /// <summary>

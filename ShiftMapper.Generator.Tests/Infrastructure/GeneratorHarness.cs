@@ -31,6 +31,9 @@ public static class GeneratorHarness
     /// </summary>
     public const string FileName = "Mapper.cs";
 
+    /// <summary>The hint name of the declaration metadata file the generator writes per assembly.</summary>
+    public const string DeclarationsFileName = "ShiftMapper.Declarations.g.cs";
+
     private static readonly CSharpParseOptions ParseOptions = new(LanguageVersion.Latest);
 
     /// <summary>
@@ -75,16 +78,24 @@ public static class GeneratorHarness
 
         GeneratorDriverRunResult result = driver.GetRunResult();
 
+        // The declaration METADATA file is kept apart from the mapper code: every mapper emits
+        // one, so folding it into the mapper files would make "nothing was generated for this
+        // mapper" unsayable, and would put attribute text in front of every code assertion.
+        ImmutableArray<SyntaxTree> metadata = result.GeneratedTrees
+            .Where(generated => generated.FilePath.EndsWith(DeclarationsFileName, StringComparison.Ordinal))
+            .ToImmutableArray();
+
         return new GeneratorRun(
             source,
             // The generator itself says nothing any more; everything SM#### comes from the
             // analyzer. Both are collected so that a message escaping from the wrong half still
             // shows up in a test rather than going quietly missing.
             result.Diagnostics.AddRange(Analyze(updated)),
-            result.GeneratedTrees.Select(generated => generated.ToString()).ToImmutableArray(),
+            result.GeneratedTrees.Except(metadata).Select(generated => generated.ToString()).ToImmutableArray(),
             updated.GetDiagnostics()
                 .Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)
-                .ToImmutableArray());
+                .ToImmutableArray(),
+            metadata.Select(generated => generated.ToString()).ToImmutableArray());
     }
 
     /// <summary>

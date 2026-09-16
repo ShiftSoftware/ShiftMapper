@@ -10,7 +10,7 @@ namespace ShiftMapper.Generator;
 /// <summary>
 /// WHERE A DECLARATION IS WRITTEN, and whether that position can be honoured at compile time.
 ///
-/// <para>Every declaration API — <c>CreateMap</c>, <c>AddProfile</c>, <c>CreateConversion</c>,
+/// <para>Every declaration API — <c>CreateMap</c>, <c>IncludeMapper</c>, <c>AddConversions</c>, <c>CreateConversion</c>,
 /// <c>CreateMemberConvention</c> — is read from SYNTAX and baked into emitted code. The reader is a
 /// flat sweep (<c>DescendantNodes().OfType&lt;InvocationExpressionSyntax&gt;()</c>) with no notion of
 /// statement position, so until this file existed a declaration written inside an <c>if</c>, a loop,
@@ -115,7 +115,8 @@ public sealed partial class ShiftMapperGenerator
         string? called = name?.Identifier.ValueText switch
         {
             "CreateMap" => "CreateMap",
-            "AddProfile" => "AddProfile",
+            "IncludeMapper" => "IncludeMapper",
+            "AddConversions" => "AddConversions",
             "CreateConversion" => "CreateConversion",
             "CreateMemberConvention" => "CreateMemberConvention",
             _ => null,
@@ -137,10 +138,18 @@ public sealed partial class ShiftMapperGenerator
     /// constructor or a method means every step in between was an ordinary statement — the shape
     /// that bakes correctly. Anything in the disallowed list is hit first and answers.</para>
     /// </summary>
-    private static string? DescribeUnbakeablePosition(InvocationExpressionSyntax invocation)
+    /// <param name="stopAt">
+    /// A node that counts as "statement position" — the registration lambda handed to
+    /// <c>AddShiftMapper</c>, whose direct statements are read exactly like a constructor's. Null
+    /// for a call inside a mapper, where the constructor or method is the stop.
+    /// </param>
+    private static string? DescribeUnbakeablePosition(InvocationExpressionSyntax invocation, SyntaxNode? stopAt = null)
     {
         for (SyntaxNode? node = invocation.Parent; node is not null; node = node.Parent)
         {
+            if (node == stopAt)
+                return null;
+
             switch (node)
             {
                 // ---- the members that mean "unconditional statement position", so: allowed.

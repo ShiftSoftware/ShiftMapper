@@ -5,7 +5,7 @@ namespace ShiftMapper.Generator.Tests;
 
 /// <summary>
 /// THE EXTENSION CONTRACT — a package writes ORDINARY maps and conversions, and an application gets
-/// them with the ordinary <c>AddProfile</c>.
+/// them with the ordinary <c>IncludeMapper</c> and <c>AddConversions</c>.
 ///
 /// <para>Every test here compiles TWO assemblies, because nothing less would prove anything. The
 /// whole difficulty is that a profile compiled into a package is METADATA by the time a consumer
@@ -31,15 +31,17 @@ public class DeclaredConversionTests
 
         public class FileSummary { public string Name { get; set; } = ""; }
 
-        public class FrameworkProfile : ShiftMapperProfile
+        public class FrameworkPack : ShiftMapperConversions
         {
-            public FrameworkProfile()
-            {
+            public FrameworkPack() =>
                 CreateConversion<long, string>(id => "H" + id, id => "H" + id);
+        }
 
+        public partial class FrameworkMapper : ShiftMapperBase
+        {
+            public FrameworkMapper() =>
                 CreateMap<FileDto, FileSummary>()
                     .ForMember(d => d.Name, opt => opt.MapFrom(s => s.Name.Trim()));
-            }
         }
         """;
 
@@ -56,7 +58,8 @@ public class DeclaredConversionTests
         {
             public TestMapper()
             {
-                AddProfile<FrameworkProfile>();
+                IncludeMapper<FrameworkMapper>();
+                AddConversions<FrameworkPack>();
                 CreateMap<Entity, EntityDto>();
             }
         }
@@ -86,7 +89,7 @@ public class DeclaredConversionTests
     /// <summary>
     /// AND ITS ForMember COMES WITH IT, as the identical runtime lookup an in-project MapFrom
     /// produces. The expression is not in the metadata and does not need to be: the profile's own
-    /// constructor puts it in the store, which AddProfile already runs.
+    /// constructor puts it in the store, which adding the pack already runs.
     /// </summary>
     [Fact]
     public void A_ForMember_declared_in_a_package_reaches_the_application()
@@ -101,7 +104,7 @@ public class DeclaredConversionTests
     {
         GeneratorRun run = Run(Application);
 
-        run.Compiles().Emits("Customizations.Conversion<long, string>()");
+        run.Compiles().Emits("Customizations.Conversion<long, string>(typeof(global::Framework.FrameworkPack))");
         run.None("SM0002");
     }
 
@@ -138,13 +141,13 @@ public class DeclaredConversionTests
 
             public partial class TestMapper : ShiftMapperBase
             {
-                // No AddProfile: the package is referenced and says nothing.
+                // No IncludeMapper, no AddConversions: the package is referenced and says nothing.
                 public TestMapper() => CreateMap<Entity, EntityDto>();
             }
             """);
 
         run.Compiles()
-           .DoesNotEmit("Customizations.Conversion<long, string>()")
+           .DoesNotEmit("Customizations.Conversion<long, string>(")
            .DoesNotEmit("MapToFileSummary")
            // The built-in conversion is what fills it, because nothing overrode it.
            .Emits("ToInvariantString(source.Id)");
@@ -166,16 +169,18 @@ public class DeclaredConversionTests
             {
                 public TestMapper()
                 {
-                    AddProfile<FrameworkProfile>();
+                    AddConversions<FrameworkPack>();
                     CreateConversion<long, string>(id => "LOCAL" + id, id => "LOCAL" + id);
                     CreateMap<Entity, EntityDto>();
                 }
             }
             """);
 
-        // Both routes emit the same lookup shape; what matters is that the map still resolves and
-        // the application's registration is the one in the store at run time.
-        run.Compiles().Emits("Customizations.Conversion<long, string>()");
+        // The generated call names the APPLICATION's own scope, so the store it reads at run time
+        // is the one the application's constructor filled.
+        run.Compiles()
+           .Emits("Customizations.Conversion<long, string>(typeof(global::TestMapper))")
+           .DoesNotEmit("typeof(global::Framework.FrameworkPack)");
         run.None("SM0002");
     }
 
@@ -196,7 +201,7 @@ public class DeclaredConversionTests
                 public TestMapper()
                 {
                     CreateMap<FileDto, FileSummary>().ForMember(d => d.Name, opt => opt.Ignore());
-                    AddProfile<FrameworkProfile>();
+                    IncludeMapper<FrameworkMapper>();
                 }
             }
             """);
@@ -224,7 +229,13 @@ public class DeclaredConversionTests
             applicationSource: Application,
             runGeneratorOnPackage: false);
 
-        Assert.Contains("declaration metadata", run.Single("SM0028").GetMessage());
+        // Once for the mapper it includes, once for the pack it adds — and an ERROR, because a
+        // package that says nothing would otherwise map nothing in silence.
+        Microsoft.CodeAnalysis.Diagnostic[] reported = run.All("SM0028");
+
+        Assert.Equal(2, reported.Length);
+        Assert.All(reported, d => Assert.Contains("declaration metadata", d.GetMessage()));
+        Assert.All(reported, d => Assert.Equal(Microsoft.CodeAnalysis.DiagnosticSeverity.Error, d.Severity));
         run.DoesNotEmit("MapToFileSummary");
     }
 

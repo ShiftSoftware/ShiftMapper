@@ -109,9 +109,11 @@ public partial class DeclaredMapper : ShiftMapperBase
 {
     public DeclaredMapper()
     {
-        // THE ONE LINE. Contoso.Platform is a compiled assembly with no source here, and this is
-        // identical to adding a profile from this project — which is the whole of the contract.
-        AddProfile<PlatformProfile>();
+        // THE TWO LINES. Contoso.Platform is a compiled assembly with no source here, and these
+        // are identical to including a mapper and adding a pack from this project — which is the
+        // whole of the contract.
+        IncludeMapper<PlatformMapper>();
+        AddConversions<PlatformConversions>();
 
         CreateMap<Document, DocumentDto>();
         CreateMap<Document, DocumentIdDto>();

@@ -5,7 +5,7 @@ namespace ShiftMapper.Sample.Dtos;
 ///
 /// <para>Nothing here is configured. <c>Invoice.IssuedAt</c> is a <c>DateTime</c> and this
 /// <c>IssuedAt</c> is a <c>string</c>, and the pair converts because
-/// <see cref="Mapping.ConversionProfile"/> registered it ONCE. No <c>ForMember</c>, and no line in
+/// <see cref="Mapping.ConversionPack"/> registered it ONCE. No <c>ForMember</c>, and no line in
 /// this map mentioning dates at all.</para>
 ///
 /// <para><b>The point is what is NOT here.</b> Add a second DTO tomorrow with a string timestamp

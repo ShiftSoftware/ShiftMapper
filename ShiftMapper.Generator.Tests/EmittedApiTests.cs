@@ -30,10 +30,10 @@ public class EmittedApiTests
             """);
 
         run.Compiles()
-           .Emits("public TDestination Map<TDestination>(global::Source source)")
-           .Emits("public global::Destination Map(global::Source source, global::Destination destination)")
+           .Emits("public virtual TDestination Map<TDestination>(global::Source source)")
+           .Emits("public virtual global::Destination Map(global::Source source, global::Destination destination)")
            .Emits("ShiftMapperProjection_Source_To_Destination")
-           .Emits("public global::System.Linq.IQueryable<TDestination> ProjectTo<TDestination>(global::System.Linq.IQueryable<global::Source> source)");
+           .Emits("public virtual global::System.Linq.IQueryable<TDestination> ProjectTo<TDestination>(global::System.Linq.IQueryable<global::Source> source)");
     }
 
     /// <summary>
@@ -129,7 +129,7 @@ public class EmittedApiTests
         // out loud that grouping by source type is the intended shape.
         Assert.Equal(
             1,
-            Occurrences(run.Generated, "public TDestination Map<TDestination>(global::Source source)"));
+            Occurrences(run.Generated, "public virtual TDestination Map<TDestination>(global::Source source)"));
     }
 
     /// <summary>
@@ -176,7 +176,7 @@ public class EmittedApiTests
             """);
 
         run.Compiles()
-           .Emits("public TDestination Map<TDestination>(global::Source source)")
+           .Emits("public virtual TDestination Map<TDestination>(global::Source source)")
            .DoesNotEmit("global::Destination destination)");
     }
 
@@ -264,8 +264,8 @@ public class EmittedApiTests
 
         Assert.Single(run.GeneratedFiles);
         run.Compiles()
-           .Emits("public TDestination Map<TDestination>(global::First source)")
-           .Emits("public TDestination Map<TDestination>(global::Second source)");
+           .Emits("public virtual TDestination Map<TDestination>(global::First source)")
+           .Emits("public virtual TDestination Map<TDestination>(global::Second source)");
     }
 
     /// <summary>
@@ -320,7 +320,7 @@ public class EmittedApiTests
 
         Assert.Equal(
             1,
-            Occurrences(run.Generated, "public global::Destination Map(global::Source source, global::Destination destination)"));
+            Occurrences(run.Generated, "public virtual global::Destination Map(global::Source source, global::Destination destination)"));
     }
 
     private static int Occurrences(string text, string value)

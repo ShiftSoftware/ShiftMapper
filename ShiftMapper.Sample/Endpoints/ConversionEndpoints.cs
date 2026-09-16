@@ -10,7 +10,7 @@ namespace ShiftMapper.Sample.Endpoints;
 ///
 /// Both maps behind them configure NOTHING. Neither <c>CreateMap&lt;Invoice, InvoiceStampDto&gt;()</c>
 /// nor <c>CreateMap&lt;Product, ProductFingerprintDto&gt;()</c> says a word about dates or hashing;
-/// both get them from rules written once in <see cref="ConversionProfile"/>.
+/// both get them from rules written once in <see cref="ConversionPack"/>.
 ///
 /// <para>The difference between them is whether the rule was given a QUERY form, and that decides
 /// whether the endpoint can be one SQL statement. Read <c>/stamps?sql=true</c> and

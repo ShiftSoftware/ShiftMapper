@@ -25,8 +25,28 @@ internal sealed class MapperClassModel
         ImmutableArray<string> profileProblems = default,
         ImmutableArray<string> declaredProblems = default,
         ImmutableArray<string> queryRegistrations = default,
-        ImmutableArray<PositionedProblem> declarationProblems = default)
+        ImmutableArray<PositionedProblem> declarationProblems = default,
+        bool isSealed = false,
+        string? adapterOf = null,
+        ImmutableArray<string> mirroredConstructors = default,
+        ImmutableArray<string> baseSourceTypes = default,
+        ImmutableArray<string> registrationComposition = default)
     {
+        IsSealed = isSealed;
+        AdapterOf = adapterOf;
+
+        RegistrationComposition = registrationComposition.IsDefault
+            ? ImmutableArray<string>.Empty
+            : registrationComposition;
+
+        MirroredConstructors = mirroredConstructors.IsDefault
+            ? ImmutableArray<string>.Empty
+            : mirroredConstructors;
+
+        BaseSourceTypes = baseSourceTypes.IsDefault
+            ? ImmutableArray<string>.Empty
+            : baseSourceTypes;
+
         DeclarationProblems = declarationProblems.IsDefault
             ? ImmutableArray<PositionedProblem>.Empty
             : declarationProblems;
@@ -76,6 +96,41 @@ internal sealed class MapperClassModel
     /// <summary>Whether the mapper is visible outside its assembly (see CS0051).</summary>
     public bool IsPublic { get; }
 
+    /// <summary>
+    /// Whether the developer sealed the class. A sealed mapper gets no <c>virtual</c> members —
+    /// C# refuses them — and so cannot be adapted from another project (SM0039).
+    /// </summary>
+    public bool IsSealed { get; }
+
+    /// <summary>
+    /// For an ADAPTER — the subclass generated for a mapper registered from a referenced package
+    /// — the fully qualified base mapper. Null for an ordinary mapper. An adapter's members
+    /// <c>override</c> the base's, its constructors mirror the base's, and its
+    /// <c>DeclaringType</c> is the base.
+    /// </summary>
+    public string? AdapterOf { get; }
+
+    /// <summary>
+    /// The base's accessible constructors, each rendered as
+    /// <c>"(global::X a, global::Y b) : base(a, b)"</c>, so the adapter can be built with the same
+    /// dependencies. Empty for an ordinary mapper.
+    /// </summary>
+    public ImmutableArray<string> MirroredConstructors { get; }
+
+    /// <summary>
+    /// The source types the base already has extension methods for. The adapter's extension class
+    /// only covers the others — for these, the base's own methods dispatch virtually.
+    /// </summary>
+    public ImmutableArray<string> BaseSourceTypes { get; }
+
+    /// <summary>
+    /// What the REGISTRATION composed into this mapper — includes and packs written in
+    /// <c>AddShiftMapper</c> rather than in the constructor — fully qualified. Written into the
+    /// assembly as metadata, so the runtime applies exactly what was baked whichever call resolves
+    /// the mapper.
+    /// </summary>
+    public ImmutableArray<string> RegistrationComposition { get; }
+
     /// <summary>The maps declared by CreateMap calls inside this declaration.</summary>
     public ImmutableArray<MapModel> Maps { get; }
 
@@ -88,8 +143,8 @@ internal sealed class MapperClassModel
     public ImmutableArray<string> OpenGenericProblems { get; }
 
     /// <summary>
-    /// What went wrong with this mapper's profiles, each prefixed by the id that should report it
-    /// — SM0027, SM0028 or SM0029.
+    /// What went wrong with this mapper's includes, each prefixed by the id that should report it
+    /// — SM0027 or SM0028.
     ///
     /// The id travels IN the string because these belong to the class rather than to a map, and
     /// there is nothing else to hang them on; keeping them in one list rather than three parallel
@@ -101,7 +156,7 @@ internal sealed class MapperClassModel
     /// What went wrong with conversions declared by REFERENCED ASSEMBLIES, each prefixed by the id
     /// that reports it — SM0031, SM0032 or SM0033.
     ///
-    /// Belongs to the class rather than to a map for the same reason the profile problems do: a bad
+    /// Belongs to the class rather than to a map for the same reason the include problems do: a bad
     /// declaration produces no map to hang a message on.
     /// </summary>
     public ImmutableArray<string> DeclaredProblems { get; }

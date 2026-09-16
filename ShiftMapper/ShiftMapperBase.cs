@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq.Expressions;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace ShiftMapper;
 
@@ -63,9 +64,9 @@ public abstract class ShiftMapperBase
     /// </summary>
     public IServiceProvider Services =>
         _services ?? throw new InvalidOperationException(
-            $"ShiftMapper: no service provider has been set on '{GetType().Name}'. That happens " +
+            $"ShiftMapper: no service provider has been set on '{DeclaringType.Name}'. That happens " +
             "when the mapper is constructed directly instead of resolved from DI. Register it " +
-            $"with services.AddShiftMapper<{GetType().Name}>() and inject it.");
+            $"with services.AddShiftMapper<{DeclaringType.Name}>() and inject it.");
 
     /// <summary>
     /// Called by <c>AddShiftMapper</c> when the mapper is created. Internal on purpose:
@@ -90,27 +91,30 @@ public abstract class ShiftMapperBase
     {
         get
         {
-            EnsureProfiles();
+            EnsureIncluded(visiting: null);
             return _customizations;
         }
     }
 
     /// <summary>
-    /// The same store, reached WITHOUT materialising profiles.
+    /// The same store, reached WITHOUT materialising included mappers and packs.
     ///
-    /// <para>The distinction is the whole of the profile timing problem. <c>CreateMap</c> runs
-    /// inside your constructor and must not trigger profile construction, because a profile may
-    /// need services and <see cref="Services"/> is not assigned until after your constructor
+    /// <para>The distinction is the whole of the timing problem. <c>CreateMap</c> runs inside your
+    /// constructor and must not trigger construction of an included mapper, because that mapper
+    /// may need services and <see cref="Services"/> is not assigned until after your constructor
     /// returns. The generated code, which reads <see cref="Customizations"/>, only ever runs when
     /// something is actually mapped — by which time everything is in place.</para>
     /// </summary>
     private readonly MapCustomizations _customizations;
 
-    /// <summary>The profile types <see cref="AddProfile{TProfile}"/> recorded, in order.</summary>
-    private List<Type>? _profileTypes;
+    /// <summary>The mapper types <see cref="IncludeMapper{TMapper}"/> recorded, in order.</summary>
+    private List<Type>? _includedTypes;
 
-    /// <summary>Set once the profiles have been constructed and folded in.</summary>
-    private bool _profilesMaterialised;
+    /// <summary>The pack types <see cref="AddConversions{TPack}"/> recorded, in order.</summary>
+    private List<Type>? _packTypes;
+
+    /// <summary>Set once the included mappers and packs have been constructed and folded in.</summary>
+    private bool _materialised;
 
     /// <summary>
     /// Hands the customization store the mapper CLASS it belongs to, which is what lets a
@@ -121,8 +125,21 @@ public abstract class ShiftMapperBase
     protected ShiftMapperBase() => _customizations = new MapCustomizations(GetType());
 
     /// <summary>
+    /// The type whose DECLARATIONS this instance's constructor registers — the key every
+    /// conversion it declares is stored under, and the one the generated code looks it up by.
+    ///
+    /// <para>Normally the runtime type. The one exception is the ADAPTER the generator writes for a
+    /// mapper registered from a referenced package: the adapter derives from that mapper and runs
+    /// its constructor, but the conversions that constructor declares were compiled under the
+    /// package mapper's own name, so the adapter overrides this to say so. Nobody else needs
+    /// to.</para>
+    /// </summary>
+    protected virtual Type DeclaringType => GetType();
+
+    /// <summary>
     /// Registers a conversion for a TYPE PAIR, applied to every member of those types in every
-    /// map — including maps written in code that has never heard of it.
+    /// map THIS MAPPER DECLARES — directly, as the element type of a collection, as the value type
+    /// of a dictionary, or inside a nested map.
     ///
     /// <code>
     /// CreateConversion&lt;string, List&lt;FileDTO&gt;&gt;(
@@ -131,11 +148,18 @@ public abstract class ShiftMapperBase
     /// </code>
     ///
     /// <para><b>THIS IS THE ONE THAT SCALES.</b> A <c>ForMember</c> is written per member per map;
-    /// this is written once and answers wherever the pair appears — directly, as the element type
-    /// of a collection, as the value type of a dictionary, or inside a nested map. It is consulted
-    /// by the same resolver that handles <c>int</c> to <c>string</c>, just before it would have
-    /// given up and reported SM0002, so it EXTENDS the built-in table rather than replacing it. A
+    /// this is written once and answers wherever the pair appears. It is consulted by the same
+    /// resolver that handles <c>int</c> to <c>string</c>, just before it would have given up and
+    /// reported SM0002, so it EXTENDS the built-in table rather than replacing it. A
     /// <c>ForMember</c> on a particular member still wins over both.</para>
+    ///
+    /// <para><b>ITS REACH IS THIS MAPPER'S MAPS.</b> A rule written here does not leak into the
+    /// maps of a mapper that includes this one, and a rule written in a mapper this one includes
+    /// does not reach the maps written here. A rule several mappers should share belongs in a
+    /// <see cref="ShiftMapperConversions"/> pack, added with <see cref="AddConversions{TPack}"/>
+    /// or at registration. Where more than one rule could answer, the nearest wins: this mapper's
+    /// own, then a pack it added, then a pack the registration gave every mapper, then the
+    /// built-in table.</para>
     ///
     /// <para><b>TWO FORMS, BECAUSE THERE ARE TWO BACKENDS.</b> <paramref name="memory"/> is a
     /// delegate the <c>Map</c> methods call, and it may do anything C# can do.
@@ -152,9 +176,6 @@ public abstract class ShiftMapperBase
     /// for everything that derives from it, so one rule covers an entity hierarchy. Where two
     /// registrations could both answer, the nearest by inheritance wins, so a general rule can
     /// always be narrowed for a particular type.</para>
-    ///
-    /// <para>Declare it in a mapper's constructor or, better, in a
-    /// <see cref="ShiftMapperProfile"/> that several mappers add.</para>
     /// </summary>
     /// <param name="memory">The conversion the in-memory maps run.</param>
     /// <param name="query">
@@ -168,7 +189,7 @@ public abstract class ShiftMapperBase
         if (memory is null)
             throw new ArgumentNullException(nameof(memory));
 
-        _customizations.RegisterConversion(typeof(TSource), typeof(TDestination), memory, query);
+        _customizations.RegisterConversion(DeclaringType, typeof(TSource), typeof(TDestination), memory, query);
     }
 
     /// <summary>
@@ -188,8 +209,9 @@ public abstract class ShiftMapperBase
     /// <see cref="MemberConventionExpression{TMember}"/> for what the vocabulary is and why it is
     /// deliberately small.</para>
     ///
-    /// <para>Declare it here or in a <see cref="ShiftMapperProfile"/>, which carries it across an
-    /// assembly like everything else. An explicit <c>ForMember</c> always wins over it.</para>
+    /// <para>Declare it here, where it applies to this mapper's maps, or in a
+    /// <see cref="ShiftMapperConversions"/> pack to share it. An explicit <c>ForMember</c> always
+    /// wins over it.</para>
     ///
     /// <para>Compile-time only, like <c>CreateMap</c> — the generator reads the chain and the
     /// calls do nothing.</para>
@@ -197,113 +219,207 @@ public abstract class ShiftMapperBase
     protected MemberConventionExpression<TMember> CreateMemberConvention<TMember>() => new();
 
     /// <summary>
-    /// Declares that this mapper also uses the maps written in a
-    /// <see cref="ShiftMapperProfile"/>. Call it from your constructor, like <c>CreateMap</c>.
+    /// Declares that this mapper also has every map ANOTHER mapper declares. Call it from your
+    /// constructor, like <c>CreateMap</c>.
     ///
     /// <code>
     /// public partial class AppMapper : ShiftMapperBase
     /// {
     ///     public AppMapper()
     ///     {
-    ///         AddProfile&lt;CatalogProfile&gt;();
-    ///         AddProfile&lt;InvoiceProfile&gt;();
+    ///         IncludeMapper&lt;CatalogMapper&gt;();
+    ///         IncludeMapper&lt;PlatformMapper&gt;();   // from a referenced package
     ///     }
     /// }
     /// </code>
     ///
-    /// <para>Nothing about the generated code changes. The profile's maps become THIS mapper's
-    /// maps — <c>mapper.Map&lt;BrandDto&gt;(brand)</c> and <c>ProjectTo</c> work exactly as if the
-    /// <c>CreateMap</c> had been written here. A profile is a place to write declarations, not a
-    /// second mapper, and it never gets Map methods of its own.</para>
+    /// <para>The included mapper's maps become THIS mapper's maps — <c>mapper.Map&lt;BrandDto&gt;(brand)</c>
+    /// and <c>ProjectTo</c> work exactly as if the <c>CreateMap</c> had been written here, and a
+    /// map written here may nest one of them. The included mapper is unchanged: it keeps its own
+    /// generated methods and can still be registered and injected on its own.</para>
+    ///
+    /// <para><b>WHAT COMES ALONG.</b> Its maps, open generic maps, and whatever it includes in turn.
+    /// Its <c>CreateConversion</c>s and member conventions come along too, but keep their reach:
+    /// they apply to the maps IT declared, not to the ones written here — see
+    /// <see cref="CreateConversion{TSource, TDestination}"/>.</para>
     ///
     /// <para>UNLIKE the rest of the declaration API, this one does something at run time as well
     /// as at compile time. The generator reads it to find the maps; the call itself records the
-    /// type so the profile can be CONSTRUCTED later — which is what puts its <c>MapFrom</c> trees
+    /// type so the mapper can be CONSTRUCTED later — which is what puts its <c>MapFrom</c> trees
     /// where the generated code looks for them.</para>
     ///
-    /// <para>"Later" rather than "now" is deliberate: a profile may take constructor dependencies,
-    /// and this mapper's <see cref="Services"/> is not assigned until after its own constructor
-    /// returns. So profiles are built on first use — through DI when the mapper came from DI, and
-    /// through the parameterless constructor otherwise.</para>
+    /// <para>"Later" rather than "now" is deliberate: an included mapper may take constructor
+    /// dependencies, and this mapper's <see cref="Services"/> is not assigned until after its own
+    /// constructor returns. So included mappers are built on first use — from the service
+    /// provider when the mapper came from DI (resolved if registered, constructed with its
+    /// dependencies injected otherwise), and through the parameterless constructor when it did
+    /// not.</para>
     ///
-    /// <para>A pair declared BOTH here and in a profile keeps the version written here, and the
-    /// build reports the clash (SM0027) rather than leaving you to find out which won.</para>
+    /// <para>A pair declared BOTH here and in an included mapper keeps the version written here,
+    /// and the build reports the clash (SM0027) rather than leaving you to find out which won.</para>
     /// </summary>
-    protected void AddProfile<TProfile>() where TProfile : ShiftMapperProfile
-    {
-        (_profileTypes ??= new List<Type>()).Add(typeof(TProfile));
+    protected void IncludeMapper<TMapper>() where TMapper : ShiftMapperBase => IncludeMapper(typeof(TMapper));
 
-        // A profile added after something has already been mapped would otherwise be ignored in
-        // silence. It cannot happen from a constructor, which is the only supported place, but
-        // this makes the unsupported one loud instead of subtle.
-        _profilesMaterialised = false;
+    /// <summary>
+    /// Gives this mapper the rules of a <see cref="ShiftMapperConversions"/> pack. Call it from your
+    /// constructor, like <c>CreateMap</c>.
+    ///
+    /// <code>
+    /// public AppMapper()
+    /// {
+    ///     AddConversions&lt;PlatformConversions&gt;();
+    ///     CreateMap&lt;Brand, BrandDto&gt;();          // may now use the pack's long -&gt; string
+    /// }
+    /// </code>
+    ///
+    /// <para>The pack's conversions and member conventions apply to every map this mapper declares
+    /// and to every map it includes. A rule this mapper wrote itself still wins over the pack's, and
+    /// a pack added here wins over one the registration gave every mapper.</para>
+    ///
+    /// <para>Like <see cref="IncludeMapper{TMapper}"/> this both tells the generator and records
+    /// the type, so the pack can be constructed on first use — through DI when there is a
+    /// provider, so it may take dependencies.</para>
+    /// </summary>
+    protected void AddConversions<TPack>() where TPack : ShiftMapperConversions => AddConversions(typeof(TPack));
+
+    /// <summary>
+    /// The non-generic form <c>AddShiftMapper</c> uses for includes written at registration.
+    /// Internal because the registration API is the only other place a type may arrive from.
+    /// </summary>
+    internal void IncludeMapper(Type mapper)
+    {
+        _includedTypes ??= new List<Type>();
+
+        // Once. A mapper the constructor includes and the registration names as well is still one
+        // include; building it twice would merge the same store twice for nothing.
+        if (_includedTypes.Contains(mapper))
+            return;
+
+        _includedTypes.Add(mapper);
+
+        // A mapper included after something has already been mapped would otherwise be ignored in
+        // silence. It cannot happen from a constructor or from AddShiftMapper, which are the only
+        // supported places, but this makes the unsupported one loud instead of subtle.
+        _materialised = false;
+    }
+
+    /// <inheritdoc cref="IncludeMapper(Type)"/>
+    internal void AddConversions(Type pack)
+    {
+        _packTypes ??= new List<Type>();
+
+        if (_packTypes.Contains(pack))
+            return;
+
+        _packTypes.Add(pack);
+        _materialised = false;
     }
 
     /// <summary>
-    /// Builds each profile once and folds its registrations into this mapper's store.
-    ///
-    /// <para>Profiles are resolved from <see cref="Services"/> when there is one, so a profile can
-    /// take the same constructor dependencies a mapper can. When the mapper was built by hand
-    /// rather than by DI there is no provider to ask, and a parameterless profile still works —
-    /// which keeps a plain <c>new AppMapper()</c> usable in a test.</para>
+    /// The store with everything included and added, for an INCLUDING mapper that is materialising
+    /// this one — carrying the set of mappers already on the include path so a cycle stops.
     /// </summary>
-    private void EnsureProfiles()
+    internal MapCustomizations Materialised(HashSet<Type> visiting)
     {
-        if (_profilesMaterialised)
+        EnsureIncluded(visiting);
+        return _customizations;
+    }
+
+    /// <summary>
+    /// Builds each included mapper and pack once and folds its registrations into this mapper's
+    /// store.
+    ///
+    /// <para>They are resolved from <see cref="Services"/> when there is one — as a registered
+    /// service if there is a registration, else constructed with their dependencies injected — so
+    /// an included mapper can take the same constructor dependencies a mapper can. When the mapper
+    /// was built by hand rather than by DI there is no provider to ask, and a parameterless one
+    /// still works, which keeps a plain <c>new AppMapper()</c> usable in a test.</para>
+    ///
+    /// <para><paramref name="visiting"/> is the include path so far. Two mappers may include each
+    /// other — the generator maps the union of what they declare, which is what someone writing
+    /// it would expect — and without the path the runtime would construct them alternately
+    /// forever.</para>
+    /// </summary>
+    private void EnsureIncluded(HashSet<Type>? visiting)
+    {
+        if (_materialised)
             return;
 
-        // Set FIRST. A profile constructor that reached back into this mapper would otherwise
-        // re-enter here and build the same profiles again, forever.
-        _profilesMaterialised = true;
+        // Set FIRST. A constructor that reached back into this mapper would otherwise re-enter
+        // here and build the same set again, forever.
+        _materialised = true;
 
-        if (_profileTypes is not null)
+        visiting ??= new HashSet<Type>();
+        visiting.Add(GetType());
+        visiting.Add(DeclaringType);
+
+        if (_includedTypes is not null)
         {
-            foreach (Type profileType in _profileTypes)
-                _customizations.MergeFrom(CreateProfile(profileType).Customizations);
+            foreach (Type includedType in _includedTypes)
+            {
+                if (visiting.Contains(includedType))
+                    continue;
+
+                var included = (ShiftMapperBase)Construct(includedType, "mapper");
+
+                // Hand the provider down so what IT includes can be resolved the same way.
+                if (included._services is null && _services is not null)
+                    included.SetServices(_services);
+
+                _customizations.MergeFrom(included.Materialised(visiting));
+            }
         }
 
-        // AFTER the profiles, so a conversion the application declared in its own source keeps its
-        // place: RegisterQueryConversion does not overwrite, and the generator resolves the pair by
-        // the same precedence. Near beats far, in both halves.
+        if (_packTypes is not null)
+        {
+            foreach (Type packType in _packTypes)
+                _customizations.MergeFrom(((ShiftMapperConversions)Construct(packType, "pack")).Customizations);
+        }
+
+        // AFTER everything else, so a conversion a constructor registered keeps its place:
+        // RegisterQueryConversion does not overwrite, and the generator resolves the pair by the
+        // same precedence. Near beats far, in both halves.
         RegisterDeclaredConversions(_customizations);
     }
 
     /// <summary>
-    /// Hands the store the QUERY forms of conversions declared by REFERENCED ASSEMBLIES —
-    /// overridden by the generated half of the mapper, and empty here.
+    /// Hands the store the QUERY forms of conversions declared by REFERENCED ASSEMBLIES whose
+    /// memory forms were lifted into named methods — overridden by the generated half of the
+    /// mapper, and empty here.
     ///
-    /// <para>Only the query forms. A conversion declared through <c>[ShiftMapperConversions]</c>
-    /// has its memory form called DIRECTLY by the generated code, by name, because the generator
-    /// read that name out of metadata at compile time. An expression tree is the one thing a name
-    /// cannot stand in for, so it is the one thing that has to arrive here.</para>
+    /// <para>Only the query forms. A lifted conversion has its memory form called DIRECTLY by the
+    /// generated code, by name, because the generator read that name out of metadata at compile
+    /// time. An expression tree is the one thing a name cannot stand in for, so it is the one thing
+    /// that has to arrive here.</para>
     /// </summary>
     protected virtual void RegisterDeclaredConversions(MapCustomizations customizations)
     {
     }
 
-    private ShiftMapperProfile CreateProfile(Type profileType)
+    private object Construct(Type type, string kind)
     {
-        object? profile = _services?.GetService(profileType);
-
-        if (profile is null)
+        if (_services is not null)
         {
-            try
-            {
-                profile = Activator.CreateInstance(profileType);
-            }
-            catch (MissingMethodException error)
-            {
-                throw new InvalidOperationException(
-                    $"ShiftMapper: the profile '{profileType.Name}' takes constructor arguments, so " +
-                    $"it has to come from DI, but '{GetType().Name}' was not resolved from a service " +
-                    $"provider. Register the profile with services.AddTransient<{profileType.Name}>() " +
-                    "and resolve the mapper through AddShiftMapper, or give the profile a " +
-                    "parameterless constructor.",
-                    error);
-            }
+            // Registered wins, because a registration may carry a lifetime the developer chose;
+            // otherwise build it here with its dependencies injected, so nobody has to register a
+            // mapper only to be able to include it.
+            return _services.GetService(type)
+                ?? ActivatorUtilities.CreateInstance(_services, type);
         }
 
-        return (ShiftMapperProfile)profile!;
+        try
+        {
+            return Activator.CreateInstance(type)!;
+        }
+        catch (MissingMethodException error)
+        {
+            throw new InvalidOperationException(
+                $"ShiftMapper: the {kind} '{type.Name}' takes constructor arguments, so it has to " +
+                $"come from DI, but '{GetType().Name}' was not resolved from a service provider. " +
+                "Resolve the mapper through AddShiftMapper, or give the " + kind + " a " +
+                "parameterless constructor.",
+                error);
+        }
     }
 
     /// <summary>

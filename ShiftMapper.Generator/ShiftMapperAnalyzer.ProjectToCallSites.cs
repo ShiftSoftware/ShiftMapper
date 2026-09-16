@@ -47,6 +47,10 @@ public sealed partial class ShiftMapperAnalyzer
         if (context.Compilation.GetTypeByMetadataName(NotProjectableAttribute) is not { } marker)
             return;
 
+        // THE REGISTRATION, judged once the whole compilation is in hand — see
+        // ShiftMapperAnalyzer.Registrations.
+        context.RegisterCompilationEndAction(OnCompilationEnd);
+
         if (context.Compilation.GetTypeByMetadataName("System.Linq.IQueryable`1") is not { } queryable)
             return;
 

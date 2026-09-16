@@ -1,6 +1,6 @@
 # Diagnostics
 
-Every ShiftMapper message is `SM####`, reported by a `DiagnosticAnalyzer` rather than by the generator, so `.editorconfig` tunes them per folder and the IDE shows them live. Thirty-eight rules, SM0001 to SM0038; five stop the build (SM0011, SM0012, SM0016, SM0031, SM0035). The [README table](../README.md#diagnostics) is the one-line summary; this page gives each rule what it is protecting, what is still generated, and how to answer it.
+Every ShiftMapper message is `SM####`, reported by a `DiagnosticAnalyzer` rather than by the generator, so `.editorconfig` tunes them per folder and the IDE shows them live. Forty rules in use, SM0001 to SM0041 (SM0029 is retired); seven stop the build (SM0011, SM0012, SM0016, SM0028, SM0031, SM0035, SM0039). The [README table](../README.md#diagnostics) is the one-line summary; this page gives each rule what it is protecting, what is still generated, and how to answer it.
 
 <a id="sm0001"></a>
 ## SM0001 — Destination property is not mapped
@@ -520,8 +520,8 @@ expect SM0014 beside this one — an unmapped `required` member cannot be constr
 wrong — which is exactly why it is worth saying.
 
 `IncludeBase<TSourceBase, TDestinationBase>()` takes over the `ForMember` configuration of the map
-between the base types, so that map has to exist somewhere in this mapper: its own parts, a profile
-it adds, or a referenced assembly's declarations all count. When it does not, the derived map keeps
+between the base types, so that map has to exist somewhere in this mapper: its own parts, a mapper
+it includes, or a referenced assembly's declarations all count. When it does not, the derived map keeps
 doing exactly what it did before. A base map that was renamed, or never written, takes its whole
 configuration with it in silence, and every member the base was going to speak for falls back to
 the conventions.
@@ -542,7 +542,7 @@ CreateMap<Brand, BrandDto>().IncludeBase<EntityBase, BaseDto>();
 **The fix** is to add the `CreateMap<EntityBase, BaseDto>()`, or to correct the type arguments if
 the base map exists under another pair. Inheritance follows through — a base that has a base of its
 own is inherited too, and a loop of bases is walked once rather than forever — so one `IncludeBase`
-on each level is enough. Worked example: `CatalogProfile` in the sample, where `BundleItem` inherits
+on each level is enough. Worked example: `CatalogMapper` in the sample, where `BundleItem` inherits
 `PhysicalItem`'s configuration and, through it, `CatalogItem`'s (`GET /api/catalog/bundles`).
 
 <a id="sm0023"></a>
@@ -688,97 +688,80 @@ over nothing is quiet. `GET /api/catalog/paged` and `/api/catalog/paged-brands` 
 two closures of the same line, the second over a pair declared in a different file.
 
 <a id="sm0027"></a>
-## SM0027 — A map is declared both in a profile and outside it
+## SM0027 — A map is declared both in an included mapper and in the mapper that includes it
 
-**Warning.** Reported at the class declaration of the mapper part. There is a defined answer, and
-both halves of the library give the same one: the declaration outside the profile is the one that
-runs, in the generated code and in the runtime store alike.
+**Warning.** Reported at the class declaration of the including mapper part. There is a defined
+answer, and both halves of the library give the same one: the including mapper's declaration is the
+one that runs, in the generated code and in the runtime store alike.
 
 A warning rather than an error because nothing is undefined. What it cannot be is silent — the
 losing declaration reads exactly like the winning one, and a `ForMember` on it does nothing.
 
 ```csharp
-public class BrandProfile : ShiftMapperProfile
+public partial class BrandMapper : ShiftMapperBase
 {
-    public BrandProfile() =>
+    public BrandMapper() =>
         CreateMap<Brand, BrandDto>()
-            .ForMember(d => d.Name, opt => opt.MapFrom(s => "profile:" + s.Name));
+            .ForMember(d => d.Name, opt => opt.MapFrom(s => "included:" + s.Name));
 }
 
 public partial class AppMapper : ShiftMapperBase
 {
     public AppMapper()
     {
-        CreateMap<Brand, BrandDto>();   // this one runs; the MapFrom above is never emitted
-        AddProfile<BrandProfile>();
+        CreateMap<Brand, BrandDto>();   // this one runs on AppMapper; the MapFrom above is never emitted there
+        IncludeMapper<BrandMapper>();
     }
 }
 ```
 
-> warning SM0027: 'Brand' to 'BrandDto' is declared in profile 'BrandProfile' and again elsewhere
-> in 'AppMapper'; the one outside the profile is the one that runs
+> warning SM0027: 'Brand' to 'BrandDto' is declared in 'BrandMapper' and again in 'AppMapper'; the
+> one in 'AppMapper' is the one that runs
 
-**The fix** is to delete whichever of the two you did not mean to keep. If the mapper's own
-declaration was meant to refine the profile's, move the `ForMember` onto it; there is no merging of
-two declarations for one pair.
+`BrandMapper`'s own generated half is unaffected — it is a mapper in its own right, and its `MapFrom`
+runs there. **The fix** is to delete whichever of the two you did not mean to keep. If the including
+mapper's declaration was meant to refine the included one, move the `ForMember` onto it; there is no
+merging of two declarations for one pair.
 
 <a id="sm0028"></a>
 ## SM0028 — A referenced assembly carries no ShiftMapper declaration metadata
 
-**Warning.** Reported at the mapper's class declaration, once per profile that could not be read.
-The profile contributes nothing: no maps, no conversions, no member conventions.
+**Error.** Reported at the mapper's class declaration — or at the `AddMapper` call, for a mapper
+registered directly — once per mapper or pack that could not be read. One of the rules that stop
+the build, because the alternative is a mapper or pack that was asked for and contributes nothing,
+in silence.
 
 A source generator sees a referenced assembly as metadata — type names, signatures, attributes —
-and never a method body. A profile compiled into a package is therefore, from the outside, a class
+and never a method body. A mapper compiled into a package is therefore, from the outside, a class
 with an empty constructor. What makes packages work is the package's own build: the same generator
-runs there and writes what its profiles declare into the assembly as attributes. A package built
-without the generator wrote nothing down, and an `AddProfile` for one of its profiles finds nothing
-to read.
+runs there and writes what every mapper and pack declares into the assembly as attributes. A package
+built without the generator wrote nothing down, and an `IncludeMapper`, `AddConversions` or
+`AddMapper` for one of its types finds nothing to read.
 
 ```csharp
-public AppMapper() => AddProfile<FrameworkProfile>();   // FrameworkProfile's package was built without the generator
+public AppMapper() => IncludeMapper<FrameworkMapper>();   // FrameworkMapper's package was built without the generator
 ```
 
-> warning SM0028: the profile 'FrameworkProfile' is in a referenced assembly that carries no
-> ShiftMapper declaration metadata, so nothing it declares could be read. That package has to be
-> built with the ShiftMapper generator referenced as an analyzer.
+> error SM0028: 'FrameworkMapper' is in a referenced assembly that carries no ShiftMapper declaration
+> metadata, so nothing it declares could be read. That package has to be built with the ShiftMapper
+> generator referenced as an analyzer.
 
 **The fix is in the package, not here.** It has to reference the `ShiftSoftware.ShiftMapper`
 package, which brings the generator in as an analyzer and writes the declarations on the package's
 own build. There is no consuming-side workaround, which is why the message states the limitation
 rather than only that it was hit. A package that was built correctly is recognised by the
-`[assembly: ShiftMapperContract(1)]` its build stamps on it; `Contoso.Platform` — the sample's
-stand-in for a framework package — is the working example in this repository, consumed through
-`GET /api/brands/hashed`.
+`[assembly: ShiftMapperContract(2)]` its build stamps on it, and every mapper and pack in it by a
+`ShiftMapperDeclaredMapper` or `ShiftMapperDeclaredPack` marker — even one that declares nothing;
+`Contoso.Platform` — the sample's stand-in for a framework package — is the working example in this
+repository, consumed through `GET /api/brands/hashed` and `GET /api/framework/files`.
 
 <a id="sm0029"></a>
-## SM0029 — ConfigureDefaults on a profile has no effect
+## SM0029 — retired
 
-**Warning.** Reported at the class declaration of the mapper part that adds the profile.
-
-Defaults are read from the mapper's type, so one mapper has one set of them whichever file a map
-was written in. `ShiftMapperProfile` derives from `ShiftMapperBase`, which is what lets it share
-`CreateMap` and the rest — and also what lets an override of `ConfigureDefaults` compile on a
-profile, where nothing reads it. A reasonable guess that happens to be wrong is precisely what this
-library reports rather than ignores.
-
-```csharp
-public class BrandProfile : ShiftMapperProfile
-{
-    public BrandProfile() => CreateMap<Brand, BrandDto>();
-
-    protected override void ConfigureDefaults(MapOptions options)
-        => options.Matching = PropertyMatching.CaseSensitive;   // never consulted
-}
-```
-
-> warning SM0029: 'BrandProfile' overrides ConfigureDefaults, which does nothing in a profile: a map
-> takes its defaults from the mapper that added the profile. Move the override to the mapper, or set
-> the option on each CreateMap.
-
-**The fix** is one of the two the message gives. Override `ConfigureDefaults` on the mapper, and it
-applies to the profile's maps too; or set the option on the individual `CreateMap`, which applies to
-that map wherever it is written.
+`ConfigureDefaults` used to do nothing on a profile, and SM0029 said so. There are no profiles: every
+class deriving from `ShiftMapperBase` is a mapper, and its `ConfigureDefaults` governs its own maps
+wherever they end up — in its own generated half and in every mapper that includes it. The id is not
+reused.
 
 <a id="sm0030"></a>
 ## SM0030 — Map cannot be projected because a conversion has no query form
@@ -825,44 +808,42 @@ by character, no database could express it, and `?project=true` shows the refusa
 nests this one inherits the refusal as SM0036.
 
 <a id="sm0031"></a>
-## SM0031 — Two assemblies declare a conversion for the same type pair
+## SM0031 — Two packs declare a conversion for the same type pair
 
-**Error.** Reported at the mapper's class declaration, naming both assemblies and the pair. One of
-the five rules that stop the build.
+**Error.** Reported at the mapper's class declaration, naming both packs and the pair. One of the
+rules that stop the build.
 
-Everywhere else, near beats far: a `ForMember` over the mapper's own declaration over a package's
-over the built-in table. Two packages are the same distance away, so whichever won would depend on
-reference order, and half the maps in the application would convert the other way with nobody
-reading either package able to see why. There is no answer to pick, so the build stops and asks for
-one.
+Everywhere else, nearest wins: a `ForMember`, then the declaring mapper's own `CreateConversion`,
+then the packs it added, then the including mapper's own and its packs, then the packs the
+registration gave every mapper, then the built-in table. Two packs at the SAME distance are
+different: whichever won would depend on the order they were added, and half the maps in the
+application would convert the other way with nobody reading either pack able to see why. There is
+no answer to pick, so the build stops and asks for one.
 
 ```csharp
-// PackageA's profile:  CreateConversion<long, string>(id => "A" + id, id => "A" + id);
-// PackageB's profile:  CreateConversion<long, string>(id => "B" + id, id => "B" + id);
+// PackageA's pack:  CreateConversion<long, string>(id => "A" + id, id => "A" + id);
+// PackageB's pack:  CreateConversion<long, string>(id => "B" + id, id => "B" + id);
 
 public AppMapper()
 {
-    AddProfile<FirstProfile>();    // from PackageA
-    AddProfile<SecondProfile>();   // from PackageB
+    AddConversions<FirstConversions>();    // from PackageA
+    AddConversions<SecondConversions>();   // from PackageB
     CreateMap<Source, Destination>();
 }
 ```
 
-> error SM0031: 'PackageA' and 'PackageB' both declare a conversion from 'long' to 'string'. Near
-> beats far everywhere else, but these are the same distance away, so which one applied would depend
-> on reference order. Declare the pair in this project to settle it.
+> error SM0031: 'FirstConversions' and 'SecondConversions' both declare a conversion from 'long' to
+> 'string'. Near beats far everywhere else, but these are the same distance away, so which one
+> applied would depend on the order they were added. Declare the pair on the mapper to settle it.
 
-Two things keep it from firing spuriously. Declarations are opt-in, so a package that is referenced
-but never added with `AddProfile` declares nothing and cannot conflict. And two declarations from
-the same assembly stay silent — that is one package listing a pair twice, which is harmless and not
-the application's problem.
+Two things keep it from firing spuriously. Packs are opt-in, so a package that is referenced but
+never added declares nothing and cannot conflict. And one pack listing a pair twice stays silent —
+the later registration wins, as it does in the runtime dictionary.
 
-**The fix that clears the error** is to stop adding one of the two profiles, or to have one package
-drop the pair. Or declare the pair in this project with `CreateConversion`: a local declaration is
-nearer than any package, so it wins the lookup — and it clears the error, because the application
-has made the decision the rule was asking for. (It did not always: the conflict check once counted
-only entries carrying a declaring assembly, so the fix the message named changed which conversion
-ran without making the error go away. A test now pins that the local declaration settles it.)
+**The fix that clears the error** is to stop adding one of the two packs, or to have one drop the
+pair. Or declare the pair nearer — on the mapper with `CreateConversion`, or in a pack the mapper
+adds itself when the clash is between registration-wide packs: a nearer declaration wins the lookup,
+and it clears the error, because the decision the rule was asking for has been made.
 
 <a id="sm0032"></a>
 ## SM0032 — A declared conversion could not be read
@@ -878,12 +859,12 @@ report upstream. Until this rule fired, the conversion was lost in total silence
 connected the SM0002 to the package that was supposed to supply it.
 
 The shape that triggers it is a `[assembly: ShiftMapperDeclaredConversion(...)]` whose constructor
-arguments are not three types — `(Type profile, Type source, Type destination)` — which is what a
+arguments are not three types — `(Type declaredBy, Type source, Type destination)` — which is what a
 package built by a different version of the generator, or hand-written metadata, leaves behind:
 
 ```csharp
 // in the package — written by hand, or by a generator this one does not understand
-[assembly: ShiftMapperDeclaredConversion(typeof(BrokenProfile), null, null)]
+[assembly: ShiftMapperDeclaredConversion(typeof(BrokenConversions), null, null)]
 ```
 
 > warning SM0032: 'ShiftMapperPackage' declares a conversion whose metadata could not be read, so
@@ -891,32 +872,31 @@ package built by a different version of the generator, or hand-written metadata,
 > versions of ShiftMapper.
 
 **The fix** is to align versions: rebuild the package against the same ShiftMapper this project
-uses, or update this project to the package's. If the package was built against a newer contract
-version, SM0033 is reported instead and the whole assembly's declarations are ignored rather than
-one conversion. The metadata is written by the generator and never by hand, so in practice the only
+uses, or update this project to the package's. If the package was built against a different
+contract version, SM0033 is reported instead and the whole assembly's declarations are ignored
+rather than one conversion. The metadata is written by the generator and never by hand, so in practice the only
 way to see this is a version mismatch.
 
 <a id="sm0033"></a>
-## SM0033 — A referenced assembly declares a newer ShiftMapper contract
+## SM0033 — A referenced assembly declares a different ShiftMapper contract
 
-**Warning.** Reported at the mapper's class declaration. Every profile in that assembly is ignored,
-whole.
+**Warning.** Reported at the mapper's class declaration. Every mapper and pack in that assembly is
+ignored, whole.
 
 A package's build stamps `[assembly: ShiftMapperContract(version)]` beside the declarations it
-writes. The generator reading them understands one contract version — `1`, as of this commit
-(`ShiftMapperGenerator.DeclarationContract`) — and refuses an assembly stamped with a higher one.
+writes. The generator reading them understands one contract version — `2`, as of this commit
+(`ShiftMapperGenerator.DeclarationContract`) — and refuses an assembly stamped with any other.
 Refusing whole rather than half-reading is the point: a generator that guessed at a shape it does
 not know would emit code that fails to compile in a file the developer cannot edit, which is the
-worst outcome available.
+worst outcome available. An OLDER contract is refused too: version 1 described profiles, a type that
+no longer exists, and its assemblies cannot be consumed without a rebuild anyway.
 
-> warning SM0033: 'PackageA' carries ShiftMapper declaration metadata version 2, and this
-> ShiftMapper understands version 1. Its profiles were ignored. Update the ShiftMapper package in
-> this project.
+> warning SM0033: 'PackageA' carries ShiftMapper declaration metadata version 1, and this
+> ShiftMapper reads version 2. Its mappers and packs were ignored. Build the package and this project
+> against the same ShiftMapper.
 
-**The fix** is the one in the message: update the ShiftMapper package in this project to the
-version the referenced package was built against. There is no lower-contract equivalent — an older
-package is read as it always was — and because only contract `1` exists today, no test exercises
-this rule end to end; the check is `DeclaredProfiles.CheckContract`.
+**The fix** is the one in the message: build the package and this project against the same
+ShiftMapper. The check is `DeclaredMappers.CheckContract`.
 
 <a id="sm0034"></a>
 ## SM0034 — A member convention could not fill the member it claimed
@@ -960,7 +940,7 @@ CreateMap<Product, ProductListDto>();
 it should, correct the `Fill` path or the source. If the source legitimately lacks it — a foreign key
 with no navigation beside it, a request body, an entity that nominates no display member — the
 entry was never required, and `FillIfPossible` says so: it drops out quietly and the rest of the
-member is still built, which is how one rule in `Contoso.Platform/PlatformProfile.cs` serves
+member is still built, which is how one rule in `Contoso.Platform/PlatformConversions.cs` serves
 both `Product.Brand` (id and name) and a request that carries only the id. Writing `FillIfPossible`
 is the acknowledgement, as `Ignore` is, so it stays silent by design. And for one map that is the
 exception, a `ForMember` on the member always wins over a convention. If every entry is
@@ -971,7 +951,7 @@ an ordinary SM0001 rather than as this. Worked example: `GET /api/products/list?
 ## SM0035 — This declaration cannot be honoured where it is written
 
 **Error.** Reported at the offending call — the squiggle is under `CreateMap<Destination,
-Source>()`, not under the class — and one of the five rules that stop the build.
+Source>()`, not under the class — and one of the rules that stop the build.
 
 The generator reads declarations from syntax and bakes them once. A declaration inside an `if`, a
 loop, a `switch`, a lambda or a local function is therefore applied unconditionally, discarding the
@@ -995,8 +975,10 @@ public AppMapper(bool flag)
 > matter what the surrounding code does. Move it to an unconditional statement in the constructor,
 > or in a method the constructor calls.
 
-It covers every declaration root — `CreateMap`, `AddProfile`, `CreateConversion`,
-`CreateMemberConvention` — and names which. The rejected positions, each with its own wording, are:
+It covers every declaration root — `CreateMap`, `IncludeMapper`, `AddConversions`,
+`CreateConversion`, `CreateMemberConvention` — and names which, and the `AddShiftMapper` lambda,
+which is read the same way: a method group or a delegate variable instead of an inline lambda, or
+an `AddMapper`/`AddConversions`/`IncludeMapper` behind an `if` inside it, is reported at the call. The rejected positions, each with its own wording, are:
 `if` and `else`; `for`, `foreach`, `while` and `do` ("baked once however many times the loop runs");
 a conditional `?:` expression; `switch` statements and expressions; `try`, `catch` and `finally`; a
 local function; a lambda; behind `&&` or `||`; a property accessor; and a field or property
@@ -1171,3 +1153,89 @@ qualify a rule that still needs at least one `Fill` entry to exist.
 `.Fill(d => d.Value, "{Member}Id")` for the example above — or delete the declaration. Do not reach
 for SM0001's `Ignore` on the member it was written for; that is the wrong answer this rule exists to
 prevent.
+
+<a id="sm0039"></a>
+## SM0039 — A sealed mapper from a referenced assembly cannot be registered here
+
+**Error.** Reported at the `AddMapper` (or `AddShiftMapper<T>`) call. One of the rules that stop the
+build.
+
+A mapper registered from another assembly is handed out through a generated ADAPTER: a subclass
+written in this project, with this project's packs baked into the same maps, overriding the
+package's virtual members. A sealed mapper has no virtual members — C# refuses them — so there is
+nothing to override, and registering the package's own class would quietly ignore every pack written
+here. A generic mapper is refused on the same terms.
+
+```csharp
+// in the package
+public sealed partial class PlatformMapper : ShiftMapperBase { ... }
+
+// here
+services.AddShiftMapper(o => o.AddMapper<PlatformMapper>());
+```
+
+> error SM0039: 'PlatformMapper' is declared in 'Contoso.Platform' and is sealed, so this project
+> cannot generate the adapter that applies its own packs to it. Unseal it in the package, or include
+> it in a mapper of this project with IncludeMapper instead of registering it directly.
+
+**The fix** is one of the two the message gives. Unseal the mapper in the package — a mapper meant
+for reuse should not be sealed — or include it in a mapper of this project, which re-bakes its maps
+into that mapper and needs nothing overridden.
+
+<a id="sm0040"></a>
+## SM0040 — Two registered mappers declare the same pair
+
+**Warning.** Reported at the second `AddMapper` in one `AddShiftMapper` call, naming both mappers
+and the pair; also reported when one call registers the same mapper twice.
+
+With several mappers registered, `IShiftMapper` is a composite that asks each mapper `CanMap` and
+dispatches to the first that answers — first registered first. That is a defined answer, but a pair
+two mappers both declare is usually a mistake rather than a choice, and the second way of mapping it
+is unreachable through the interface. The check is per call: two calls may well build two different
+containers, and the generator cannot tell.
+
+```csharp
+services.AddShiftMapper(o =>
+{
+    o.AddMapper<AppMapper>();        // includes CatalogMapper, so it maps CatalogItem -> CatalogItemDto
+    o.AddMapper<CatalogMapper>();    // and so does this one
+});
+```
+
+> warning SM0040: 'CatalogMapper' and 'AppMapper' both declare a map from 'CatalogItem' to
+> 'CatalogItemDto'; IShiftMapper answers with 'AppMapper', which was registered first
+
+**The fix** is to register each pair in one mapper — drop the direct registration of a mapper another
+registered mapper already includes, or stop including it — or to accept the order and inject the
+specific mapper where the choice matters.
+
+<a id="sm0041"></a>
+## SM0041 — A mapper is registered with different includes or packs in two calls
+
+**Warning.** Reported at each `AddShiftMapper` call that composes less into a mapper than another
+call in the same project does.
+
+A mapper is generated ONCE per project. What any `AddShiftMapper` call composes into it — an
+include, a pack for it alone, a pack for every mapper in the call — is baked into that one generated
+class, and the generator writes the set down as metadata so the runtime applies the same set
+whichever call resolves the mapper. So a call that says less still gets the union: the generated code
+and the runtime store never disagree, and this warning is how the call that said less finds out.
+
+```csharp
+// Program.cs
+services.AddShiftMapper(o =>
+{
+    o.AddMapper<AppMapper>();
+    o.AddConversions<PlatformConversions>();
+});
+
+// a test fixture in the same project
+services.AddShiftMapper<AppMapper>();          // gets PlatformConversions anyway
+```
+
+> warning SM0041: 'AppMapper' is registered in another AddShiftMapper call with
+> 'PlatformConversions'; a mapper is generated once for the whole project with everything any call
+> composes into it, so this registration gets that too
+
+**The fix** is to register the mapper the same way everywhere, or to move the composition into the
+mapper's constructor, where there is only one place for it to be written.

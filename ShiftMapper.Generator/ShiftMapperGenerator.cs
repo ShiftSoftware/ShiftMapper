@@ -40,15 +40,6 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     internal const string BaseClassMetadataName = "ShiftMapper.ShiftMapperBase";
 
     /// <summary>
-    /// Full name of the base class a PROFILE derives from.
-    ///
-    /// A profile IS a <c>ShiftMapperBase</c> — that is how it gets the whole CreateMap surface
-    /// without a second API to keep in step — so telling the two apart is this name's only job.
-    /// A class that derives from it is a place to WRITE maps, never a mapper to generate one for.
-    /// </summary>
-    internal const string ProfileBaseMetadataName = "ShiftMapper.ShiftMapperProfile";
-
-    /// <summary>
     /// Full name of the handle CreateMap returns, and so the type ReverseMap must be
     /// declared on. The `2 suffix is how metadata spells "takes two type parameters".
     ///
@@ -120,18 +111,36 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         context.RegisterSourceOutput(declarations.Collect(), static (spc, models) => EmitAll(spc, models));
 
         // THE SECOND OUTPUT, and the one that makes a package able to declare anything. It runs on
-        // the DECLARING assembly and writes what its profiles declare into metadata, because that
-        // is all a generator compiling a consumer will ever be able to see. See
+        // the DECLARING assembly and writes what its mappers and packs declare into metadata,
+        // because that is all a generator compiling a consumer will ever be able to see. See
         // ShiftMapperGenerator.Declarations.cs.
-        IncrementalValuesProvider<ProfileDeclarationModel> profiles = context.SyntaxProvider
+        IncrementalValuesProvider<DeclarationModel> declared = context.SyntaxProvider
             .CreateSyntaxProvider(
                 predicate: static (node, _) => IsCandidateClass(node),
-                transform: static (ctx, ct) => BuildProfileDeclaration(
+                transform: static (ctx, ct) => BuildDeclaration(
                     ctx.SemanticModel, (ClassDeclarationSyntax)ctx.Node, ct))
             .Where(static model => model is not null)
             .Select(static (model, _) => model!);
 
-        context.RegisterSourceOutput(profiles.Collect(), static (spc, models) => EmitDeclarations(spc, models));
+        context.RegisterSourceOutput(declared.Collect(), static (spc, models) => EmitDeclarations(spc, models));
+
+        // THE THIRD OUTPUT: adapters for mappers registered from REFERENCED assemblies. Driven by
+        // the AddShiftMapper calls, so a project that registers only its own mappers never pays
+        // for it — the compilation is only consulted once such a call exists.
+        IncrementalValueProvider<bool> registers = context.SyntaxProvider
+            .CreateSyntaxProvider(
+                predicate: static (node, _) => IsRegistrationCandidate(node),
+                transform: static (_, _) => true)
+            .Collect()
+            .Select(static (calls, _) => calls.Length > 0);
+
+        IncrementalValueProvider<ImmutableArray<MapperClassModel>> adapters = registers
+            .Combine(context.CompilationProvider)
+            .Select(static (pair, ct) => pair.Left
+                ? BuildAdapters(pair.Right, ct)
+                : ImmutableArray<MapperClassModel>.Empty);
+
+        context.RegisterSourceOutput(adapters, static (spc, models) => EmitAdapters(spc, models));
     }
 
     // ---------------------------------------------------------------------
@@ -171,29 +180,12 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         if (semanticModel.GetDeclaredSymbol(classDeclaration, cancellationToken) is not INamedTypeSymbol classSymbol)
             return null;
 
-        INamedTypeSymbol? baseClass = semanticModel.Compilation
-            .GetTypeByMetadataName(BaseClassMetadataName);
+        Compilation compilation = semanticModel.Compilation;
+
+        INamedTypeSymbol? baseClass = compilation.GetTypeByMetadataName(BaseClassMetadataName);
 
         if (baseClass is null || !DerivesFrom(classSymbol, baseClass))
             return null;
-
-        // Null when the referenced runtime predates profiles, in which case nothing can be one.
-        INamedTypeSymbol? profileBase = semanticModel.Compilation
-            .GetTypeByMetadataName(ProfileBaseMetadataName);
-
-        // A PROFILE IS NOT A MAPPER. It derives from ShiftMapperBase so that it inherits the whole
-        // CreateMap surface rather than duplicating it, which means it passes the test above —
-        // and must be turned away here, BEFORE the skip reasons below, or every profile would be
-        // reported as a mapper that generated nothing.
-        // Equality as well as derivation: ShiftMapperProfile IS the base, and it derives from
-        // ShiftMapperBase like any mapper would, so without this the library's own abstract class
-        // is reported as a mapper that generated nothing.
-        if (profileBase is not null
-            && (SymbolEqualityComparer.Default.Equals(classSymbol, profileBase)
-                || DerivesFrom(classSymbol, profileBase)))
-        {
-            return null;
-        }
 
         // From here on the class is clearly MEANT to be a mapper, so anything we cannot
         // handle is reported (SM0005) rather than dropped without a word.
@@ -211,233 +203,265 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                 location: LocationInfo.CreateFrom(classDeclaration.Identifier.Parent ?? classDeclaration));
         }
 
+        RegistrationModel registrations = ReadRegistrations(compilation, cancellationToken);
+
+        DeclarationSet set = BuildDeclarationSet(compilation, classSymbol, baseClass, registrations, cancellationToken);
+
+        // WHICH INCLUDES THIS PART CONTRIBUTES. Another part of the same mapper arrives as its own
+        // model with its own IncludeMapper calls, and reading them here as well would declare every
+        // included map once per part. What the REGISTRATION includes belongs to the first part.
+        bool isPrimaryPart = classSymbol.DeclaringSyntaxReferences.Length == 0
+            || classSymbol.DeclaringSyntaxReferences[0].GetSyntax(cancellationToken) == classDeclaration;
+
+        return BuildMapperCore(
+            compilation,
+            set,
+            classDeclaration,
+            isPrimaryPart,
+            LocationInfo.CreateFrom(classDeclaration.Identifier.Parent ?? classDeclaration),
+            cancellationToken);
+    }
+
+    /// <summary>What one mapper's <c>ConfigureDefaults</c> set — read from source or metadata.</summary>
+    private readonly struct ClassDefaults
+    {
+        public ClassDefaults(bool? caseSensitive, bool? allowNullCollections, bool? flattening, NamingConventions naming)
+        {
+            CaseSensitive = caseSensitive;
+            AllowNullCollections = allowNullCollections;
+            Flattening = flattening;
+            Naming = naming;
+        }
+
+        public bool? CaseSensitive { get; }
+
+        public bool? AllowNullCollections { get; }
+
+        public bool? Flattening { get; }
+
+        public NamingConventions Naming { get; }
+    }
+
+    /// <summary>
+    /// The heart of the analysis, shared by a mapper written here and by the adapter of a mapper
+    /// written elsewhere: given the set of scopes, build every map with the rules that are nearest
+    /// to it.
+    /// </summary>
+    /// <param name="ownPart">
+    /// The part of the mapper's own class being read, or null for an adapter, whose own maps come
+    /// from metadata instead.
+    /// </param>
+    /// <param name="isPrimaryPart">
+    /// Whether registration-time includes and metadata maps are read into THIS part's model.
+    /// </param>
+    private static MapperClassModel BuildMapperCore(
+        Compilation compilation,
+        DeclarationSet set,
+        ClassDeclarationSyntax? ownPart,
+        bool isPrimaryPart,
+        LocationInfo? location,
+        CancellationToken cancellationToken)
+    {
+        INamedTypeSymbol classSymbol = set.Mapper;
+        INamedTypeSymbol baseClass = compilation.GetTypeByMetadataName(BaseClassMetadataName)!;
+        INamedTypeSymbol? packBase = compilation.GetTypeByMetadataName(PackBaseMetadataName);
+
         // Null when the referenced ShiftMapper runtime predates MapExpression. ReverseMap
         // simply goes unrecognised in that case rather than the generator falling over.
-        INamedTypeSymbol? mapExpression = semanticModel.Compilation
-            .GetTypeByMetadataName(MapExpressionMetadataName);
+        INamedTypeSymbol? mapExpression = compilation.GetTypeByMetadataName(MapExpressionMetadataName);
 
         // Null on the same terms: a runtime that predates ForMember simply has no such type, and
         // the chain walker then finds no per-property refinements rather than falling over.
-        INamedTypeSymbol? memberOptions = semanticModel.Compilation
-            .GetTypeByMetadataName(MemberOptionsMetadataName);
+        INamedTypeSymbol? memberOptions = compilation.GetTypeByMetadataName(MemberOptionsMetadataName);
 
-        INamedTypeSymbol? mapOptions = semanticModel.Compilation
-            .GetTypeByMetadataName(MapOptionsMetadataName);
+        INamedTypeSymbol? mapOptions = compilation.GetTypeByMetadataName(MapOptionsMetadataName);
 
         // Null on the same terms as the others: a runtime predating ForAllMembers simply has no
         // such type, and the chain walker then finds no blanket condition rather than falling over.
-        INamedTypeSymbol? allMemberOptions = semanticModel.Compilation
-            .GetTypeByMetadataName(AllMemberOptionsMetadataName);
+        INamedTypeSymbol? allMemberOptions = compilation.GetTypeByMetadataName(AllMemberOptionsMetadataName);
 
-        // Resolved once per declaration, from the class symbol, so an override living in
-        // another part of a partial mapper still counts.
-        bool? classDefaultCaseSensitive = ReadClassDefaultCaseSensitive(
-            semanticModel.Compilation, classSymbol, baseClass, mapOptions, cancellationToken);
-
-        bool? classDefaultAllowNullCollections = ReadClassDefault(
-            semanticModel.Compilation, classSymbol, baseClass, mapOptions,
-            AllowNullCollectionsOption, cancellationToken) as bool?;
-
-        bool? classDefaultFlattening = ReadClassDefault(
-            semanticModel.Compilation, classSymbol, baseClass, mapOptions,
-            FlatteningOption, cancellationToken) as bool?;
-
-        NamingConventions classDefaultNaming = ReadClassDefaultNaming(
-            semanticModel.Compilation, classSymbol, baseClass, mapOptions, cancellationToken);
-
-        // THE GLOBAL CONVERSIONS, read once for the whole mapper. Symbols live in here, which is
-        // safe precisely because it does not outlive this method — see ConversionTable.
         var declaredProblems = new List<string>();
+        var includeProblems = ImmutableArray.CreateBuilder<string>();
 
-        // MEMBER CONVENTIONS, read from the same declaration parts as the conversions. They hold
-        // symbols and never outlive this method, exactly as the conversion table does.
-        List<MemberConventions.Convention> memberConventions = ReadMemberConventions(
-            semanticModel.Compilation, classSymbol, baseClass, profileBase, declaredProblems,
-            cancellationToken);
+        // THE RULES, read per scope. Symbols live in here, which is safe precisely because they do
+        // not outlive this method — see ConversionTable.
+        var conversions = new ConversionScopes();
+        var conventions = new ConventionScopes();
 
-        ConversionTable conversions = ReadConversions(
-            semanticModel.Compilation, classSymbol, baseClass, profileBase, declaredProblems,
-            cancellationToken);
+        ReadConversions(compilation, set, baseClass, packBase, conversions, cancellationToken);
+        ReadMemberConventions(compilation, set, baseClass, packBase, conventions, declaredProblems, cancellationToken);
 
-        // PROFILES THAT ARRIVED AS METADATA. Their own build wrote down what they declare,
-        // because a generator compiling this assembly sees a reference as metadata and no method
-        // bodies. What comes back is the same shape the source path produces, so everything below
-        // treats a package's map as an ordinary map.
-        var metadataProfiles = new List<INamedTypeSymbol>();
+        // SCOPES THAT ARRIVED AS METADATA. Their own build wrote down what they declare, because a
+        // generator compiling this assembly sees a reference as metadata and no method bodies. What
+        // comes back is the same shape the source path produces, so everything below treats a
+        // package's map as an ordinary map — and what THEY compose is followed and folded in.
+        DeclaredMappers.Recovered recovered = DeclaredMappers.Read(
+            compilation, set.Metadata, conversions, conventions, declaredProblems);
 
-        CollectProfileParts(
-            semanticModel.Compilation,
-            classDeclaration,
-            profileBase,
-            new List<ClassDeclarationSyntax>(),
-            new HashSet<string>(StringComparer.Ordinal),
-            metadataProfiles,
-            cancellationToken);
+        ApplyCompositions(set, recovered, cancellationToken);
 
-        DeclaredProfiles.Recovered recovered = DeclaredProfiles.Read(
-            semanticModel.Compilation, metadataProfiles, conversions, declaredProblems);
-
-        // SM0031 — one pair, two packages. Asked HERE, once every package has had its say,
-        // because a clash is a fact about the SET of declarations rather than about either one of
-        // them: asking inside the reader that builds the table would always find it empty.
-        declaredProblems.AddRange(conversions.ConflictingDeclarations);
-
-        // A PACKAGE'S RULES, added after this project's own so a local convention is found first.
-        // Near beats far here exactly as it does for conversions.
-        memberConventions.AddRange(recovered.Conventions);
-
-        foreach (INamedTypeSymbol silent in metadataProfiles)
+        foreach (INamedTypeSymbol silent in set.Metadata)
         {
-            if (recovered.Found.Contains(silent.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)))
+            if (recovered.Found.Contains(FullName(silent)))
                 continue;
 
             declaredProblems.Add(
-                $"SM0028|the profile '{silent.Name}' is in a referenced assembly that carries no " +
-                "ShiftMapper declaration metadata, so nothing it declares could be read. That " +
-                "package has to be built with the ShiftMapper generator referenced as an analyzer.");
+                $"SM0028|'{silent.Name}' is in a referenced assembly that carries no ShiftMapper " +
+                "declaration metadata, so nothing it declares could be read. That package has to be " +
+                "built with the ShiftMapper generator referenced as an analyzer.");
+        }
+
+        // DEFAULTS, per declaring mapper: a map takes its defaults from the mapper that DECLARED
+        // it, whichever mapper ends up generating it. Resolved once per scope, from the class
+        // symbol, so an override living in another part of a partial mapper still counts.
+        var defaultsByScope = new Dictionary<string, ClassDefaults>(StringComparer.Ordinal);
+
+        ClassDefaults DefaultsFor(DeclarationScope scope)
+        {
+            if (defaultsByScope.TryGetValue(scope.Name, out ClassDefaults known))
+                return known;
+
+            ClassDefaults defaults;
+
+            if (scope.IsMetadata)
+            {
+                DeclaredDefaults declared = recovered.Defaults.TryGetValue(scope.Name, out DeclaredDefaults found)
+                    ? found
+                    : DeclaredDefaults.None;
+
+                defaults = new ClassDefaults(
+                    declared.CaseSensitive,
+                    declared.AllowNullCollections,
+                    declared.Flattening,
+                    new NamingConventions(declared.Prefixes, declared.Postfixes));
+            }
+            else
+            {
+                defaults = new ClassDefaults(
+                    ReadClassDefaultCaseSensitive(compilation, scope.Type, baseClass, mapOptions, cancellationToken),
+                    ReadClassDefault(compilation, scope.Type, baseClass, mapOptions, AllowNullCollectionsOption, cancellationToken) as bool?,
+                    ReadClassDefault(compilation, scope.Type, baseClass, mapOptions, FlatteningOption, cancellationToken) as bool?,
+                    ReadClassDefaultNaming(compilation, scope.Type, baseClass, mapOptions, cancellationToken));
+            }
+
+            defaultsByScope[scope.Name] = defaults;
+
+            return defaults;
+        }
+
+        // THE CHAIN for each declaring scope: its own rules first, then outward. Built once per
+        // scope and reused by every map it declared.
+        var chains = new Dictionary<string, (ConversionTable Conversions, List<MemberConventions.Convention> Conventions)>(StringComparer.Ordinal);
+        var conflicts = new HashSet<string>(StringComparer.Ordinal);
+
+        (ConversionTable, List<MemberConventions.Convention>) ChainFor(DeclarationScope scope)
+        {
+            if (chains.TryGetValue(scope.Name, out (ConversionTable, List<MemberConventions.Convention>) known))
+                return known;
+
+            ConversionTable chain = conversions.ChainFor(set, scope);
+
+            // SM0031 — one pair, two packs at the same distance. Asked HERE, once every scope has
+            // had its say, because a clash is a fact about the SET of declarations rather than
+            // about either one of them. Once per message: several scopes share the same packs.
+            foreach (string conflict in chain.ConflictingDeclarations)
+            {
+                if (conflicts.Add(conflict))
+                    declaredProblems.Add(conflict);
+            }
+
+            (ConversionTable, List<MemberConventions.Convention>) built = (chain, conventions.ChainFor(set, scope));
+            chains[scope.Name] = built;
+
+            return built;
         }
 
         var maps = ImmutableArray.CreateBuilder<MapModel>();
         var seen = new HashSet<string>();
 
         // Every map in the mapper, by key, so an IncludeBase can find the base map's configuration
-        // WHEREVER it was declared — another part, another file. Built at most once per
-        // declaration and only when something actually inherits, because it re-reads every chain
-        // in the class and most mappers never ask.
+        // WHEREVER it was declared — another part, another file, another assembly. Built at most
+        // once per declaration and only when something actually inherits, because it re-reads
+        // every chain in the class and most mappers never ask.
         Dictionary<string, Refinements>? everyMap = null;
 
         Dictionary<string, Refinements> Lookup() => everyMap ??= ReadAllRefinements(
-            semanticModel.Compilation, classSymbol, baseClass, mapExpression, memberOptions,
-            allMemberOptions, mapOptions, profileBase, classDefaultAllowNullCollections,
-            cancellationToken);
+            compilation, set, recovered, baseClass, mapExpression, memberOptions, allMemberOptions,
+            mapOptions, DefaultsFor, cancellationToken);
 
-        // The profile parts THIS declaration adds. Only this one: another part of the same mapper
-        // arrives as its own model with its own AddProfile calls, and reading them here as well
-        // would declare every profile map once per part.
-        var profileProblems = ImmutableArray.CreateBuilder<string>();
-        var profileParts = new List<ClassDeclarationSyntax>();
+        // The scopes THIS part reads maps from, in the order they were reached.
+        List<DeclarationScope> partScopes = ScopesForPart(compilation, set, ownPart, isPrimaryPart, baseClass, recovered, cancellationToken);
 
-        CollectProfileParts(
-            semanticModel.Compilation,
-            classDeclaration,
-            profileBase,
-            profileParts,
-            new HashSet<string>(StringComparer.Ordinal),
-            unreadable: null,
-            cancellationToken);
+        ClassDefaults ownDefaults = DefaultsFor(set.Own);
+        (ConversionTable ownConversions, List<MemberConventions.Convention> ownConventions) = ChainFor(set.Own);
 
-        // Every CreateMap<A, B>() written anywhere inside THIS declaration. Other parts of
-        // the same class arrive as their own model and are merged later.
-        foreach (InvocationExpressionSyntax invocation in OwnInvocations(classDeclaration))
+        // THE MAPPER'S OWN MAPS FIRST — so a pair written here wins over one arriving from an
+        // included mapper, exactly as the runtime's merge keeps what is already there.
+        if (ownPart is not null)
         {
-            GenericNameSyntax? createMap = GetCreateMapName(
-                semanticModel, invocation, baseClass, cancellationToken);
+            SemanticModel ownModel = compilation.GetSemanticModel(ownPart.SyntaxTree);
 
-            if (createMap is null)
-                continue;
-
-            // One CreateMap normally means one map — but a chained ReverseMap() means two.
-            foreach (MapModel map in BuildMapModels(
-                         semanticModel,
-                         invocation,
-                         createMap,
-                         mapExpression,
-                         memberOptions,
-                         allMemberOptions,
-                         mapOptions,
-                         classDefaultCaseSensitive,
-                         classDefaultAllowNullCollections,
-                         classDefaultFlattening,
-                         classDefaultNaming,
-                         Lookup,
-                         conversions,
-                         memberConventions,
-                         declaredProblems,
-                         cancellationToken))
+            foreach (InvocationExpressionSyntax invocation in OwnInvocations(ownPart))
             {
-                if (seen.Add(map.Key))
-                    maps.Add(map);
-            }
-        }
-
-        // THE PROFILES, read exactly as the mapper's own declaration was and merged after it —
-        // so a pair written in both places keeps the one written HERE. The runtime folds them in
-        // the same order for the same reason, which is what lets the clash below be a warning
-        // rather than an error: both halves already agree on the answer.
-        //
-        // The mapper's own ConfigureDefaults governs every profile map. One mapper, one set of
-        // defaults, whichever file a map was written in — see SM0029 for what a profile's own
-        // override would have meant.
-        foreach (ClassDeclarationSyntax profilePart in profileParts)
-        {
-            SemanticModel profileModel = semanticModel.Compilation.GetSemanticModel(profilePart.SyntaxTree);
-            string profileName = profilePart.Identifier.ValueText;
-
-            // A ConfigureDefaults override on a profile configures nothing, because defaults are
-            // read from the MAPPER's type. Silently ignoring an override somebody deliberately
-            // wrote is exactly what this library refuses to do.
-            if (semanticModel.Compilation.GetSemanticModel(profilePart.SyntaxTree)
-                    .GetDeclaredSymbol(profilePart, cancellationToken) is INamedTypeSymbol profileSymbol
-                && profileSymbol.GetMembers("ConfigureDefaults")
-                    .Any(member => member is IMethodSymbol { IsOverride: true }))
-            {
-                profileProblems.Add(
-                    $"SM0029|'{profileName}' overrides ConfigureDefaults, which does nothing in a " +
-                    $"profile: a map takes its defaults from the mapper that added the profile. " +
-                    $"Move the override to the mapper, or set the option on each CreateMap.");
-            }
-
-            foreach (InvocationExpressionSyntax invocation in
-                     OwnInvocations(profilePart))
-            {
-                GenericNameSyntax? createMap = GetCreateMapName(
-                    profileModel, invocation, baseClass, cancellationToken);
+                GenericNameSyntax? createMap = GetCreateMapName(ownModel, invocation, baseClass, cancellationToken);
 
                 if (createMap is null)
                     continue;
 
+                // One CreateMap normally means one map — but a chained ReverseMap() means two.
                 foreach (MapModel map in BuildMapModels(
-                             profileModel,
-                             invocation,
-                             createMap,
-                             mapExpression,
-                             memberOptions,
-                             allMemberOptions,
-                             mapOptions,
-                             classDefaultCaseSensitive,
-                             classDefaultAllowNullCollections,
-                             classDefaultFlattening,
-                             classDefaultNaming,
-                             Lookup,
-                             conversions,
-                             memberConventions,
-                             declaredProblems,
-                             cancellationToken))
+                             ownModel, invocation, createMap, mapExpression, memberOptions,
+                             allMemberOptions, mapOptions, ownDefaults.CaseSensitive,
+                             ownDefaults.AllowNullCollections, ownDefaults.Flattening, ownDefaults.Naming,
+                             Lookup, ownConversions, ownConventions, declaredProblems, cancellationToken))
                 {
                     if (seen.Add(map.Key))
-                    {
                         maps.Add(map);
-                        continue;
-                    }
-
-                    profileProblems.Add(
-                        $"SM0027|'{map.SourceName}' to '{map.DestinationName}' is declared in " +
-                        $"profile '{profileName}' and again elsewhere in '{classSymbol.Name}'; the " +
-                        "one outside the profile is the one that runs");
                 }
             }
         }
-
-        // THE PACKAGE'S MAPS, built from metadata and merged after this declaration's own — so
-        // a pair written here still wins, exactly as it does over a profile in this project.
-        foreach (MapModel recoveredMap in RecoverMaps(
-                     semanticModel.Compilation, recovered, classDefaultCaseSensitive,
-                     classDefaultAllowNullCollections, classDefaultFlattening, classDefaultNaming,
-                     conversions, memberConventions, declaredProblems,
-                     LocationInfo.CreateFrom(classDeclaration.Identifier.Parent ?? classDeclaration)))
+        else if (isPrimaryPart)
         {
-            if (seen.Add(recoveredMap.Key))
-                maps.Add(recoveredMap);
+            // An ADAPTER: the mapper's own maps are the ones its package declared.
+            foreach (MapModel recoveredMap in RecoverMaps(
+                         compilation, recovered, set.Own.Name, DefaultsFor(set.Own), ownConversions,
+                         ownConventions, Lookup, declaredProblems, location))
+            {
+                if (seen.Add(recoveredMap.Key))
+                    maps.Add(recoveredMap);
+            }
+        }
+
+        // THE INCLUDED MAPPERS, read exactly as the mapper's own declaration was and merged after
+        // it — so a pair written in both places keeps the one written HERE. The runtime folds them
+        // in the same order for the same reason, which is what lets the clash below be a warning
+        // rather than an error: both halves already agree on the answer.
+        //
+        // Each map takes ITS DECLARING MAPPER's defaults and rules: one mapper, one set of
+        // defaults, and it is the mapper that wrote the map, not the one that included it.
+        foreach (DeclarationScope scope in partScopes)
+        {
+            ClassDefaults defaults = DefaultsFor(scope);
+            (ConversionTable scopeConversions, List<MemberConventions.Convention> scopeConventions) = ChainFor(scope);
+
+            IEnumerable<MapModel> included = scope.IsMetadata
+                ? RecoverMaps(compilation, recovered, scope.Name, defaults, scopeConversions, scopeConventions, Lookup, declaredProblems, location)
+                : SyntaxMaps(compilation, scope, baseClass, mapExpression, memberOptions, allMemberOptions, mapOptions,
+                    defaults, Lookup, scopeConversions, scopeConventions, declaredProblems, cancellationToken);
+
+            foreach (MapModel map in included)
+            {
+                if (seen.Add(map.Key))
+                {
+                    maps.Add(map);
+                    continue;
+                }
+
+                includeProblems.Add(
+                    $"SM0027|'{map.SourceName}' to '{map.DestinationName}' is declared in " +
+                    $"'{scope.Type.Name}' and again in '{classSymbol.Name}'; the one in " +
+                    $"'{classSymbol.Name}' is the one that runs");
+            }
         }
 
         // OPEN GENERIC MAPS, closed last — after every explicit map has been added, so an
@@ -445,74 +469,63 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         // would have generated for the same pair.
         var openProblems = ImmutableArray.CreateBuilder<string>();
 
-        // The mapper's own declaration AND its profiles. An open generic is exactly the kind of
-        // thing that belongs in a profile next to the wrapper it closes — and reading it only
-        // from the mapper would leave the declaration silently doing nothing.
-        var openScopes = new List<ClassDeclarationSyntax> { classDeclaration };
-        openScopes.AddRange(profileParts);
+        List<(INamedTypeSymbol Source, INamedTypeSymbol Destination)>? allPairs = null;
 
-        foreach (ClassDeclarationSyntax openScope in openScopes)
+        List<(INamedTypeSymbol, INamedTypeSymbol)> AllPairs() =>
+            allPairs ??= ReadAllPairs(compilation, set, recovered, baseClass, cancellationToken);
+
+        foreach ((DeclarationScope scope, INamedTypeSymbol openSource, INamedTypeSymbol openDestination, LocationInfo? openLocation) in
+                 OpenMaps(compilation, set, ownPart, partScopes, isPrimaryPart, baseClass, recovered, cancellationToken))
         {
-            SemanticModel openModel = semanticModel.Compilation.GetSemanticModel(openScope.SyntaxTree);
-
-            foreach (InvocationExpressionSyntax invocation in OwnInvocations(openScope))
+            // ONE TYPE PARAMETER EACH. With two there is no single pairing to choose, only a
+            // combinatorial one nobody asked for, so it is refused rather than guessed at.
+            if (openSource.TypeParameters.Length != 1 || openDestination.TypeParameters.Length != 1)
             {
-                if (!IsOpenCreateMap(openModel, invocation, baseClass, cancellationToken,
-                        out INamedTypeSymbol? openSource, out INamedTypeSymbol? openDestination))
+                openProblems.Add(
+                    $"'{openSource.Name}' to '{openDestination.Name}' was not closed because open " +
+                    "generic maps need exactly one type parameter on each side");
+
+                continue;
+            }
+
+            ClassDefaults defaults = DefaultsFor(scope);
+            (ConversionTable scopeConversions, List<MemberConventions.Convention> scopeConventions) = ChainFor(scope);
+
+            foreach ((INamedTypeSymbol element, INamedTypeSymbol elementDestination) in AllPairs())
+            {
+                if (!SatisfiesConstraints(openSource.TypeParameters[0], element)
+                    || !SatisfiesConstraints(openDestination.TypeParameters[0], elementDestination))
                 {
                     continue;
                 }
 
-                // ONE TYPE PARAMETER EACH. With two there is no single pairing to choose, only a
-                // combinatorial one nobody asked for, so it is refused rather than guessed at.
-                if (openSource!.TypeParameters.Length != 1 || openDestination!.TypeParameters.Length != 1)
-                {
-                    openProblems.Add(
-                        $"'{openSource.Name}' to '{openDestination!.Name}' was not closed because open " +
-                        "generic maps need exactly one type parameter on each side");
-
+                // An INTERFACE or ABSTRACT element is skipped, and the reason is worth stating: a
+                // wrapper's member is a NESTED map, and nesting refuses those — there is no single
+                // type to construct. Closing over such a pair would produce a map whose Items
+                // member is SM0002 every time, for a map nobody wrote. An `As` map is the common
+                // way to get one, so this is not a corner.
+                if (elementDestination.TypeKind == TypeKind.Interface || elementDestination.IsAbstract)
                     continue;
-                }
 
-                LocationInfo? openLocation = LocationInfo.CreateFrom(invocation);
+                MapModel closed = BuildMapModel(
+                    compilation,
+                    openSource.OriginalDefinition.Construct(element),
+                    openDestination.OriginalDefinition.Construct(elementDestination),
+                    openLocation ?? location,
+                    isReverse: false,
+                    caseSensitive: defaults.CaseSensitive ?? false,
+                    allowNullCollections: defaults.AllowNullCollections ?? false,
+                    flattening: defaults.Flattening ?? true,
+                    naming: defaults.Naming,
+                    refinements: Refinements.Empty,
+                    unresolvedBases: ImmutableArray<string>.Empty,
+                    conversions: scopeConversions,
+                    memberConventions: scopeConventions,
+                    declaredProblems: declaredProblems,
+                    isOpenGenericClosure: true);
 
-                foreach ((INamedTypeSymbol element, INamedTypeSymbol elementDestination) in
-                         ReadAllPairs(semanticModel.Compilation, classSymbol, baseClass, profileBase, cancellationToken))
-                {
-                    if (!SatisfiesConstraints(openSource.TypeParameters[0], element)
-                        || !SatisfiesConstraints(openDestination.TypeParameters[0], elementDestination))
-                    {
-                        continue;
-                    }
-
-                    // An INTERFACE or ABSTRACT element is skipped, and the reason is worth stating: a
-                    // wrapper's member is a NESTED map, and nesting refuses those — there is no single
-                    // type to construct. Closing over such a pair would produce a map whose Items
-                    // member is SM0002 every time, for a map nobody wrote. An `As` map is the common
-                    // way to get one, so this is not a corner.
-                    if (elementDestination.TypeKind == TypeKind.Interface || elementDestination.IsAbstract)
-                        continue;
-
-                    MapModel closed = BuildMapModel(
-                        semanticModel.Compilation,
-                        openSource.OriginalDefinition.Construct(element),
-                        openDestination.OriginalDefinition.Construct(elementDestination),
-                        openLocation,
-                        isReverse: false,
-                        caseSensitive: classDefaultCaseSensitive ?? false,
-                        allowNullCollections: classDefaultAllowNullCollections ?? false,
-                        flattening: classDefaultFlattening ?? true,
-                        naming: classDefaultNaming,
-                        refinements: Refinements.Empty,
-                        unresolvedBases: ImmutableArray<string>.Empty,
-                        conversions: conversions,
-                        memberConventions: memberConventions,
-                        declaredProblems: declaredProblems,
-                        isOpenGenericClosure: true);
-
-                    if (seen.Add(closed.Key))
-                        maps.Add(closed);
-                }
+                if (seen.Add(closed.Key))
+                    maps.Add(closed);
             }
         }
 
@@ -520,6 +533,35 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         var containers = new List<string>();
         for (INamedTypeSymbol? container = classSymbol.ContainingType; container is not null; container = container.ContainingType)
             containers.Insert(0, container.Name);
+
+        // What the registration composed into THIS mapper, for the metadata the runtime reads.
+        var registrationComposition = new List<string>();
+
+        foreach (RegisteredMapper registered in ReadRegistrations(compilation, cancellationToken).Mappers)
+        {
+            if (registered.Mapper != set.Own.Name)
+                continue;
+
+            foreach (INamedTypeSymbol composed in registered.IncludeTypes.Concat(registered.PackTypes).Concat(registered.CallPacks))
+            {
+                string name = FullName(composed);
+
+                if (!registrationComposition.Contains(name))
+                    registrationComposition.Add(name);
+            }
+        }
+
+        // Every chain's query registrations, once each.
+        var queryRegistrations = new List<string>();
+
+        foreach ((ConversionTable chain, _) in chains.Values)
+        {
+            foreach (string line in chain.QueryRegistrations)
+            {
+                if (!queryRegistrations.Contains(line))
+                    queryRegistrations.Add(line);
+            }
+        }
 
         return new MapperClassModel(
             namespaceName: classSymbol.ContainingNamespace.IsGlobalNamespace
@@ -530,13 +572,230 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             fullyQualifiedName: classSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
             isPublic: IsEffectivelyPublic(classSymbol),
             maps: maps.ToImmutable(),
-            location: LocationInfo.CreateFrom(classDeclaration.Identifier.Parent ?? classDeclaration),
+            location: location,
             openGenericProblems: openProblems.ToImmutable(),
-            profileProblems: profileProblems.ToImmutable(),
+            profileProblems: includeProblems.ToImmutable(),
             declaredProblems: declaredProblems.ToImmutableArray(),
-            queryRegistrations: conversions.QueryRegistrations.ToImmutableArray(),
-            declarationProblems: CollectUnbakeableDeclarations(
-                semanticModel, classDeclaration, baseClass, cancellationToken));
+            queryRegistrations: queryRegistrations.ToImmutableArray(),
+            declarationProblems: ownPart is null
+                ? ImmutableArray<PositionedProblem>.Empty
+                : CollectUnbakeableDeclarations(
+                    compilation.GetSemanticModel(ownPart.SyntaxTree), ownPart, baseClass, cancellationToken),
+            isSealed: classSymbol.IsSealed,
+            registrationComposition: registrationComposition.ToImmutableArray());
+    }
+
+    /// <summary>
+    /// Folds what METADATA mappers compose into the set: a pack they added joins their own level,
+    /// a mapper they include becomes an included scope of its own — read from source when it is
+    /// declared here, from the metadata the reader already followed otherwise.
+    /// </summary>
+    private static void ApplyCompositions(DeclarationSet set, DeclaredMappers.Recovered recovered, CancellationToken cancellationToken)
+    {
+        // Indexed rather than foreach: metadata mappers reached here are appended as they are found.
+        for (int i = 0; i < set.Included.Count; i++)
+        {
+            DeclarationScope scope = set.Included[i];
+
+            if (!scope.IsMetadata || !recovered.Composed.TryGetValue(scope.Name, out List<INamedTypeSymbol> composed))
+                continue;
+
+            foreach (INamedTypeSymbol type in composed)
+            {
+                string name = FullName(type);
+
+                if (recovered.Packs.Contains(name) || set.Packs.ContainsKey(name))
+                {
+                    AddPack(set, type, scope.Packs, cancellationToken);
+                    continue;
+                }
+
+                if (set.MapScopes.Any(existing => existing.Name == name))
+                    continue;
+
+                var included = new DeclarationScope(type, PartsOf(type, cancellationToken), isPack: false);
+                set.Included.Add(included);
+
+                // A composed type declared in THIS compilation was not followed by the reader; its
+                // rules are read from source below, its maps by the part that reaches it.
+                if (!included.IsMetadata)
+                    set.Metadata.Remove(type);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The included scopes ONE PART of the mapper reads maps from: what its own IncludeMapper calls
+    /// reach, transitively, plus — for the first part — what the registration includes.
+    /// </summary>
+    private static List<DeclarationScope> ScopesForPart(
+        Compilation compilation,
+        DeclarationSet set,
+        ClassDeclarationSyntax? ownPart,
+        bool isPrimaryPart,
+        INamedTypeSymbol baseClass,
+        DeclaredMappers.Recovered recovered,
+        CancellationToken cancellationToken)
+    {
+        // An adapter has one part's worth of everything.
+        if (ownPart is null)
+            return set.Included.ToList();
+
+        var roots = new List<string>();
+
+        SemanticModel model = compilation.GetSemanticModel(ownPart.SyntaxTree);
+
+        foreach (InvocationExpressionSyntax invocation in OwnInvocations(ownPart))
+        {
+            if (CompositionCall(model, invocation, baseClass, cancellationToken) is { IsInclude: true } call)
+                roots.Add(FullName(call.Target));
+        }
+
+        if (isPrimaryPart)
+        {
+            foreach (RegisteredMapper registered in ReadRegistrations(compilation, cancellationToken).Mappers)
+            {
+                if (registered.Mapper == set.Own.Name)
+                    roots.AddRange(registered.IncludeTypes.Select(FullName));
+            }
+        }
+
+        // Transitive closure over what each reached scope includes in turn.
+        var reached = new List<DeclarationScope>();
+        var visited = new HashSet<string>(StringComparer.Ordinal) { set.Own.Name };
+        var pending = new Queue<string>(roots);
+
+        while (pending.Count > 0)
+        {
+            string name = pending.Dequeue();
+
+            if (!visited.Add(name))
+                continue;
+
+            DeclarationScope? scope = set.Included.FirstOrDefault(candidate => candidate.Name == name);
+
+            if (scope is null)
+                continue;
+
+            reached.Add(scope);
+
+            if (scope.IsMetadata)
+            {
+                if (recovered.Composed.TryGetValue(scope.Name, out List<INamedTypeSymbol> composed))
+                {
+                    foreach (INamedTypeSymbol type in composed)
+                        pending.Enqueue(FullName(type));
+                }
+
+                continue;
+            }
+
+            foreach (ClassDeclarationSyntax part in scope.Parts)
+            {
+                SemanticModel partModel = compilation.GetSemanticModel(part.SyntaxTree);
+
+                foreach (InvocationExpressionSyntax invocation in OwnInvocations(part))
+                {
+                    if (CompositionCall(partModel, invocation, baseClass, cancellationToken) is { IsInclude: true } call)
+                        pending.Enqueue(FullName(call.Target));
+                }
+            }
+        }
+
+        return reached;
+    }
+
+    /// <summary>Every <c>CreateMap&lt;A, B&gt;()</c> written in one scope's source, built with that scope's rules.</summary>
+    private static IEnumerable<MapModel> SyntaxMaps(
+        Compilation compilation,
+        DeclarationScope scope,
+        INamedTypeSymbol baseClass,
+        INamedTypeSymbol? mapExpression,
+        INamedTypeSymbol? memberOptions,
+        INamedTypeSymbol? allMemberOptions,
+        INamedTypeSymbol? mapOptions,
+        ClassDefaults defaults,
+        Func<Dictionary<string, Refinements>> lookup,
+        ConversionTable conversions,
+        List<MemberConventions.Convention> memberConventions,
+        List<string> declaredProblems,
+        CancellationToken cancellationToken)
+    {
+        foreach (ClassDeclarationSyntax part in scope.Parts)
+        {
+            SemanticModel model = compilation.GetSemanticModel(part.SyntaxTree);
+
+            foreach (InvocationExpressionSyntax invocation in OwnInvocations(part))
+            {
+                GenericNameSyntax? createMap = GetCreateMapName(model, invocation, baseClass, cancellationToken);
+
+                if (createMap is null)
+                    continue;
+
+                foreach (MapModel map in BuildMapModels(
+                             model, invocation, createMap, mapExpression, memberOptions, allMemberOptions,
+                             mapOptions, defaults.CaseSensitive, defaults.AllowNullCollections,
+                             defaults.Flattening, defaults.Naming, lookup, conversions, memberConventions,
+                             declaredProblems, cancellationToken))
+                {
+                    yield return map;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Every open generic declaration this part closes, with the scope that declared it: the
+    /// mapper's own part, the included scopes the part reaches, and — from metadata — the ones a
+    /// package declared.
+    /// </summary>
+    private static IEnumerable<(DeclarationScope Scope, INamedTypeSymbol Source, INamedTypeSymbol Destination, LocationInfo? Location)> OpenMaps(
+        Compilation compilation,
+        DeclarationSet set,
+        ClassDeclarationSyntax? ownPart,
+        List<DeclarationScope> partScopes,
+        bool isPrimaryPart,
+        INamedTypeSymbol baseClass,
+        DeclaredMappers.Recovered recovered,
+        CancellationToken cancellationToken)
+    {
+        var syntaxScopes = new List<(DeclarationScope, ClassDeclarationSyntax)>();
+
+        if (ownPart is not null)
+            syntaxScopes.Add((set.Own, ownPart));
+
+        foreach (DeclarationScope scope in partScopes)
+        {
+            foreach (ClassDeclarationSyntax part in scope.Parts)
+                syntaxScopes.Add((scope, part));
+        }
+
+        foreach ((DeclarationScope scope, ClassDeclarationSyntax part) in syntaxScopes)
+        {
+            SemanticModel model = compilation.GetSemanticModel(part.SyntaxTree);
+
+            foreach (InvocationExpressionSyntax invocation in OwnInvocations(part))
+            {
+                if (IsOpenCreateMap(model, invocation, baseClass, cancellationToken,
+                        out INamedTypeSymbol? openSource, out INamedTypeSymbol? openDestination))
+                {
+                    yield return (scope, openSource!, openDestination!, LocationInfo.CreateFrom(invocation));
+                }
+            }
+        }
+
+        var metadataScopes = new List<string>();
+
+        if (ownPart is null && isPrimaryPart)
+            metadataScopes.Add(set.Own.Name);
+
+        metadataScopes.AddRange(partScopes.Where(scope => scope.IsMetadata).Select(scope => scope.Name));
+
+        foreach ((string declaredBy, INamedTypeSymbol source, INamedTypeSymbol destination) in recovered.OpenMaps)
+        {
+            if (metadataScopes.Contains(declaredBy))
+                yield return (set.ScopeNamed(declaredBy), source, destination, null);
+        }
     }
 
     /// <summary>
@@ -631,48 +890,6 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     }
 
     /// <summary>
-    /// Every CLOSED pair the mapper declares, as symbols — what an open generic map is closed
-    /// over.
-    ///
-    /// A wrapper is closed over the things you already map and nothing else. That rule is the
-    /// useful one and the only one that is decidable: "every closed pair in the compilation" would
-    /// mean guessing which of a program's thousands of types somebody meant to wrap.
-    /// </summary>
-    private static List<(INamedTypeSymbol Source, INamedTypeSymbol Destination)> ReadAllPairs(
-        Compilation compilation,
-        INamedTypeSymbol classSymbol,
-        INamedTypeSymbol baseClass,
-        INamedTypeSymbol? profileBase,
-        CancellationToken cancellationToken)
-    {
-        var pairs = new List<(INamedTypeSymbol, INamedTypeSymbol)>();
-
-        foreach (ClassDeclarationSyntax part in
-                 AllDeclarationParts(compilation, classSymbol, profileBase, cancellationToken))
-        {
-            SemanticModel model = compilation.GetSemanticModel(part.SyntaxTree);
-
-            foreach (InvocationExpressionSyntax invocation in OwnInvocations(part))
-            {
-                GenericNameSyntax? createMap = GetCreateMapName(model, invocation, baseClass, cancellationToken);
-
-                if (createMap is null)
-                    continue;
-
-                if (model.GetSymbolInfo(createMap.TypeArgumentList.Arguments[0], cancellationToken).Symbol
-                        is INamedTypeSymbol source
-                    && model.GetSymbolInfo(createMap.TypeArgumentList.Arguments[1], cancellationToken).Symbol
-                        is INamedTypeSymbol destination)
-                {
-                    pairs.Add((source, destination));
-                }
-            }
-        }
-
-        return pairs;
-    }
-
-    /// <summary>
     /// Whether a type argument would actually be legal for a type parameter.
     ///
     /// Checked rather than assumed because the alternative is a CS error inside a generated file
@@ -704,87 +921,114 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     }
 
     /// <summary>
-    /// Every map declared anywhere in the mapper, keyed <c>"Source->Destination"</c>, with the
-    /// refinements each one was given.
+    /// Every CLOSED pair the mapper declares, as symbols — what an open generic map is closed
+    /// over. Its own, its included mappers', and what a package declared.
     ///
-    /// It re-reads chains that <see cref="BuildMapModels"/> will read again, and that is the
-    /// deliberate trade. The alternative is deferring member analysis until every part has been
-    /// merged — which would mean carrying Roslyn SYMBOLS in the cached model, and the whole
-    /// incremental design rests on that model holding nothing but strings. Re-reading is the
-    /// cheaper of the two, and it only happens when something inherits.
-    ///
-    /// Refinements are stored RAW here: no inheritance is applied while building the table, so a
-    /// base that itself inherits is followed by the caller instead, where a loop can be seen.
+    /// A wrapper is closed over the things you already map and nothing else. That rule is the
+    /// useful one and the only one that is decidable: "every closed pair in the compilation" would
+    /// mean guessing which of a program's thousands of types somebody meant to wrap.
     /// </summary>
-    /// <summary>
-    /// Every <c>CreateConversion&lt;A, B&gt;</c> the mapper declares, across its own parts and its
-    /// profiles.
-    ///
-    /// <para>Only the TYPE ARGUMENTS and whether a <c>query:</c> argument was written are read.
-    /// The expressions themselves are never looked at — they stay in the developer's file and
-    /// arrive at run time, exactly as a <c>MapFrom</c> tree does, which is why a conversion can
-    /// call anything C# can call without the generator having to understand it.</para>
-    /// </summary>
-    /// <summary>
-    /// Every member convention declared by this mapper and the profiles it adds.
-    ///
-    /// <para>Read from SOURCE, exactly as the conversions are, and from the same set of declaration
-    /// parts — so a convention written in a profile works like one written in the mapper.</para>
-    /// </summary>
-    private static List<MemberConventions.Convention> ReadMemberConventions(
+    private static List<(INamedTypeSymbol Source, INamedTypeSymbol Destination)> ReadAllPairs(
         Compilation compilation,
-        INamedTypeSymbol classSymbol,
+        DeclarationSet set,
+        DeclaredMappers.Recovered recovered,
         INamedTypeSymbol baseClass,
-        INamedTypeSymbol? profileBase,
+        CancellationToken cancellationToken)
+    {
+        var pairs = new List<(INamedTypeSymbol, INamedTypeSymbol)>();
+
+        foreach (DeclarationScope scope in set.MapScopes)
+        {
+            foreach (ClassDeclarationSyntax part in scope.Parts)
+            {
+                SemanticModel model = compilation.GetSemanticModel(part.SyntaxTree);
+
+                foreach (InvocationExpressionSyntax invocation in OwnInvocations(part))
+                {
+                    GenericNameSyntax? createMap = GetCreateMapName(model, invocation, baseClass, cancellationToken);
+
+                    if (createMap is null)
+                        continue;
+
+                    if (model.GetSymbolInfo(createMap.TypeArgumentList.Arguments[0], cancellationToken).Symbol
+                            is INamedTypeSymbol source
+                        && model.GetSymbolInfo(createMap.TypeArgumentList.Arguments[1], cancellationToken).Symbol
+                            is INamedTypeSymbol destination)
+                    {
+                        pairs.Add((source, destination));
+                    }
+                }
+            }
+        }
+
+        foreach (DeclaredMappers.RecoveredMap map in recovered.Maps)
+            pairs.Add((map.Source, map.Destination));
+
+        return pairs;
+    }
+
+    /// <summary>
+    /// Every member convention declared in SOURCE by any scope of the set — the mapper, what it
+    /// includes, and every pack — recorded against the scope that declared it. Metadata scopes are
+    /// read by <see cref="DeclaredMappers"/> into the same store.
+    /// </summary>
+    private static void ReadMemberConventions(
+        Compilation compilation,
+        DeclarationSet set,
+        INamedTypeSymbol baseClass,
+        INamedTypeSymbol? packBase,
+        ConventionScopes conventions,
         List<string> declaredProblems,
         CancellationToken cancellationToken)
     {
-        var conventions = new List<MemberConventions.Convention>();
-
         INamedTypeSymbol? conventionExpression =
             compilation.GetTypeByMetadataName(MemberConventionMetadataName);
 
         if (conventionExpression is null)
-            return conventions;
+            return;
 
-        foreach (ClassDeclarationSyntax part in
-                 AllDeclarationParts(compilation, classSymbol, profileBase, cancellationToken))
+        foreach (DeclarationScope scope in set.AllScopes)
         {
-            SemanticModel model = compilation.GetSemanticModel(part.SyntaxTree);
+            INamedTypeSymbol? declaringBase = scope.IsPack ? packBase : baseClass;
 
-            foreach (InvocationExpressionSyntax invocation in
-                     OwnInvocations(part))
+            if (declaringBase is null)
+                continue;
+
+            foreach (ClassDeclarationSyntax part in scope.Parts)
             {
-                if (GetCreateMemberConventionName(model, invocation, baseClass, cancellationToken) is not { } name)
-                    continue;
+                SemanticModel model = compilation.GetSemanticModel(part.SyntaxTree);
 
-                if (MemberConventions.Read(model, invocation, name, conventionExpression, cancellationToken)
-                        is not { } convention)
+                foreach (InvocationExpressionSyntax invocation in OwnInvocations(part))
                 {
-                    continue;
+                    if (GetCreateMemberConventionName(model, invocation, declaringBase, cancellationToken) is not { } name)
+                        continue;
+
+                    if (MemberConventions.Read(model, invocation, name, conventionExpression, cancellationToken)
+                            is not { } convention)
+                    {
+                        continue;
+                    }
+
+                    // SM0038 — read, and empty. A convention that fills nothing does nothing, and the
+                    // symptom is a LIE: the member falls through to name matching and the build says
+                    // "'Source' has no readable property named 'Brand'" about the very member somebody
+                    // wrote a convention for. Worse, SM0001's code fix then offers to Ignore it, which
+                    // is one click from cementing the wrong answer. Naming the real cause here is what
+                    // makes that fix safe to ship.
+                    if (convention.Fill.Count == 0)
+                    {
+                        declaredProblems.Add(
+                            $"SM0038|the member convention for '{convention.MemberType.Name}' fills " +
+                            "nothing, so it will not apply and members of that type fall through to " +
+                            "ordinary name matching. Chain a Fill or FillIfPossible onto it, or remove it.");
+
+                        continue;
+                    }
+
+                    conventions.Add(scope.Name, convention);
                 }
-
-                // SM0038 — read, and empty. A convention that fills nothing does nothing, and the
-                // symptom is a LIE: the member falls through to name matching and the build says
-                // "'Source' has no readable property named 'Brand'" about the very member somebody
-                // wrote a convention for. Worse, SM0001's code fix then offers to Ignore it, which
-                // is one click from cementing the wrong answer. Naming the real cause here is what
-                // makes that fix safe to ship.
-                if (convention.Fill.Count == 0)
-                {
-                    declaredProblems.Add(
-                        $"SM0038|the member convention for '{convention.MemberType.Name}' fills " +
-                        "nothing, so it will not apply and members of that type fall through to " +
-                        "ordinary name matching. Chain a Fill or FillIfPossible onto it, or remove it.");
-
-                    continue;
-                }
-
-                conventions.Add(convention);
             }
         }
-
-        return conventions;
     }
 
     /// <summary>The <c>CreateMemberConvention&lt;T&gt;</c> in one invocation, or null.</summary>
@@ -811,222 +1055,138 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         return IsDeclaredOn(semanticModel, invocation, baseClass, cancellationToken) ? name : null;
     }
 
-    private static ConversionTable ReadConversions(
+    /// <summary>
+    /// Every <c>CreateConversion&lt;A, B&gt;</c> declared in SOURCE by any scope of the set,
+    /// recorded against the scope that declared it.
+    ///
+    /// <para>Only the TYPE ARGUMENTS and whether a <c>query:</c> argument was written are read.
+    /// The expressions themselves are never looked at — they stay in the developer's file and
+    /// arrive at run time, exactly as a <c>MapFrom</c> tree does, which is why a conversion can
+    /// call anything C# can call without the generator having to understand it.</para>
+    /// </summary>
+    private static void ReadConversions(
         Compilation compilation,
-        INamedTypeSymbol classSymbol,
+        DeclarationSet set,
         INamedTypeSymbol baseClass,
-        INamedTypeSymbol? profileBase,
-        List<string> declaredProblems,
+        INamedTypeSymbol? packBase,
+        ConversionScopes conversions,
         CancellationToken cancellationToken)
     {
-        var table = new ConversionTable();
-
-        foreach (ClassDeclarationSyntax part in
-                 AllDeclarationParts(compilation, classSymbol, profileBase, cancellationToken))
+        foreach (DeclarationScope scope in set.AllScopes)
         {
-            SemanticModel model = compilation.GetSemanticModel(part.SyntaxTree);
+            INamedTypeSymbol? declaringBase = scope.IsPack ? packBase : baseClass;
 
-            foreach (InvocationExpressionSyntax invocation in
-                     OwnInvocations(part))
+            if (declaringBase is null)
+                continue;
+
+            foreach (ClassDeclarationSyntax part in scope.Parts)
             {
-                GenericNameSyntax? name = invocation.Expression switch
-                {
-                    MemberAccessExpressionSyntax { Name: GenericNameSyntax generic } => generic,
-                    GenericNameSyntax generic => generic,
-                    _ => null,
-                };
+                SemanticModel model = compilation.GetSemanticModel(part.SyntaxTree);
 
-                if (name is null
-                    || name.Identifier.ValueText != "CreateConversion"
-                    || name.TypeArgumentList.Arguments.Count != 2
-                    || !IsDeclaredOn(model, invocation, baseClass, cancellationToken))
+                foreach (InvocationExpressionSyntax invocation in OwnInvocations(part))
                 {
-                    continue;
+                    if (GetCreateConversionName(model, invocation, declaringBase, cancellationToken) is not { } name)
+                        continue;
+
+                    if (model.GetSymbolInfo(name.TypeArgumentList.Arguments[0], cancellationToken).Symbol
+                            is not ITypeSymbol source
+                        || model.GetSymbolInfo(name.TypeArgumentList.Arguments[1], cancellationToken).Symbol
+                            is not ITypeSymbol destination)
+                    {
+                        continue;
+                    }
+
+                    // The QUERY FORM, read from the call rather than from the symbol: it is optional,
+                    // and whether one was written is the whole difference between a pair that projects
+                    // and one that does not. Two positional arguments, or a named `query:`, either way.
+                    bool hasQuery = invocation.ArgumentList.Arguments.Count > 1
+                        || invocation.ArgumentList.Arguments.Any(
+                            argument => argument.NameColon?.Name.Identifier.ValueText == "query");
+
+                    conversions.Add(scope.Name, source, destination, hasQuery);
                 }
-
-                if (model.GetSymbolInfo(name.TypeArgumentList.Arguments[0], cancellationToken).Symbol
-                        is not ITypeSymbol source
-                    || model.GetSymbolInfo(name.TypeArgumentList.Arguments[1], cancellationToken).Symbol
-                        is not ITypeSymbol destination)
-                {
-                    continue;
-                }
-
-                // The QUERY FORM, read from the call rather than from the symbol: it is optional,
-                // and whether one was written is the whole difference between a pair that projects
-                // and one that does not. Two positional arguments, or a named `query:`, either way.
-                bool hasQuery = invocation.ArgumentList.Arguments.Count > 1
-                    || invocation.ArgumentList.Arguments.Any(
-                        argument => argument.NameColon?.Name.Identifier.ValueText == "query");
-
-                table.Add(source, destination, hasQuery);
             }
         }
 
-        // A REFERENCED ASSEMBLY'S conversions are NOT read here. They arrive through the profile
-        // that declared them, when a mapper adds it — which is what makes them opt-in rather than
-        // something a reference imposes. See DeclaredProfiles.
-        return table;
+        // A REFERENCED ASSEMBLY'S conversions are NOT read here. They arrive through the mapper or
+        // pack that declared them, when something asks for it — which is what makes them opt-in
+        // rather than something a reference imposes. See DeclaredMappers.
     }
 
     /// <summary>
-    /// The profile classes one declaration adds, following <c>AddProfile&lt;T&gt;()</c> calls.
+    /// Every map declared anywhere in the set, keyed <c>"Source->Destination"</c>, with the
+    /// refinements each one was given — what <c>IncludeBase</c> resolves a base against.
     ///
-    /// <para>Transitive, because a profile may itself add profiles, and guarded by
-    /// <paramref name="visited"/> because nothing stops two profiles adding each other. A cycle
-    /// is not worth a diagnostic — it maps exactly what the union of them declares, which is
-    /// what someone writing it would expect.</para>
+    /// It re-reads chains that <see cref="BuildMapModels"/> will read again, and that is the
+    /// deliberate trade. The alternative is deferring member analysis until every part has been
+    /// merged — which would mean carrying Roslyn SYMBOLS in the cached model, and the whole
+    /// incremental design rests on that model holding nothing but strings. Re-reading is the
+    /// cheaper of the two, and it only happens when something inherits.
     ///
-    /// <para>A profile that resolves to no syntax is one compiled into a REFERENCED ASSEMBLY. It
-    /// is collected separately rather than skipped, because mapping nothing and saying nothing is
-    /// the one outcome this library never wants (SM0028).</para>
+    /// Refinements are stored RAW here: no inheritance is applied while building the table, so a
+    /// base that itself inherits is followed by the caller instead, where a loop can be seen.
     /// </summary>
-    private static void CollectProfileParts(
-        Compilation compilation,
-        ClassDeclarationSyntax scope,
-        INamedTypeSymbol? profileBase,
-        List<ClassDeclarationSyntax> parts,
-        HashSet<string> visited,
-        List<INamedTypeSymbol>? unreadable,
-        CancellationToken cancellationToken)
-    {
-        if (profileBase is null)
-            return;
-
-        SemanticModel model = compilation.GetSemanticModel(scope.SyntaxTree);
-
-        foreach (InvocationExpressionSyntax invocation in OwnInvocations(scope))
-        {
-            GenericNameSyntax? name = invocation.Expression switch
-            {
-                MemberAccessExpressionSyntax { Name: GenericNameSyntax generic } => generic,
-                GenericNameSyntax generic => generic,
-                _ => null,
-            };
-
-            if (name is null
-                || name.Identifier.ValueText != "AddProfile"
-                || name.TypeArgumentList.Arguments.Count != 1)
-            {
-                continue;
-            }
-
-            if (model.GetSymbolInfo(name.TypeArgumentList.Arguments[0], cancellationToken).Symbol
-                    is not INamedTypeSymbol profile
-                || !DerivesFrom(profile, profileBase))
-            {
-                continue;
-            }
-
-            if (!visited.Add(FullName(profile)))
-                continue;
-
-            bool anySyntax = false;
-
-            foreach (SyntaxReference reference in profile.DeclaringSyntaxReferences)
-            {
-                if (reference.GetSyntax(cancellationToken) is not ClassDeclarationSyntax part)
-                    continue;
-
-                anySyntax = true;
-                parts.Add(part);
-
-                CollectProfileParts(
-                    compilation, part, profileBase, parts, visited, unreadable, cancellationToken);
-            }
-
-            // NO SYNTAX means the profile is compiled into a referenced assembly. That is no
-            // longer the end of the story: its own build wrote its declarations into metadata, and
-            // the SYMBOL is what the reader needs to find them.
-            if (!anySyntax)
-                unreadable?.Add(profile);
-        }
-    }
-
-    /// <summary>
-    /// Every class declaration a mapper's maps can be written in: its own parts, and the parts of
-    /// every profile any of them adds.
-    ///
-    /// <para>This is what <c>IncludeBase</c> and open generic closing walk, and they have to walk
-    /// all of it: a base map declared in one profile and a derived map in another is an ordinary
-    /// thing to write, and would otherwise resolve to nothing.</para>
-    /// </summary>
-    private static List<ClassDeclarationSyntax> AllDeclarationParts(
-        Compilation compilation,
-        INamedTypeSymbol classSymbol,
-        INamedTypeSymbol? profileBase,
-        CancellationToken cancellationToken)
-    {
-        var parts = new List<ClassDeclarationSyntax>();
-        var visited = new HashSet<string>(StringComparer.Ordinal);
-
-        foreach (SyntaxReference reference in classSymbol.DeclaringSyntaxReferences)
-        {
-            if (reference.GetSyntax(cancellationToken) is not ClassDeclarationSyntax part)
-                continue;
-
-            parts.Add(part);
-        }
-
-        // Indexed rather than foreach: the loop above is the seed, and profiles are appended to
-        // the same list as they are found.
-        for (int i = 0, seeded = parts.Count; i < seeded; i++)
-        {
-            CollectProfileParts(
-                compilation, parts[i], profileBase, parts, visited, unreadable: null, cancellationToken);
-        }
-
-        return parts;
-    }
-
     private static Dictionary<string, Refinements> ReadAllRefinements(
         Compilation compilation,
-        INamedTypeSymbol classSymbol,
+        DeclarationSet set,
+        DeclaredMappers.Recovered recovered,
         INamedTypeSymbol baseClass,
         INamedTypeSymbol? mapExpression,
         INamedTypeSymbol? memberOptions,
         INamedTypeSymbol? allMemberOptions,
         INamedTypeSymbol? mapOptions,
-        INamedTypeSymbol? profileBase,
-        bool? classDefaultAllowNullCollections,
+        Func<DeclarationScope, ClassDefaults> defaultsFor,
         CancellationToken cancellationToken)
     {
         var all = new Dictionary<string, Refinements>(StringComparer.Ordinal);
 
-        foreach (ClassDeclarationSyntax part in
-                 AllDeclarationParts(compilation, classSymbol, profileBase, cancellationToken))
+        foreach (DeclarationScope scope in set.MapScopes)
         {
-            SemanticModel model = compilation.GetSemanticModel(part.SyntaxTree);
+            bool? classDefaultAllowNullCollections = defaultsFor(scope).AllowNullCollections;
 
-            foreach (InvocationExpressionSyntax invocation in OwnInvocations(part))
+            foreach (ClassDeclarationSyntax part in scope.Parts)
             {
-                GenericNameSyntax? createMap = GetCreateMapName(model, invocation, baseClass, cancellationToken);
+                SemanticModel model = compilation.GetSemanticModel(part.SyntaxTree);
 
-                if (createMap is null)
-                    continue;
-
-                if (model.GetSymbolInfo(createMap.TypeArgumentList.Arguments[0], cancellationToken).Symbol
-                        is not INamedTypeSymbol source
-                    || model.GetSymbolInfo(createMap.TypeArgumentList.Arguments[1], cancellationToken).Symbol
-                        is not INamedTypeSymbol destination)
+                foreach (InvocationExpressionSyntax invocation in OwnInvocations(part))
                 {
-                    continue;
+                    GenericNameSyntax? createMap = GetCreateMapName(model, invocation, baseClass, cancellationToken);
+
+                    if (createMap is null)
+                        continue;
+
+                    if (model.GetSymbolInfo(createMap.TypeArgumentList.Arguments[0], cancellationToken).Symbol
+                            is not INamedTypeSymbol source
+                        || model.GetSymbolInfo(createMap.TypeArgumentList.Arguments[1], cancellationToken).Symbol
+                            is not INamedTypeSymbol destination)
+                    {
+                        continue;
+                    }
+
+                    bool allowNullCollections =
+                        ReadOption(model, FirstArgument(invocation), mapOptions,
+                            AllowNullCollectionsOption, cancellationToken) as bool?
+                        ?? classDefaultAllowNullCollections ?? false;
+
+                    ChainInfo chain = ReadChain(
+                        model, invocation, mapExpression, memberOptions, allMemberOptions, mapOptions,
+                        source, destination, allowNullCollections, cancellationToken);
+
+                    all[FullName(source) + "->" + FullName(destination)] = chain.Forward;
+
+                    if (chain.ReverseMapName is not null)
+                        all[FullName(destination) + "->" + FullName(source)] = chain.Reverse;
                 }
-
-                bool allowNullCollections =
-                    ReadOption(model, FirstArgument(invocation), mapOptions,
-                        AllowNullCollectionsOption, cancellationToken) as bool?
-                    ?? classDefaultAllowNullCollections ?? false;
-
-                ChainInfo chain = ReadChain(
-                    model, invocation, mapExpression, memberOptions, allMemberOptions, mapOptions,
-                    source, destination, allowNullCollections, cancellationToken);
-
-                all[FullName(source) + "->" + FullName(destination)] = chain.Forward;
-
-                if (chain.ReverseMapName is not null)
-                    all[FullName(destination) + "->" + FullName(source)] = chain.Reverse;
             }
+        }
+
+        // A PACKAGE'S MAPS TOO, so a map written here can IncludeBase one a package declared.
+        foreach (DeclaredMappers.RecoveredMap map in recovered.Maps)
+        {
+            string key = FullName(map.Source) + "->" + FullName(map.Destination);
+
+            if (!all.ContainsKey(key))
+                all[key] = RecoveredRefinements(map);
         }
 
         return all;
@@ -1228,9 +1388,9 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     /// Every invocation this declaration WROTE, which is not the same as every invocation below it.
     ///
     /// <para><c>DescendantNodes()</c> descends through everything, nested TYPE declarations included,
-    /// so a mapper or profile written inside another mapper had its declarations read twice: once by
-    /// its own sweep and once by its container's. The container silently grew maps it never wrote,
-    /// and a nested profile produced the only actively FALSE message in the set — SM0027, "this map
+    /// so a mapper written inside another mapper had its declarations read twice: once by its own
+    /// sweep and once by its container's. The container silently grew maps it never wrote, and a
+    /// nested included mapper produced the only actively FALSE message in the set — SM0027, "this map
     /// is declared twice", about a map declared exactly once.</para>
     ///
     /// <para>A nested type is its own declaration and gets its own sweep. This one stops at its
@@ -4021,6 +4181,13 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         return true;
     }
 
+    /// <summary>
+    /// The inheritance modifier for a generated instance member: <c>virtual</c> so an adapter can
+    /// override it, <c>override</c> in the adapter, nothing on a sealed mapper.
+    /// </summary>
+    private static string Modifier(MapperClassModel model) =>
+        model.AdapterOf is not null ? " override" : model.IsSealed ? string.Empty : " virtual";
+
     /// <summary>The C# keyword for a member that must not out-accessible the given types.</summary>
     private static string AccessibilityOf(params bool[] allPublic)
     {
@@ -4073,7 +4240,12 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                 // time, and how a map's projection refusals went missing before that. The
                 // registrations are the same for every part, since they come from the referenced
                 // assemblies rather than from any one file.
-                queryRegistrations: first.QueryRegistrations));
+                queryRegistrations: first.QueryRegistrations,
+                isSealed: first.IsSealed,
+                adapterOf: first.AdapterOf,
+                mirroredConstructors: first.MirroredConstructors,
+                baseSourceTypes: first.BaseSourceTypes,
+                registrationComposition: first.RegistrationComposition));
         }
     }
 
@@ -4472,6 +4644,26 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         sb.AppendLine($"global using {GeneratedNamespace};");
         sb.AppendLine();
 
+        if (model.AdapterOf is { } adapterOf)
+        {
+            sb.AppendLine("// The runtime reads this to hand out the adapter where the base type is asked for.");
+            sb.AppendLine($"[assembly: global::ShiftMapper.ShiftMapperAdapter(typeof({adapterOf}), typeof({model.FullyQualifiedName}))]");
+            sb.AppendLine();
+        }
+
+        if (!model.RegistrationComposition.IsEmpty)
+        {
+            // What AddShiftMapper composed into this mapper is baked into the code below, once for
+            // the whole project. Written down so the runtime applies the same set whichever call
+            // resolves the mapper — the two halves cannot disagree.
+            string composer = model.AdapterOf ?? model.FullyQualifiedName;
+
+            foreach (string composed in model.RegistrationComposition)
+                sb.AppendLine($"[assembly: global::ShiftMapper.ShiftMapperDeclaredComposition(typeof({composer}), typeof({composed}))]");
+
+            sb.AppendLine();
+        }
+
         // ---- part 1: the other half of the developer's own class ----
         int depth = 0;
         if (model.NamespaceName is not null)
@@ -4491,25 +4683,62 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
 
         string indent = Indent(depth);
 
-        sb.AppendLine($"{indent}/// <summary>");
-        sb.AppendLine($"{indent}/// The generated half of this mapper. These are INSTANCE methods, so anything you");
-        sb.AppendLine($"{indent}/// injected into the constructor is available to them.");
-        sb.AppendLine($"{indent}/// </summary>");
-        // No accessibility modifier: the part you wrote already decides that, and repeating
-        // it here would clash if you ever mark your class internal.
-        //
-        // The INTERFACE is added here rather than by the developer. A base list may name a base
-        // CLASS in only one part, but any part may add interfaces, so this is the one thing the
-        // generated half can contribute to the type's shape without the hand-written half
-        // repeating it.
-        AppendProjectionMetadata(sb, indent, model);
+        if (model.AdapterOf is { } adapted)
+        {
+            // AN ADAPTER: a whole class rather than half of one. Sealed, deriving from the package
+            // mapper, re-implementing the interface so the runtime doors dispatch to the maps
+            // re-baked here, and announced to AddShiftMapper through the assembly attribute.
+            sb.AppendLine($"{indent}/// <summary>");
+            sb.AppendLine($"{indent}/// The adapter for {adapted}, registered from a referenced assembly: the same maps,");
+            sb.AppendLine($"{indent}/// re-baked with this project's packs. AddShiftMapper hands this out wherever the base");
+            sb.AppendLine($"{indent}/// type is asked for.");
+            sb.AppendLine($"{indent}/// </summary>");
+            AppendProjectionMetadata(sb, indent, model);
 
-        sb.AppendLine($"{indent}partial class {model.ClassName} : {MapperInterfaceType}");
-        sb.AppendLine($"{indent}{{");
+            sb.AppendLine($"{indent}{AccessibilityOf(model.IsPublic)} sealed class {model.ClassName} : {adapted}, {MapperInterfaceType}");
+            sb.AppendLine($"{indent}{{");
+
+            foreach (string constructor in model.MirroredConstructors)
+            {
+                sb.AppendLine($"{indent}    /// <summary>Mirrors the base constructor, so the same dependencies are injected.</summary>");
+                sb.AppendLine($"{indent}    public {model.ClassName}{constructor}");
+                sb.AppendLine($"{indent}    {{");
+                sb.AppendLine($"{indent}    }}");
+                sb.AppendLine();
+            }
+
+            sb.AppendLine($"{indent}    /// <summary>The base's constructor declares under the base's name, so its conversions are looked up there.</summary>");
+            sb.AppendLine($"{indent}    protected override global::System.Type DeclaringType => typeof({adapted});");
+            sb.AppendLine();
+        }
+        else
+        {
+            sb.AppendLine($"{indent}/// <summary>");
+            sb.AppendLine($"{indent}/// The generated half of this mapper. These are INSTANCE methods, so anything you");
+            sb.AppendLine($"{indent}/// injected into the constructor is available to them.");
+            sb.AppendLine($"{indent}/// </summary>");
+            // No accessibility modifier: the part you wrote already decides that, and repeating
+            // it here would clash if you ever mark your class internal.
+            //
+            // The INTERFACE is added here rather than by the developer. A base list may name a base
+            // CLASS in only one part, but any part may add interfaces, so this is the one thing the
+            // generated half can contribute to the type's shape without the hand-written half
+            // repeating it.
+            AppendProjectionMetadata(sb, indent, model);
+
+            sb.AppendLine($"{indent}partial class {model.ClassName} : {MapperInterfaceType}");
+            sb.AppendLine($"{indent}{{");
+        }
 
         // Worked out for the whole mapper before anything is written, because a NESTED property
         // calls the direct method of a map in a DIFFERENT source group.
         Dictionary<string, string> directNames = DirectMapNames(model.Maps);
+
+        // VIRTUAL, so a project that registers this mapper from a referenced package can generate
+        // a subclass — the adapter — that re-bakes the maps with its own rules and is handed out
+        // wherever this type is asked for. A sealed mapper cannot have them (CS0549) and so cannot
+        // be adapted; an adapter's own members override.
+        string modifier = Modifier(model);
 
         // The customization delegate caches, all of them, before any method that uses one. They
         // are per map rather than per source group, and a map with no MapFrom writes none.
@@ -4532,12 +4761,12 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                     if (wroteMember)
                         sb.AppendLine();
 
-                    AppendDirectCreateMethod(sb, indent, map, directNames[map.Key], directNames);
+                    AppendDirectCreateMethod(sb, indent, map, directNames[map.Key], directNames, modifier);
                     wroteMember = true;
                 }
 
                 sb.AppendLine();
-                AppendCreateMethod(sb, indent, sourceGroup.Key, creatable, directNames);
+                AppendCreateMethod(sb, indent, sourceGroup.Key, creatable, directNames, modifier);
                 wroteMember = true;
 
                 // The same maps applied to a SEQUENCE. One per destination, then the switchboard
@@ -4545,11 +4774,11 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                 foreach (MapModel map in creatable)
                 {
                     sb.AppendLine();
-                    AppendCollectionMethods(sb, indent, map, directNames[map.Key]);
+                    AppendCollectionMethods(sb, indent, map, directNames[map.Key], modifier);
                 }
 
                 sb.AppendLine();
-                AppendCollectionMethod(sb, indent, sourceGroup.Key, creatable, directNames);
+                AppendCollectionMethod(sb, indent, sourceGroup.Key, creatable, directNames, modifier);
 
                 // MapOrNull only means something when the source can BE null, and can only hand
                 // back a null when the destination is a reference type.
@@ -4562,11 +4791,11 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                     foreach (MapModel map in nullable)
                     {
                         sb.AppendLine();
-                        AppendOrNullMethod(sb, indent, map, directNames[map.Key]);
+                        AppendOrNullMethod(sb, indent, map, directNames[map.Key], modifier);
                     }
 
                     sb.AppendLine();
-                    AppendOrNullMethodDispatcher(sb, indent, sourceGroup.Key, nullable, directNames);
+                    AppendOrNullMethodDispatcher(sb, indent, sourceGroup.Key, nullable, directNames, modifier);
                 }
             }
 
@@ -4580,7 +4809,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                 if (wroteMember)
                     sb.AppendLine();
 
-                AppendUpdateOverload(sb, indent, map, directNames);
+                AppendUpdateOverload(sb, indent, map, directNames, modifier);
                 wroteMember = true;
             }
 
@@ -4598,7 +4827,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                 if (wroteMember)
                     sb.AppendLine();
 
-                AppendProjectMethod(sb, indent, sourceGroup.Key, creatable);
+                AppendProjectMethod(sb, indent, sourceGroup.Key, creatable, modifier);
                 wroteMember = true;
             }
         }
@@ -4622,6 +4851,15 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
 
         if (model.NamespaceName is not null)
             sb.AppendLine("}");
+
+        // An adapter gets NO extension class. Its callers hold the BASE type, whose own extension
+        // methods dispatch virtually into the overrides here; a second set taking the base type
+        // would be ambiguous with them.
+        if (model.AdapterOf is not null)
+        {
+            context.AddSource($"{model.SafeIdentifier}.ShiftMapper.g.cs", SourceText.From(sb.ToString(), Encoding.UTF8));
+            return;
+        }
 
         // ---- part 2: the extension methods that forward to an instance ----
         sb.AppendLine();
@@ -4706,7 +4944,8 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         string indent,
         MapModel map,
         string name,
-        Dictionary<string, string> directNames)
+        Dictionary<string, string> directNames,
+        string modifier)
     {
         sb.AppendLine($"{indent}    /// <summary>Creates a new {map.DestinationName} from a {map.SourceName}.{OriginNote(map)}</summary>");
 
@@ -4720,7 +4959,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
 
         // A public method may not expose a less accessible type (CS0051), and here the
         // destination is the return type rather than only a type argument.
-        sb.AppendLine($"{indent}    {AccessibilityOf(map.IsSourcePublic, map.IsDestinationPublic)} {map.DestinationType} {name}({map.SourceType} source)");
+        sb.AppendLine($"{indent}    {AccessibilityOf(map.IsSourcePublic, map.IsDestinationPublic)}{modifier} {map.DestinationType} {name}({map.SourceType} source)");
         sb.AppendLine($"{indent}    {{");
         AppendNullGuard(sb, $"{indent}        ", "source", map.IsSourceValueType);
 
@@ -5086,7 +5325,8 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         string indent,
         string sourceType,
         List<MapModel> destinations,
-        Dictionary<string, string> directNames)
+        Dictionary<string, string> directNames,
+        string modifier)
     {
         MapModel firstMap = destinations[0];
 
@@ -5100,7 +5340,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             "compile error there rather than an exception here.</remarks>");
 
         // A public method may not expose a less accessible parameter type (CS0051).
-        sb.AppendLine($"{indent}    {AccessibilityOf(firstMap.IsSourcePublic)} TDestination Map<TDestination>({sourceType} source)");
+        sb.AppendLine($"{indent}    {AccessibilityOf(firstMap.IsSourcePublic)}{modifier} TDestination Map<TDestination>({sourceType} source)");
         sb.AppendLine($"{indent}    {{");
         AppendNullGuard(sb, $"{indent}        ", "source", firstMap.IsSourceValueType);
 
@@ -5212,7 +5452,8 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         StringBuilder sb,
         string indent,
         MapModel map,
-        string name)
+        string name,
+        string modifier)
     {
         string accessibility = AccessibilityOf(map.IsSourcePublic, map.IsDestinationPublic);
         string sequence = $"global::System.Collections.Generic.IEnumerable<{map.SourceType}>?";
@@ -5243,7 +5484,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
 
             sb.AppendLine($"{indent}    /// <summary>Creates a new {noun} of {map.DestinationName} from a sequence of {map.SourceName}.{OriginNote(map)}</summary>");
             sb.AppendLine($"{indent}    /// <remarks>{absent} Each element goes through {name}.{set}</remarks>");
-            sb.AppendLine($"{indent}    {accessibility} {shape}{nullable} {name}{suffix}({sequence} source) =>");
+            sb.AppendLine($"{indent}    {accessibility}{modifier} {shape}{nullable} {name}{suffix}({sequence} source) =>");
             sb.AppendLine($"{indent}        global::ShiftMapper.ValueConverter.{helper}<{map.SourceType}, {map.DestinationType}>(source, {name});");
         }
     }
@@ -5270,7 +5511,8 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         string indent,
         string sourceType,
         List<MapModel> destinations,
-        Dictionary<string, string> directNames)
+        Dictionary<string, string> directNames,
+        string modifier)
     {
         MapModel firstMap = destinations[0];
 
@@ -5284,7 +5526,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             "the shape is known at the call site. A null sequence is answered by the map's " +
             "AllowNullCollections rather than by an exception.</remarks>");
 
-        sb.AppendLine($"{indent}    {AccessibilityOf(firstMap.IsSourcePublic)} TDestination Map<TDestination>(global::System.Collections.Generic.IEnumerable<{sourceType}>? source)");
+        sb.AppendLine($"{indent}    {AccessibilityOf(firstMap.IsSourcePublic)}{modifier} TDestination Map<TDestination>(global::System.Collections.Generic.IEnumerable<{sourceType}>? source)");
         sb.AppendLine($"{indent}    {{");
 
         foreach (MapModel map in destinations)
@@ -5323,11 +5565,11 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     /// Only for reference types on BOTH sides. A struct source can never be null, and a struct
     /// destination has no null to return.
     /// </summary>
-    private static void AppendOrNullMethod(StringBuilder sb, string indent, MapModel map, string name)
+    private static void AppendOrNullMethod(StringBuilder sb, string indent, MapModel map, string name, string modifier)
     {
         sb.AppendLine($"{indent}    /// <summary>Creates a new {map.DestinationName} from a {map.SourceName}, or null when there is no {map.SourceName}.{OriginNote(map)}</summary>");
         sb.AppendLine($"{indent}    /// <remarks>The same map as {name}, for the case where a missing source is ordinary data rather than a mistake.</remarks>");
-        sb.AppendLine($"{indent}    {AccessibilityOf(map.IsSourcePublic, map.IsDestinationPublic)} {map.DestinationType}? {name}OrNull({map.SourceType}? source) =>");
+        sb.AppendLine($"{indent}    {AccessibilityOf(map.IsSourcePublic, map.IsDestinationPublic)}{modifier} {map.DestinationType}? {name}OrNull({map.SourceType}? source) =>");
         sb.AppendLine($"{indent}        source is null ? null : {name}(source);");
     }
 
@@ -5346,7 +5588,8 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         string indent,
         string sourceType,
         List<MapModel> destinations,
-        Dictionary<string, string> directNames)
+        Dictionary<string, string> directNames,
+        string modifier)
     {
         MapModel firstMap = destinations[0];
 
@@ -5358,7 +5601,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             "a null rather than an exception. Reference destinations only: a struct has no null to " +
             "return.</remarks>");
 
-        sb.AppendLine($"{indent}    {AccessibilityOf(firstMap.IsSourcePublic)} TDestination? MapOrNull<TDestination>({sourceType}? source)");
+        sb.AppendLine($"{indent}    {AccessibilityOf(firstMap.IsSourcePublic)}{modifier} TDestination? MapOrNull<TDestination>({sourceType}? source)");
         sb.AppendLine($"{indent}        where TDestination : class");
         sb.AppendLine($"{indent}    {{");
         sb.AppendLine($"{indent}        if (source is null)");
@@ -5393,11 +5636,12 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         StringBuilder sb,
         string indent,
         MapModel map,
-        Dictionary<string, string> directNames)
+        Dictionary<string, string> directNames,
+        string modifier)
     {
         sb.AppendLine($"{indent}    /// <summary>Copies a {map.SourceName} onto an existing <paramref name=\"destination\"/> and returns it.{OriginNote(map)}</summary>");
         AppendRemarks(sb, $"{indent}    ", map);
-        sb.AppendLine($"{indent}    {AccessibilityOf(map.IsSourcePublic, map.IsDestinationPublic)} {map.DestinationType} Map({map.SourceType} source, {map.DestinationType} destination)");
+        sb.AppendLine($"{indent}    {AccessibilityOf(map.IsSourcePublic, map.IsDestinationPublic)}{modifier} {map.DestinationType} Map({map.SourceType} source, {map.DestinationType} destination)");
         sb.AppendLine($"{indent}    {{");
         AppendNullGuard(sb, $"{indent}        ", "source", map.IsSourceValueType);
         AppendNullGuard(sb, $"{indent}        ", "destination", map.IsDestinationValueType);
@@ -5754,12 +5998,12 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     /// and EF says whether it can — which is the only honest answer, and one that improves with
     /// every EF release rather than with ShiftMapper's guesses.
     /// </summary>
-    private static void AppendProjectMethod(StringBuilder sb, string indent, string sourceType, List<MapModel> destinations)
+    private static void AppendProjectMethod(StringBuilder sb, string indent, string sourceType, List<MapModel> destinations, string modifier)
     {
         MapModel firstMap = destinations[0];
 
         sb.AppendLine($"{indent}    /// <summary>Projects a query of {firstMap.SourceName} into <typeparamref name=\"TDestination\"/>, in the database.</summary>");
-        sb.AppendLine($"{indent}    {AccessibilityOf(firstMap.IsSourcePublic)} global::System.Linq.IQueryable<TDestination> ProjectTo<TDestination>(global::System.Linq.IQueryable<{sourceType}> source)");
+        sb.AppendLine($"{indent}    {AccessibilityOf(firstMap.IsSourcePublic)}{modifier} global::System.Linq.IQueryable<TDestination> ProjectTo<TDestination>(global::System.Linq.IQueryable<{sourceType}> source)");
         sb.AppendLine($"{indent}    {{");
         sb.AppendLine($"{indent}        if (source is null)");
         sb.AppendLine($"{indent}            throw new global::System.ArgumentNullException(nameof(source));");

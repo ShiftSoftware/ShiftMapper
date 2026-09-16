@@ -566,19 +566,20 @@ public partial class AppMapper : ShiftMapperBase
         // Read the pair through POST /api/supplier-feeds/preview.
         CreateMap<SupplierFeed, SupplierFeedDto>();
 
-        // INHERITANCE, POLYMORPHISM AND OPEN GENERICS moved to Mapping/CatalogProfile.cs, which is
-        // what PROFILES are for: this constructor was six hundred lines long. The maps are
-        // unchanged and still belong to this mapper — /api/catalog does not know the difference.
+        // INHERITANCE, POLYMORPHISM AND OPEN GENERICS moved to Mapping/CatalogMapper.cs, which is
+        // what INCLUDING a mapper is for: this constructor was six hundred lines long. The maps
+        // are unchanged and still belong to this mapper — /api/catalog does not know the
+        // difference — and CatalogMapper is a mapper in its own right, injectable on its own.
         //
-        // A profile with no dependencies needs no registration; InvoiceLabelProfile takes one and
-        // is registered in Program.cs.
-        AddProfile<CatalogProfile>();
-        AddProfile<InvoiceLabelProfile>();
+        // Nothing needs registering for these: AddShiftMapper registers what this mapper
+        // includes, and InvoiceLabelMapper's dependency is injected when it is built.
+        IncludeMapper<CatalogMapper>();
+        IncludeMapper<InvoiceLabelMapper>();
 
-        // GLOBAL TYPE-PAIR CONVERSIONS — the rules in Mapping/ConversionProfile.cs apply to every
-        // map in this mapper, including the two below, which configure nothing at all. Read them
-        // together: neither map mentions dates or hashing, and both get them.
-        AddProfile<ConversionProfile>();
+        // A PACK OF TYPE-PAIR CONVERSIONS — the rules in Mapping/ConversionPack.cs apply to every
+        // map THIS mapper declares, including the two below, which configure nothing at all. Read
+        // them together: neither map mentions dates or hashing, and both get them.
+        AddConversions<ConversionPack>();
 
         CreateMap<Invoice, InvoiceStampDto>();
         CreateMap<Product, ProductFingerprintDto>();
@@ -589,10 +590,11 @@ public partial class AppMapper : ShiftMapperBase
         //
         // Contoso.Platform — the sample's stand-in for a framework package, modelled on
         // ShiftFramework — is referenced the way a NuGet package would be: a compiled assembly,
-        // no source. Its profile declares two conversions with the ORDINARY API — the same
+        // no source. Its PACK declares two conversions with the ORDINARY API — the same
         // CreateConversion this file could use — and its own build wrote their SHAPE into the
-        // assembly as metadata. AddProfile<PlatformProfile>() below is how this project takes
-        // them; the expressions arrive at run time when that profile's constructor runs.
+        // assembly as metadata. Program.cs gives that pack to EVERY mapper it registers with one
+        // line, o.AddConversions<PlatformConversions>(), which is how this mapper takes them; the
+        // expressions arrive at run time when that pack's constructor runs.
         //
         //   string        -> List<FileDto>   (a JSON column becoming files; memory form only)
         //   long          -> string               (hash ids, which BEAT the built-in conversion)
@@ -607,7 +609,7 @@ public partial class AppMapper : ShiftMapperBase
         // ------------------------------------------------------------------
         //
         // ProductListDto has two SelectDto members. NOTHING here configures them: the
-        // rule is one CreateMemberConvention in the package's profile, and it names no
+        // rule is one CreateMemberConvention in the package's pack, and it names no
         // application type at all. It works for Brand and Stock because THEY carry
         // [KeyAndName(nameof(Id), nameof(Name))], which is the indirection that lets one
         // rule serve entities the framework has never seen.
@@ -636,20 +638,19 @@ public partial class AppMapper : ShiftMapperBase
         // have both forms, and it projects.
         CreateMap<Brand, BrandHashDto>();
 
-        // A PACKAGE'S PROFILE, ADDED WITH THE ORDINARY LINE. Contoso.Platform is referenced the
-        // way a NuGet package would be — a compiled assembly, no source — and this is the whole
-        // of what it takes to use its maps and conversions:
+        // A PACKAGE'S RULES, FROM THE REGISTRATION. Nothing in this constructor names
+        // Contoso.Platform's pack, and every map above that converts a long or a JSON column got
+        // its rules anyway: Program.cs writes o.AddConversions<PlatformConversions>() once, for
+        // every mapper it registers, and the generator bakes that into this class exactly as if
+        // the line were here. (Writing AddConversions<PlatformConversions>() HERE instead would
+        // give it to this mapper alone, and would win over the registration-wide one.)
         //
-        //     AddProfile<PlatformProfile>();
-        //
-        // Identical to adding a profile from this project. It works because the package's OWN
-        // build wrote what its profile declares into its assembly as metadata: a generator sees a
-        // reference as metadata and no method bodies, so the CreateMap calls themselves are
-        // invisible, and something has to say what they were.
-        //
-        // Note it is OPT-IN. Referencing the package changes nothing until this line asks for it,
-        // so a package cannot quietly alter how your maps behave.
-        AddProfile<PlatformProfile>();
+        // The package's MAPPER is registered directly in Program.cs rather than included here —
+        // nothing in this mapper nests a FileSummary, so there is nothing to include it for. Had
+        // there been, IncludeMapper<PlatformMapper>() is the one line, identical to including a
+        // mapper from this project. Either way it is OPT-IN: referencing the package changes
+        // nothing until something asks for it, so a package cannot quietly alter how your maps
+        // behave.
     }
 
     /// <summary>Proof that constructor injection works on this class.</summary>

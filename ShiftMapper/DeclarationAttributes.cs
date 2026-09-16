@@ -11,10 +11,11 @@ namespace ShiftMapper;
 // author does; this is the wire between the two compilations.
 //
 // WHY IT HAS TO EXIST. A source generator sees a referenced assembly as METADATA, and metadata has
-// no method bodies — so a profile compiled into a package is, to the consuming generator, a class
+// no method bodies — so a mapper compiled into a package is, to the consuming generator, a class
 // with an empty constructor. Attributes, signatures and type references are what survives. So the
 // declaring assembly's own generator writes the declarations down in that vocabulary while it still
-// has the source in front of it.
+// has the source in front of it. EVERY mapper and every pack gets this, because any of them may be
+// referenced from another project.
 //
 // WHY TYPED ATTRIBUTES RATHER THAN A SERIALIZED BLOB. Type IDENTITY is the thing that must not be
 // got wrong: typeof(Brand) is resolved by the compiler and is unambiguously that type in that
@@ -25,9 +26,10 @@ namespace ShiftMapper;
 //
 // WHAT TRAVELS HERE AND WHAT DOES NOT. These carry the SHAPE — which pairs, which members, which
 // kind of customization, which options. The EXPRESSIONS (a MapFrom tree, a ConstructUsing factory,
-// a hook) never appear: they arrive at run time, because AddProfile constructs the profile and its
-// constructor registers them, exactly as it does for a profile in your own project. That split is
-// what lets the whole thing work without copying a line of anybody's code.
+// a hook) never appear: they arrive at run time, because IncludeMapper / AddShiftMapper constructs
+// the declaring type and its constructor registers them, exactly as it does for a mapper in your
+// own project. That split is what lets the whole thing work without copying a line of anybody's
+// code.
 // ---------------------------------------------------------------------------------------------
 
 /// <summary>
@@ -35,9 +37,9 @@ namespace ShiftMapper;
 /// format it was written in.
 ///
 /// <para>The format is a protocol between the generator that WROTE it and the generator that READS
-/// it, and those are two different builds of ShiftMapper. A reader that meets a version it does not
-/// know refuses the assembly whole (SM0033) rather than understanding part of it — half-reading a
-/// shape that has changed is how a generator emits code that will not compile in a file the
+/// it, and those are two different builds of ShiftMapper. A reader that meets a version other than
+/// its own refuses the assembly whole (SM0033) rather than understanding part of it — half-reading
+/// a shape that has changed is how a generator emits code that will not compile in a file the
 /// developer cannot edit.</para>
 /// </summary>
 [AttributeUsage(AttributeTargets.Assembly, AllowMultiple = false, Inherited = false)]
@@ -45,8 +47,94 @@ public sealed class ShiftMapperContractAttribute : Attribute
 {
     public ShiftMapperContractAttribute(int version) => Version = version;
 
-    /// <summary>The format version. The current one is 1.</summary>
+    /// <summary>The format version. The current one is 2.</summary>
     public int Version { get; }
+}
+
+/// <summary>
+/// Says that a MAPPER in this assembly was built with the generator, and carries what its
+/// <c>ConfigureDefaults</c> override set — the one thing about a mapper that is neither a
+/// declaration call nor readable from metadata (the override exists as a symbol; its body does not).
+///
+/// <para>Emitted for every mapper, even one declaring nothing, so a consumer can tell "built with
+/// the generator and empty" from "built without it" (SM0028).</para>
+/// </summary>
+[AttributeUsage(AttributeTargets.Assembly, AllowMultiple = true, Inherited = false)]
+public sealed class ShiftMapperDeclaredMapperAttribute : Attribute
+{
+    public ShiftMapperDeclaredMapperAttribute(Type mapper) => Mapper = mapper;
+
+    public Type Mapper { get; }
+
+    /// <summary>What <c>ConfigureDefaults</c> set, or <see cref="DeclaredOption.NotDeclared"/>.</summary>
+    public DeclaredOption CaseSensitive { get; set; }
+
+    /// <inheritdoc cref="CaseSensitive"/>
+    public DeclaredOption AllowNullCollections { get; set; }
+
+    /// <inheritdoc cref="CaseSensitive"/>
+    public DeclaredOption Flattening { get; set; }
+
+    /// <summary>Prefixes the mapper's default naming convention recognises.</summary>
+    public string[]? Prefixes { get; set; }
+
+    /// <inheritdoc cref="Prefixes"/>
+    public string[]? Postfixes { get; set; }
+}
+
+/// <summary>
+/// Says that a PACK (a <c>ShiftMapperConversions</c> subclass) in this assembly was built with the
+/// generator. Its rules follow as <see cref="ShiftMapperDeclaredConversionAttribute"/> and
+/// <see cref="ShiftMapperDeclaredConventionAttribute"/> keyed by the pack type.
+/// </summary>
+[AttributeUsage(AttributeTargets.Assembly, AllowMultiple = true, Inherited = false)]
+public sealed class ShiftMapperDeclaredPackAttribute : Attribute
+{
+    public ShiftMapperDeclaredPackAttribute(Type pack) => Pack = pack;
+
+    public Type Pack { get; }
+}
+
+/// <summary>
+/// One <c>IncludeMapper&lt;T&gt;()</c> or <c>AddConversions&lt;T&gt;()</c> a mapper's constructor
+/// makes — so a consumer that includes the mapper follows it to what it composes, even when that
+/// lives in a third assembly.
+/// </summary>
+[AttributeUsage(AttributeTargets.Assembly, AllowMultiple = true, Inherited = false)]
+public sealed class ShiftMapperDeclaredCompositionAttribute : Attribute
+{
+    public ShiftMapperDeclaredCompositionAttribute(Type mapper, Type composed)
+    {
+        Mapper = mapper;
+        Composed = composed;
+    }
+
+    /// <summary>The mapper whose constructor made the call.</summary>
+    public Type Mapper { get; }
+
+    /// <summary>The mapper it includes, or the pack it adds.</summary>
+    public Type Composed { get; }
+}
+
+/// <summary>
+/// Names the ADAPTER the generator wrote in this assembly for a mapper registered from a referenced
+/// package — the subclass that re-bakes the package's maps with this project's conversions.
+/// <c>AddShiftMapper</c> reads it to hand out the adapter where the package type was asked for.
+/// </summary>
+[AttributeUsage(AttributeTargets.Assembly, AllowMultiple = true, Inherited = false)]
+public sealed class ShiftMapperAdapterAttribute : Attribute
+{
+    public ShiftMapperAdapterAttribute(Type mapper, Type adapter)
+    {
+        Mapper = mapper;
+        Adapter = adapter;
+    }
+
+    /// <summary>The package mapper as registered.</summary>
+    public Type Mapper { get; }
+
+    /// <summary>The generated subclass to construct in its place.</summary>
+    public Type Adapter { get; }
 }
 
 /// <summary>
@@ -67,26 +155,26 @@ public enum DeclaredOption
 }
 
 /// <summary>
-/// One <c>CreateMap&lt;TSource, TDestination&gt;()</c> declared by a profile, with everything about
+/// One <c>CreateMap&lt;TSource, TDestination&gt;()</c> declared by a mapper, with everything about
 /// it that is not an expression.
 ///
-/// <para><b>Keyed by the PROFILE</b>, and that is deliberate: a declaration applies to a mapper only
-/// when that mapper calls <c>AddProfile&lt;ThatProfile&gt;()</c>. Referencing a package does not
+/// <para><b>Keyed by the DECLARING MAPPER</b>, and that is deliberate: a declaration applies to a
+/// consumer only when that consumer includes or registers the mapper. Referencing a package does not
 /// silently change how your maps behave — you ask for it, with the same one line you would use for a
-/// profile in your own project.</para>
+/// mapper in your own project.</para>
 /// </summary>
 [AttributeUsage(AttributeTargets.Assembly, AllowMultiple = true, Inherited = false)]
 public sealed class ShiftMapperDeclaredMapAttribute : Attribute
 {
-    public ShiftMapperDeclaredMapAttribute(Type profile, Type source, Type destination)
+    public ShiftMapperDeclaredMapAttribute(Type declaredBy, Type source, Type destination)
     {
-        Profile = profile;
+        DeclaredBy = declaredBy;
         Source = source;
         Destination = destination;
     }
 
-    /// <summary>The profile that declared it. Only applies to mappers that add this profile.</summary>
-    public Type Profile { get; }
+    /// <summary>The mapper that declared it. Only applies to mappers that include it.</summary>
+    public Type DeclaredBy { get; }
 
     public Type Source { get; }
 
@@ -126,11 +214,10 @@ public sealed class ShiftMapperDeclaredMapAttribute : Attribute
     /// <summary>
     /// What the map's own <c>MapOptions</c> lambda SAID, not what it resolved to.
     ///
-    /// <para>The difference matters. A profile's own <c>ConfigureDefaults</c> configures nothing
-    /// (SM0029) — the mapper that ADDS the profile supplies the defaults — so a declaration that
-    /// travelled as a resolved <c>false</c> would override the consuming mapper's setting with a
-    /// value nobody wrote. Three states, so "not declared" stays distinguishable from "declared
-    /// false".</para>
+    /// <para>The difference matters. The declaring mapper's own <c>ConfigureDefaults</c> travels
+    /// separately (<see cref="ShiftMapperDeclaredMapperAttribute"/>) and is applied underneath, so
+    /// a declaration that travelled as a resolved <c>false</c> would bake a value nobody wrote.
+    /// Three states, so "not declared" stays distinguishable from "declared false".</para>
     /// </summary>
     public DeclaredOption CaseSensitive { get; set; }
 
@@ -152,21 +239,21 @@ public sealed class ShiftMapperDeclaredMapAttribute : Attribute
 ///
 /// <para>The expression is not here and does not need to be. The consuming generator emits
 /// <c>Customizations.Value&lt;Source, Destination, T&gt;("Member")</c>, character for character what
-/// it emits for a <c>MapFrom</c> written in your own project, and the profile's constructor puts the
+/// it emits for a <c>MapFrom</c> written in your own project, and the mapper's constructor puts the
 /// tree in the store at run time.</para>
 /// </summary>
 [AttributeUsage(AttributeTargets.Assembly, AllowMultiple = true, Inherited = false)]
 public sealed class ShiftMapperDeclaredMemberAttribute : Attribute
 {
-    public ShiftMapperDeclaredMemberAttribute(Type profile, Type source, Type destination, string member)
+    public ShiftMapperDeclaredMemberAttribute(Type declaredBy, Type source, Type destination, string member)
     {
-        Profile = profile;
+        DeclaredBy = declaredBy;
         Source = source;
         Destination = destination;
         Member = member;
     }
 
-    public Type Profile { get; }
+    public Type DeclaredBy { get; }
 
     public Type Source { get; }
 
@@ -206,20 +293,20 @@ public sealed class ShiftMapperDeclaredMemberAttribute : Attribute
 public sealed class ShiftMapperDeclaredIncludeAttribute : Attribute
 {
     public ShiftMapperDeclaredIncludeAttribute(
-        Type profile,
+        Type declaredBy,
         Type source,
         Type destination,
         Type derivedSource,
         Type derivedDestination)
     {
-        Profile = profile;
+        DeclaredBy = declaredBy;
         Source = source;
         Destination = destination;
         DerivedSource = derivedSource;
         DerivedDestination = derivedDestination;
     }
 
-    public Type Profile { get; }
+    public Type DeclaredBy { get; }
 
     public Type Source { get; }
 
@@ -231,26 +318,26 @@ public sealed class ShiftMapperDeclaredIncludeAttribute : Attribute
 }
 
 /// <summary>
-/// One <c>CreateConversion&lt;TSource, TDestination&gt;()</c> declared by a profile.
+/// One <c>CreateConversion&lt;TSource, TDestination&gt;()</c> declared by a mapper or a pack.
 ///
 /// <para><see cref="MemoryCall"/> is the optimisation and the only thing here that is not pure
 /// shape: when the declared lambda captured nothing, the declaring generator LIFTED it into a real
 /// static method and this names it, so the consuming generator can emit a direct call instead of a
 /// runtime lookup. When the lambda captured something — an injected service, a constructor argument
 /// — there is no static method to name, this is null, and the expression comes from the constructed
-/// profile at run time, exactly as it does for a conversion in your own project.</para>
+/// declaring type at run time, exactly as it does for a conversion in your own project.</para>
 /// </summary>
 [AttributeUsage(AttributeTargets.Assembly, AllowMultiple = true, Inherited = false)]
 public sealed class ShiftMapperDeclaredConversionAttribute : Attribute
 {
-    public ShiftMapperDeclaredConversionAttribute(Type profile, Type source, Type destination)
+    public ShiftMapperDeclaredConversionAttribute(Type declaredBy, Type source, Type destination)
     {
-        Profile = profile;
+        DeclaredBy = declaredBy;
         Source = source;
         Destination = destination;
     }
 
-    public Type Profile { get; }
+    public Type DeclaredBy { get; }
 
     public Type Source { get; }
 
@@ -270,7 +357,7 @@ public sealed class ShiftMapperDeclaredConversionAttribute : Attribute
 }
 
 /// <summary>
-/// One <c>CreateMemberConvention&lt;T&gt;</c> a profile declared.
+/// One <c>CreateMemberConvention&lt;T&gt;</c> a mapper or a pack declared.
 ///
 /// <para>Entirely SHAPE — a member type, some target/path pairs, an attribute to read names from,
 /// and a direction — so it crosses an assembly with nothing left behind. A convention has no
@@ -280,13 +367,13 @@ public sealed class ShiftMapperDeclaredConversionAttribute : Attribute
 [AttributeUsage(AttributeTargets.Assembly, AllowMultiple = true, Inherited = false)]
 public sealed class ShiftMapperDeclaredConventionAttribute : Attribute
 {
-    public ShiftMapperDeclaredConventionAttribute(Type profile, Type memberType)
+    public ShiftMapperDeclaredConventionAttribute(Type declaredBy, Type memberType)
     {
-        Profile = profile;
+        DeclaredBy = declaredBy;
         MemberType = memberType;
     }
 
-    public Type Profile { get; }
+    public Type DeclaredBy { get; }
 
     /// <summary>The member type the rule claims.</summary>
     public Type MemberType { get; }
@@ -319,14 +406,14 @@ public sealed class ShiftMapperDeclaredConventionAttribute : Attribute
 [AttributeUsage(AttributeTargets.Assembly, AllowMultiple = true, Inherited = false)]
 public sealed class ShiftMapperDeclaredOpenMapAttribute : Attribute
 {
-    public ShiftMapperDeclaredOpenMapAttribute(Type profile, Type source, Type destination)
+    public ShiftMapperDeclaredOpenMapAttribute(Type declaredBy, Type source, Type destination)
     {
-        Profile = profile;
+        DeclaredBy = declaredBy;
         Source = source;
         Destination = destination;
     }
 
-    public Type Profile { get; }
+    public Type DeclaredBy { get; }
 
     /// <summary>The unbound generic source, e.g. <c>typeof(PagedResult&lt;&gt;)</c>.</summary>
     public Type Source { get; }

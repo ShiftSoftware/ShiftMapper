@@ -1,6 +1,7 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using ShiftMapper.Sample.Data;
 using ShiftMapper.Sample.Endpoints;
+using Contoso.Platform;
 using ShiftMapper.Sample.Mapping;
 using ShiftMapper.Sample.Services;
 
@@ -28,13 +29,31 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 // custom mapping — no ShiftMapper-specific registration involved.
 builder.Services.AddSingleton<IInvoiceNumbering, InvoiceNumbering>();
 
-// A PROFILE WITH A DEPENDENCY. Mapping/InvoiceLabelProfile.cs takes IInvoiceNumbering, so it is
-// resolved from DI the first time anything is mapped — not while AppMapper is being constructed,
-// which is before its Services is assigned. CatalogProfile has no dependencies and needs no
-// registration at all.
-builder.Services.AddTransient<InvoiceLabelProfile>();
-
-builder.Services.AddShiftMapper<AppMapper>();
+// THE REGISTRATION — and the generator reads this lambda as well as running it: anything written
+// in it is baked into the mappers at compile time, exactly as if it had been written in their
+// constructors. Three things are said here:
+//
+//   1. AppMapper, the mapper the endpoints inject. What it INCLUDES (CatalogMapper,
+//      InvoiceLabelMapper) and the pack it ADDS are registered along with it, so
+//      InvoiceLabelMapper's IInvoiceNumbering dependency is injected the first time anything is
+//      mapped without a registration of its own.
+//
+//   2. PlatformMapper, FROM THE PACKAGE, registered directly so it can be injected on its own.
+//      Its Map methods were compiled inside Contoso.Platform and cannot pick up this project's
+//      rules — so the generator writes an ADAPTER here (Generated/.../Contoso_Platform_PlatformMapper_Adapter),
+//      a subclass with this project's packs baked in, and this call hands it out wherever
+//      PlatformMapper is asked for. GET /api/framework/files shows the difference.
+//
+//   3. The package's pack, given to EVERY mapper in this call: hash ids, the JSON column, the
+//      SelectDto convention. AppMapper never names it and gets it; so does the adapter.
+//
+// Two mappers, so IShiftMapper resolves to a composite that asks each one which pairs it maps.
+builder.Services.AddShiftMapper(o =>
+{
+    o.AddMapper<AppMapper>();
+    o.AddMapper<PlatformMapper>();
+    o.AddConversions<PlatformConversions>();
+});
 
 builder.Services.AddOpenApi();
 

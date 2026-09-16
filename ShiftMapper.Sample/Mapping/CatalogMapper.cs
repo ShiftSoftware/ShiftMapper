@@ -4,30 +4,29 @@ using ShiftMapper.Sample.Entities;
 namespace ShiftMapper.Sample.Mapping;
 
 /// <summary>
-/// The catalogue's maps, written OUTSIDE the mapper class — and this file is the whole point of
-/// profiles. Every line below used to sit in AppMapper's constructor, which was six hundred lines
-/// long and growing by a feature a step.
+/// The catalogue's maps, written in a mapper OF THEIR OWN — and this file is the whole point of
+/// splitting mappers. Every line below used to sit in AppMapper's constructor, which was six
+/// hundred lines long and growing by a feature a step.
 ///
-/// <para><b>NOTHING ABOUT THE GENERATED CODE CHANGES.</b> These are still AppMapper's maps:
-/// <c>mapper.Map&lt;CatalogItemDto&gt;(item)</c> and
+/// <para><b>IT IS AN ORDINARY MAPPER.</b> It gets its own generated Map methods, so a service
+/// that only deals with the catalogue can inject <c>CatalogMapper</c> and call
+/// <c>catalog.Map&lt;CatalogItemDto&gt;(item)</c>. AND its maps are AppMapper's maps too, because
+/// AppMapper includes it: <c>mapper.Map&lt;CatalogItemDto&gt;(item)</c> and
 /// <c>db.CatalogItems.OfType&lt;PhysicalItem&gt;().ProjectTo&lt;PhysicalItemDto&gt;(mapper)</c> work
-/// exactly as before, and /api/catalog is untouched. A profile is a place to WRITE declarations,
-/// not a second mapper: there is no <c>CatalogProfile.Map</c> to find, and looking for one is the
-/// mental model worth correcting early.</para>
+/// exactly as before, and /api/catalog is untouched.</para>
 ///
-/// <para><b>IT CROSSES BOUNDARIES.</b> The open generic at the foot of this file closes over pairs
-/// declared in OTHER files — PagedResultDto&lt;BrandDto&gt; comes from a CreateMap in AppMapper
-/// itself. An <c>IncludeBase</c> works the same way round. A profile is a place to write, not a
-/// wall.</para>
+/// <para><b>INCLUSION CROSSES BOUNDARIES.</b> The open generic at the foot of this file closes
+/// over pairs declared in OTHER files — PagedResultDto&lt;BrandDto&gt; comes from a CreateMap in
+/// AppMapper itself, once this mapper is included there. An <c>IncludeBase</c> works the same way
+/// round. An included mapper is a place to write, not a wall.</para>
 ///
-/// <para>This one takes no dependencies, so it needs no registration at all. See
-/// <see cref="InvoiceLabelProfile"/> for the other case.</para>
+/// <para>This one takes no dependencies. See <see cref="InvoiceLabelMapper"/> for the other case.</para>
 ///
-/// Added by <c>AddProfile&lt;CatalogProfile&gt;()</c> in <see cref="AppMapper"/>.
+/// Included by <c>IncludeMapper&lt;CatalogMapper&gt;()</c> in <see cref="AppMapper"/>.
 /// </summary>
-public class CatalogProfile : ShiftMapperProfile
+public partial class CatalogMapper : ShiftMapperBase
 {
-    public CatalogProfile()
+    public CatalogMapper()
     {
     // ------------------------------------------------------------------
     // INHERITANCE, POLYMORPHISM AND OPEN GENERICS — the catalogue family.

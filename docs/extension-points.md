@@ -3,19 +3,21 @@
 You maintain a library — a framework such as ShiftFramework, for instance, or any package that
 ships DTOs and the rules for mapping them — and you want the maps, type-pair conversions and
 member conventions you write to apply in every application that references you. The application
-should write one line, and nothing else.
+should write one line per thing it wants, and nothing else.
 
-That line is `AddProfile<YourProfile>()`. This page is about what has to be true on your side for
-it to work, and why: how a declaration compiled into your DLL is visible to a source generator that
+Those lines are `IncludeMapper<YourMapper>()`, `o.AddMapper<YourMapper>()` and
+`AddConversions<YourConversions>()`. This page is about what has to be true on your side for them
+to work, and why: how a declaration compiled into your DLL is visible to a source generator that
 can only see metadata, what travels and what does not, what your `.csproj` needs, and which
 diagnostics are addressed to you rather than to the application.
 
 The [README](../README.md) is the front door and already covers the application's view of
-[profiles](../README.md#profiles-maps-written-outside-the-mapper),
-[global conversions](../README.md#global-type-pair-conversions),
-[member conventions](../README.md#member-conventions) and
-[rules from a referenced assembly](../README.md#rules-from-a-referenced-assembly). This page goes
-deeper on each from the package author's side, and does not repeat what the README settles.
+[included mappers](../README.md#composing-mappers-includemapper),
+[packs](../README.md#packs-rules-shared-between-mappers),
+[member conventions](../README.md#member-conventions),
+[registration](../README.md#registration) and
+[mappers from a referenced assembly](../README.md#mappers-from-a-referenced-assembly). This page
+goes deeper on each from the package author's side, and does not repeat what the README settles.
 
 Every code block below is either taken from `Contoso.Platform` — the sample's stand-in for a
 framework package, modelled on ShiftFramework and consumed by `ShiftMapper.Sample` exactly as a
@@ -25,41 +27,52 @@ NuGet reference would be — or from the files the generator wrote for those two
 
 ## The whole thing, end to end
 
-A package writes an ordinary profile with the ordinary API:
+A package writes an ordinary mapper and an ordinary pack, with the ordinary API:
 
 ```csharp
-// Contoso.Platform/PlatformProfile.cs — compiled into its own assembly
-public class PlatformProfile : ShiftMapperProfile
+// Contoso.Platform/PlatformMapper.cs — compiled into its own assembly
+public partial class PlatformMapper : ShiftMapperBase
 {
-    public PlatformProfile()
+    public PlatformMapper() =>
+        CreateMap<FileDto, FileSummary>()
+            .ForMember(d => d.Name, opt => opt.MapFrom(s => s.Name.Trim()));
+}
+
+// Contoso.Platform/PlatformConversions.cs — the rules, and no maps
+public class PlatformConversions : ShiftMapperConversions
+{
+    public PlatformConversions()
     {
         CreateConversion<long, string>(
             memory: id => "H" + id,
             query:  id => "H" + id);
 
-        CreateConversion<string?, List<FileDto>>(memory: PlatformConversions.ToFiles!);
+        CreateConversion<string?, List<FileDto>>(memory: ToFiles!);
 
         CreateMemberConvention<SelectDto>()
             .NameFrom<KeyAndNameAttribute>(nameof(KeyAndNameAttribute.Text))
             .Fill(d => d.Value, "{Member}ID")
             .FillIfPossible(d => d.Text, "{Member}.{NameOf}");
-
-        CreateMap<FileDto, FileSummary>()
-            .ForMember(d => d.Name, opt => opt.MapFrom(s => s.Name.Trim()));
     }
 }
 ```
 
-An application adds it, and declares maps that name none of the package's rules:
+An application registers the mapper and adds the pack, and declares maps that name none of the
+package's rules:
 
 ```csharp
-// ShiftMapper.Sample/Mapping/AppMapper.cs, abridged
+// ShiftMapper.Sample/Program.cs and Mapping/AppMapper.cs, abridged
+builder.Services.AddShiftMapper(o =>
+{
+    o.AddMapper<AppMapper>();
+    o.AddMapper<PlatformMapper>();                  // injectable on its own — through a generated adapter
+    o.AddConversions<PlatformConversions>();        // every mapper in this call
+});
+
 public partial class AppMapper : ShiftMapperBase
 {
     public AppMapper()
     {
-        AddProfile<PlatformProfile>();
-
         CreateMap<Brand, BrandHashDto>();       // ExternalIds: List<long> -> List<string>, hashed
         CreateMap<Brand, BrandFilesDto>();      // Files: string -> List<FileDto>; loses ProjectTo (SM0030)
         CreateMap<Product, ProductListDto>();   // Brand, Stock: SelectDto, filled by the convention
@@ -69,12 +82,13 @@ public partial class AppMapper : ShiftMapperBase
 
 `GET /api/brands/hashed?sql=true` shows the package's hash rule in the SQL Server statement;
 `GET /api/products/list?sql=true` shows the convention's member-init inside the `SELECT`;
-`GET /api/brands/files?project=true` shows the refusal for the pair that declared no query form.
-Those three endpoints are the worked example for everything below.
+`GET /api/brands/files?project=true` shows the refusal for the pair that declared no query form;
+`GET /api/framework/files` shows the package's own mapper, injected, mapping with the application's
+rules. Those four endpoints are the worked example for everything below.
 
-There is no second API for packages. Nothing in the sample is an attribute written by hand, and
-nothing in it names `PlatformConversions`. What makes that possible is the mechanism in the next
-section, which is the thing a library author actually has to understand.
+There is no second API for packages. Nothing in the sample is an attribute written by hand. What
+makes that possible is the mechanism in the next section, which is the thing a library author
+actually has to understand.
 
 ---
 
@@ -84,14 +98,14 @@ section, which is the thing a library author actually has to understand.
 
 A source generator compiling the application is handed the application's source and a set of
 references. A reference is **metadata**: type names, member signatures, attributes, and the types
-those attributes mention. It is never a method body. So `PlatformProfile`, seen from the
+those attributes mention. It is never a method body. So `PlatformMapper`, seen from the
 application's compilation, is a class with a parameterless constructor and nothing inside it. The
 `CreateMap` and `CreateConversion` calls are not "hard to read" — they are not there.
 
 That rules out the obvious design, and it is worth being explicit about why, because it is the
-first thing every library author tries. A profile read as source works only in the compilation it
-is written in. A profile compiled into a package contributes nothing at compile time, and SM0028
-reports the attempt rather than letting the mapper silently map nothing.
+first thing every library author tries. A mapper read as source works only in the compilation it
+is written in. A mapper compiled into a package contributes nothing to a consumer at compile time
+by itself, and SM0028 reports the attempt rather than letting the consumer silently map nothing.
 
 ### The split: shape travels as attributes, expressions arrive at run time
 
@@ -107,40 +121,44 @@ The way out is to notice that a declaration is two different kinds of thing:
   need to be.
 
 The **shape** is written into your assembly by **your own build**. The same ShiftMapper generator
-that writes a mapper's `Map` methods also runs over your package, finds every
-`ShiftMapperProfile` subclass, and emits one file of assembly attributes describing what those
-profiles declared — while your source is still in front of it. This is the file
-`Contoso.Platform`'s build produces (`global::` prefixes trimmed for width; the file itself is
-fully qualified):
+that writes a mapper's `Map` methods also runs over your package, finds every mapper and every
+pack, and emits one file of assembly attributes describing what they declared — while your source
+is still in front of it. This is the file `Contoso.Platform`'s build produces (`global::` prefixes
+trimmed for width; the file itself is fully qualified):
 
 ```csharp
 // ShiftMapper.Declarations.g.cs — generated into Contoso.Platform.dll, never edited
-[assembly: ShiftMapper.ShiftMapperContract(1)]
+[assembly: ShiftMapper.ShiftMapperContract(2)]
 
-// ---- Contoso.Platform.PlatformProfile
-[assembly: ShiftMapper.ShiftMapperDeclaredMap(typeof(PlatformProfile), typeof(FileDto), typeof(FileSummary))]
-[assembly: ShiftMapper.ShiftMapperDeclaredMember(typeof(PlatformProfile), typeof(FileDto), typeof(FileSummary), "Name", PropertyType = "string", CanSetAfterConstruction = true)]
-[assembly: ShiftMapper.ShiftMapperDeclaredConversion(typeof(PlatformProfile), typeof(long), typeof(string), HasQueryForm = true)]
-[assembly: ShiftMapper.ShiftMapperDeclaredConversion(typeof(PlatformProfile), typeof(string), typeof(List<FileDto>), HasQueryForm = false)]
-[assembly: ShiftMapper.ShiftMapperDeclaredConvention(typeof(PlatformProfile), typeof(SelectDto), Fill = new string[] { "Value={Member}ID", "?Text={Member}.{NameOf}" }, NameOfAttribute = typeof(KeyAndNameAttribute), NameOfProperty = "Text")]
+// ---- Contoso.Platform.PlatformConversions
+[assembly: ShiftMapper.ShiftMapperDeclaredPack(typeof(PlatformConversions))]
+[assembly: ShiftMapper.ShiftMapperDeclaredConversion(typeof(PlatformConversions), typeof(long), typeof(string), HasQueryForm = true)]
+[assembly: ShiftMapper.ShiftMapperDeclaredConversion(typeof(PlatformConversions), typeof(string), typeof(List<FileDto>), HasQueryForm = false)]
+[assembly: ShiftMapper.ShiftMapperDeclaredConvention(typeof(PlatformConversions), typeof(SelectDto), Fill = new string[] { "Value={Member}ID", "?Text={Member}.{NameOf}" }, NameOfAttribute = typeof(KeyAndNameAttribute), NameOfProperty = "Text")]
+
+// ---- Contoso.Platform.PlatformMapper
+[assembly: ShiftMapper.ShiftMapperDeclaredMapper(typeof(PlatformMapper))]
+[assembly: ShiftMapper.ShiftMapperDeclaredMap(typeof(PlatformMapper), typeof(FileDto), typeof(FileSummary))]
+[assembly: ShiftMapper.ShiftMapperDeclaredMember(typeof(PlatformMapper), typeof(FileDto), typeof(FileSummary), "Name", PropertyType = "string", CanSetAfterConstruction = true)]
 ```
 
-Read it against the profile above. `s => s.Name.Trim()` is not in it; `"Name"` is. `id => "H" + id`
+Read it against the two classes above. `s => s.Name.Trim()` is not in it; `"Name"` is. `id => "H" + id`
 is not in it; `HasQueryForm = true` is. The `FillIfPossible` entry carries a leading `?`, which is
 how "optional" survives the trip. That is the entire contract: a consuming generator reads these
 attributes and rebuilds the same internal model it would have built from your source, then hands it
 to the same code that handles a local map. Property matching, conversions, nesting, projection,
 every diagnostic — none of it can tell a package's map from a local one, and none of it tries.
 
-The **expressions** arrive because `AddProfile<T>()` is the one declaration call that also does
-something at run time: it records `T` so the mapper can construct it on first use. Constructing
-`PlatformProfile` runs its constructor, and its constructor calls the real `CreateConversion`
-and `ForMember(... MapFrom ...)`, which put the delegate and the trees into the mapper's
-customization store. This is the same path a profile in the application's own project takes.
-Nothing about it is package-specific.
+The **expressions** arrive because `IncludeMapper<T>()` and `AddConversions<T>()` are the
+declaration calls that also do something at run time: they record `T` so the mapper can construct
+it on first use — and a mapper registered directly is constructed by `AddShiftMapper`. Constructing
+`PlatformConversions` runs its constructor, and its constructor calls the real `CreateConversion`,
+which puts the delegate and the tree into a store the consuming mapper merges into its own;
+constructing `PlatformMapper` does the same for its `MapFrom`. This is the same path a mapper or
+pack in the application's own project takes. Nothing about it is package-specific.
 
 So the consuming generator emits, for a package's `MapFrom`, exactly what it emits for a local one —
-a lookup by member name against the store the profile's constructor filled. From the sample's
+a lookup by member name against the store the declaring constructor filled. From the sample's
 generated mapper:
 
 ```csharp
@@ -148,8 +166,8 @@ generated mapper:
 Name = (_ShiftMapperValue_Contoso_Platform_FileDto_To_Contoso_Platform_FileSummary_Name
            ??= Customizations.Value<global::Contoso.Platform.FileDto, global::Contoso.Platform.FileSummary, string>("Name"))(source),
 
-// MapToBrandHashDto — the package's long -> string conversion
-ExternalIds = global::ShiftMapper.ValueConverter.ToListOrEmpty<long, string>(source.ExternalIds, item => Customizations.Conversion<long, string>()(item)),
+// MapToBrandHashDto — the package's long -> string conversion, looked up in the PACK's store
+ExternalIds = global::ShiftMapper.ValueConverter.ToListOrEmpty<long, string>(source.ExternalIds, item => Customizations.Conversion<long, string>(typeof(global::Contoso.Platform.PlatformConversions))(item)),
 ```
 
 **No lambda text is ever copied.** A lambda in your file has your `using` directives, your captured
@@ -171,29 +189,30 @@ Strings are used only where the value really is a string — a member name, a co
 in two places where an attribute array cannot hold a pair: `IncludedBases` spells a base pair as
 `"global::A->global::B"`, and a convention's `Fill` spells an entry as `"Target=path"`.
 
-### Keyed by profile, so it is opt-in
+### Keyed by declaring type, so it is opt-in
 
-Every attribute names the profile that declared it, and the consuming generator reads only
-attributes for profiles the mapper actually added. It also walks only the assemblies those profiles
-live in; a package whose profile nobody adds is never scanned at all. Referencing your package
-changes nothing in an application until it asks, which is what stops a dependency from quietly
-altering how someone else's maps behave.
+Every attribute names the mapper or pack that declared it, and the consuming generator reads only
+attributes for the types the application actually asked for — included, registered or added — and
+for what those compose in turn. It also walks only the assemblies those types live in; a package
+nothing asks for is never scanned at all. Referencing your package changes nothing in an
+application until it asks, which is what stops a dependency from quietly altering how someone
+else's maps behave.
 
 ### Three-state options
 
 A map's `MapOptions` lambda travels as what it **said**, not what it resolved to: `NotDeclared`,
-`True` or `False`. A profile's own `ConfigureDefaults` configures nothing (SM0029) — the mapper
-that adds the profile supplies the defaults — so if your map's `Flattening` travelled as a resolved
-`false` it would override a setting the application made, with a value nobody wrote. An attribute
-argument cannot be a `bool?`, hence the enum.
+`True` or `False`. Your mapper's own `ConfigureDefaults` travels separately, on the
+`ShiftMapperDeclaredMapper` marker, and is applied underneath your maps wherever they end up — so
+if your map's `Flattening` travelled as a resolved `false` it would bake a value nobody wrote. An
+attribute argument cannot be a `bool?`, hence the enum.
 
 ### The contract version
 
-`[assembly: ShiftMapperContract(1)]` says which version of this format your build wrote. The
+`[assembly: ShiftMapperContract(2)]` says which version of this format your build wrote. The
 format is a protocol between two different builds of ShiftMapper — the one in your package and the
-one in the application — and a reader that meets a version it does not know refuses the assembly
-**whole** (SM0033) rather than reading the parts it recognises. Half-reading a shape that has
-changed is how a generator emits code that does not compile in a file nobody can edit.
+one in the application — and a reader that meets any other version refuses the assembly **whole**
+(SM0033) rather than reading the parts it recognises. Half-reading a shape that has changed is how
+a generator emits code that does not compile in a file nobody can edit.
 
 ### Where a package's diagnostics land
 
@@ -203,12 +222,15 @@ class declaration, because that is the nearest thing in the application that ask
 
 ### What the format carries, exactly
 
-Seven attributes, all in the `ShiftMapper` namespace, all emitted and read by the generator and
+Ten attributes, all in the `ShiftMapper` namespace, all emitted and read by the generator and
 never written by hand:
 
 | Attribute | One per |
 |---|---|
 | `ShiftMapperContract` | assembly; the format version |
+| `ShiftMapperDeclaredMapper` | mapper — a presence marker, carrying its `ConfigureDefaults`; emitted even for a mapper that declares nothing |
+| `ShiftMapperDeclaredPack` | pack — a presence marker |
+| `ShiftMapperDeclaredComposition` | `IncludeMapper<T>()` or `AddConversions<T>()` in a mapper's constructor, and whatever a registration in the same project composed into it |
 | `ShiftMapperDeclaredMap` | `CreateMap<A, B>()`, with its ignores, conditions, included bases, `As`, hook and factory flags, and options |
 | `ShiftMapperDeclaredMember` | member customised with `MapFrom` or `MapFromSource` (the shape; the tree is runtime) |
 | `ShiftMapperDeclaredInclude` | `Include<TDerived, TDerivedDestination>()` |
@@ -216,15 +238,18 @@ never written by hand:
 | `ShiftMapperDeclaredConvention` | `CreateMemberConvention<T>()`, with its `Fill` entries, `NameFrom`, `WhenDestinationIs` and `Direction` |
 | `ShiftMapperDeclaredOpenMap` | open generic `CreateMap(typeof(W<>), typeof(WDto<>))` |
 
+And one more, written by the CONSUMER's build rather than yours: `ShiftMapperAdapter` names the
+subclass it generated for a mapper of yours it registered directly, so its `AddShiftMapper` hands
+that out.
+
 Two consequences of that list are worth knowing before you design a package:
 
-- **Only `ShiftMapperProfile` subclasses are emitted.** A class deriving directly from
-  `ShiftMapperBase` is a mapper, and a mapper's declarations become generated code, not metadata.
-  Put everything you want to ship in a profile.
-- **There is no attribute for a profile adding another profile.** In one compilation a profile may
-  call `AddProfile<Other>()` and the union is mapped; across a boundary the consuming generator has
-  no way to learn that `Other` was involved. Ship profiles the application adds directly, and let
-  the application list them.
+- **Every mapper and every pack is emitted**, and a mapper's declarations are ALSO generated code
+  in your assembly. There is no separate "profile" kind of class: what you ship is what you use.
+- **Composition crosses the boundary.** A mapper that includes another mapper or adds a pack in its
+  constructor writes that down, and a consumer that includes or registers your mapper follows it —
+  into a third assembly if that is where it leads. Types that are not public are left out, because
+  an attribute cannot name them.
 
 One known gap, recorded rather than hidden: a `MapFromSource` whose conversion your generator could
 not resolve is reported in **your** build as SM0002, and in a consumer that member falls through to
@@ -232,49 +257,67 @@ ordinary name matching instead of staying unmapped. Fix it where it is reported.
 
 ---
 
-## Profiles
+## Mappers and packs
 
-A profile is a place to write declarations, not a second mapper. Nothing is generated onto it —
-no `Map` methods, no projections. Its declarations become the declarations of every mapper that
-adds it, called through that mapper as if they had been written in its constructor. The
-[README](../README.md#profiles-maps-written-outside-the-mapper) covers the application's view;
-what follows is what matters when the profile is yours and the mapper is somebody else's.
+There is one kind of class for maps and one for rules. The [README](../README.md#composing-mappers-includemapper)
+covers the application's view; what follows is what matters when the mapper is yours and the
+application is somebody else's.
 
-**The surface is the mapper's surface.** `ShiftMapperProfile` derives from `ShiftMapperBase`, so
-`CreateMap`, the open generic `CreateMap`, `CreateConversion`, `CreateMemberConvention` and every
-refinement chained onto them are literally the same methods. Declarations may be split across
-private helper methods inside the profile; the generator reads the whole class body, not only the
-constructor. What it will not read is a declaration inside an `if`, a loop, a lambda or any other
-position it cannot bake — that is SM0035, an error, and it applies in your build exactly as it does
-in an application's, because it is the same generator.
+**A mapper is a mapper on both sides.** Your `PlatformMapper` gets its own generated `Map` methods
+in your assembly, and a consumer can use it three ways: include it (`IncludeMapper<PlatformMapper>()`
+— its maps become the including mapper's, re-baked there with the including mapper's rules where
+those are nearer), register it (`o.AddMapper<PlatformMapper>()` — injectable on its own, through the
+adapter described below), or both. Declarations may be split across private helper methods; the
+generator reads the whole class body, not only the constructor. What it will not read is a
+declaration inside an `if`, a loop, a lambda or any other position it cannot bake — that is
+SM0035, an error, and it applies in your build exactly as it does in an application's, because it
+is the same generator.
 
-**Defaults come from the mapper that adds you.** One mapper has one `ConfigureDefaults`, whichever
-file a map was written in. Overriding it on a profile is reported (SM0029) because it would
-otherwise be a reasonable guess that does nothing. If a map of yours needs a particular option, set
-it on that `CreateMap`; it travels as declared and wins over the application's default for that
-map only.
+**Its members are `virtual`, and it must not be `sealed`.** A consumer that registers your mapper
+directly cannot give your compiled `Map` methods its own packs, so its generator writes a SUBCLASS
+— the adapter — with the same maps re-baked and this project's rules baked in, overriding yours,
+and `AddShiftMapper` hands that out wherever your type is asked for. Nothing that injects your
+mapper can tell. A sealed mapper has nothing to override and is refused (SM0039); maps over your
+non-public types are `internal` and stay as you compiled them. Your constructors are mirrored on
+the adapter, so the same dependencies are injected.
 
-**Near beats far.** A pair the application declares both in your profile and in its own mapper
-keeps the application's version, and the clash is reported (SM0027). The same order holds at run
-time: the mapper's own registrations are in the store before profiles are merged in, and a merge
-never overwrites. So the generator and the runtime cannot disagree about which declaration ran.
+**Your defaults are yours.** `ConfigureDefaults` on your mapper governs your maps wherever they end
+up; it travels on the `ShiftMapperDeclaredMapper` marker. If a map of yours needs a particular
+option, set it on that `CreateMap`; it travels as declared and wins over your default for that map
+only.
 
-**Dependencies are allowed and resolved late.** A profile may take constructor arguments. It is
-resolved from the mapper's `Services` the first time anything is mapped, not while the mapper's
-constructor runs, because the service provider is not assigned until after that constructor
-returns. A parameterless profile needs no registration; one with parameters must be registered
-(`services.AddTransient<YourProfile>()`), or the first map throws naming the profile and the fix:
+**Near beats far.** A pair the application declares both in your mapper and in its own mapper
+keeps the application's version in that mapper, and the clash is reported (SM0027). The same order
+holds at run time: the including mapper's own registrations are in the store before yours are
+merged in, and a merge never overwrites. So the generator and the runtime cannot disagree about
+which declaration ran.
+
+**A pack holds rules and nothing else.** `ShiftMapperConversions` has `CreateConversion` and
+`CreateMemberConvention` and no `CreateMap`, so adding it cannot bring maps along, and it can be
+given to one mapper or to every mapper of a registration. Put the rules you want applications to
+apply to THEIR maps in a pack; a rule written on your mapper reaches only your mapper's maps, which
+is the point — including your mapper cannot change how the application's own `long`s render.
+
+**Dependencies are allowed and resolved late.** A mapper or pack may take constructor arguments. It
+is resolved from the consuming mapper's `Services` the first time anything is mapped — registered
+if the application registered it, constructed with its dependencies injected otherwise — not while
+the consuming mapper's constructor runs, because the service provider is not assigned until after
+that constructor returns. `AddShiftMapper` registers what a mapper composes along with it, so
+nothing needs registering by hand. A mapper built by hand has no provider, and a dependency then
+fails the first map naming the type:
 
 ```
-ShiftMapper: the profile 'X' takes constructor arguments, so it has to come from DI, but 'AppMapper'
-was not resolved from a service provider. Register the profile with services.AddTransient<X>() and
-resolve the mapper through AddShiftMapper, or give the profile a parameterless constructor.
+ShiftMapper: the mapper 'X' takes constructor arguments, so it has to come from DI, but 'AppMapper'
+was not resolved from a service provider. Resolve the mapper through AddShiftMapper, or give the
+mapper a parameterless constructor.
 ```
 
-For a package this is a design choice with a cost on the other side: **a profile with dependencies
-makes every mapper that adds it DI-only**, including in the application's tests, because all of a
-mapper's profiles are built together and one that cannot be built fails the first map. Prefer a
-parameterless profile. Where a rule genuinely needs a service, the profile has to take it through its constructor and be registered in DI (`services.AddTransient<YourProfile>()`); a profile's own `Services` property is never assigned — only the mapper's is — so an expression cannot reach one through it.
+For a package this is a design choice with a cost on the other side: **a dependency makes every
+mapper that includes you DI-only**, including in the application's tests, because everything a
+mapper composes is built together and one that cannot be built fails the first map. Prefer a
+parameterless constructor. An included mapper's or pack's own `Services` property is never
+assigned by inclusion — only a mapper resolved from DI has one — so an expression cannot reach one
+through it.
 
 ---
 
@@ -284,11 +327,12 @@ parameterless profile. Where a rule genuinely needs a service, the profile has t
 consulted by the same resolver that handles `int` to `string`, just before it would give up and
 report SM0002. It answers wherever the pair appears: a plain member, a collection element, a
 dictionary value, a constructor argument, a member inside a nested map. Written once, in your
-profile, it applies to maps in applications that have never heard of it.
+pack, it applies to maps in applications that have never heard of it — every map of every mapper
+the application gives the pack to.
 
 The README covers the rules that matter to any user — [a registered pair beats the built-in
-table, assignability with nearest-wins](../README.md#global-type-pair-conversions). Three things
-are specific to writing one that ships.
+table, nearest-wins by distance and by assignability](../README.md#packs-rules-shared-between-mappers).
+Three things are specific to writing one that ships.
 
 ### The memory form and the query form are a decision about two backends
 
@@ -306,7 +350,7 @@ Parsing a JSON column into objects is `System.Text.Json`'s job and no database c
 honest registration is:
 
 ```csharp
-CreateConversion<string?, List<FileDto>>(memory: PlatformConversions.ToFiles!);
+CreateConversion<string?, List<FileDto>>(memory: ToFiles!);
 ```
 
 That line **says** the pair cannot be projected. Every map in every consuming application that
@@ -331,9 +375,10 @@ looks like at run time.
 
 ### What travels, and how the consumer calls it
 
-The attribute carries the pair and `HasQueryForm`. Both expressions arrive from your profile's
-constructor at run time. The consuming generator emits `Customizations.Conversion<A, B>()(value)`
-for the memory form — the same line an in-project `CreateConversion` produces — and a splice
+The attribute carries the pair and `HasQueryForm`. Both expressions arrive from your pack's
+constructor at run time. The consuming generator emits
+`Customizations.Conversion<A, B>(typeof(YourConversions))(value)` for the memory form — the same
+line an in-project `CreateConversion` produces, naming the scope that answered — and a splice
 marker for the query form that the projection composer replaces with your tree, inlined around the
 member. The format reserves a `MemoryCall` field for a later optimisation that lifts a
 non-capturing lambda into a static method the consumer can call by name; today the declaring
@@ -342,13 +387,13 @@ slower than a conversion declared in the application's own source, because it is
 path.
 
 One version-skew case to know about. The consumer's generated code bakes in that the pair converts.
-If a later version of your package drops the conversion, or moves it to a profile the application
-no longer adds, and the application ships without rebuilding, the first map throws:
+If a later version of your package drops the conversion, or moves it to a pack the application does
+not add, and the application ships without rebuilding, the first map throws:
 
 ```
-ShiftMapper: no conversion is registered from 'Int64' to 'String'. It was declared with
-CreateConversion when this mapper was compiled, so the declaration has been removed or moved to a
-profile this mapper no longer adds.
+ShiftMapper: no conversion is registered from 'Int64' to 'String' by 'PlatformConversions'. It was
+declared with CreateConversion when this mapper was compiled, so the declaration has been removed,
+or the mapper no longer includes the mapper or adds the pack that declared it.
 ```
 
 Removing a conversion from a package is a breaking change for that reason.
@@ -412,7 +457,7 @@ CreateMemberConvention<SelectDto>()
 
 Two placeholders and no more, deliberately. The generator cannot execute your code, so a general
 callback was never on the table; the vocabulary has to be readable at compile time. If a rule
-cannot be said in it, write a `ForMember` in your profile for the pair in question — an explicit
+cannot be said in it, write a `ForMember` in your mapper for the pair in question — an explicit
 `ForMember` always wins over a convention.
 
 ### It resolves to text, which is why it reaches the projection
@@ -466,7 +511,7 @@ consumer would be an SM0011 error demanding a map from your DTO to their entity.
 ### It composes with your conversions
 
 Each value a convention fills goes through the ordinary conversion table. If the key is a `long`
-and your profile also registers the hash-id conversion, `Value` arrives hashed — neither rule
+and your pack also registers the hash-id conversion, `Value` arrives hashed — neither rule
 mentions the other. (In the sample `BrandId` is an `int`, so it is formatted by the built-in table
 instead; value types match a conversion exactly.)
 
@@ -485,11 +530,12 @@ not a weaker kind, and a cross-assembly test pins both facts.
 
 The generator that writes your metadata is the same generator that writes an application's mapper,
 and it has to run **over your package**. If it does not, your assembly carries no declaration
-attributes, and every application that adds your profile gets SM0028.
+attributes — and no generated `Map` methods — and every application that uses your mapper or pack
+gets SM0028.
 
 `dotnet add package ShiftSoftware.ShiftMapper` delivers both halves: `lib/net10.0` holds the
-runtime types your profile derives from, and `analyzers/dotnet/cs` holds the generator, which NuGet
-hands to the compiler. A library that references the package the ordinary way is already covered.
+runtime types your mapper and pack derive from, and `analyzers/dotnet/cs` holds the generator, which
+NuGet hands to the compiler. A library that references the package the ordinary way is already covered.
 Inside this repository, where there is no package, `Contoso.Platform` says the same thing with
 two project references:
 
@@ -508,8 +554,8 @@ Two things to keep true:
   reference, or any build arrangement that keeps generators from running over your library, leaves
   your DLL silent. Nothing fails in your build; the failure surfaces as SM0028 in someone else's.
 - **Do not hide the ShiftMapper dependency from consumers.** Your declaration attributes are
-  ShiftMapper types, and your profile derives from `ShiftMapperProfile`. A consumer has to be able
-  to resolve both, so the ShiftMapper reference must flow as an ordinary dependency of your package,
+  ShiftMapper types, and your mapper derives from `ShiftMapperBase`. A consumer has to be able to
+  resolve both, so the ShiftMapper reference must flow as an ordinary dependency of your package,
   not as `PrivateAssets="all"`.
 
 **Read what you shipped.** Turn on emitted generated files, and the metadata lands on disk where you
@@ -528,8 +574,8 @@ can open it:
 
 `Generated/ShiftMapper.Generator/ShiftMapper.Generator.ShiftMapperGenerator/ShiftMapper.Declarations.g.cs`
 is the file quoted earlier. If a rule you wrote is not in it, no consumer will see it. A project with
-no profiles produces no file at all — there is nothing to say and nothing is emitted, not even an
-empty header.
+no mappers and no packs produces no file at all — there is nothing to say and nothing is emitted,
+not even an empty header; a mapper that declares nothing still gets its marker.
 
 Your build also reports on your declarations as it reads them: SM0035 for a declaration in a
 position the generator cannot bake, SM0038 for a convention with no readable `Fill`, SM0002 for a
@@ -540,40 +586,36 @@ because they will not be reported again on the other side.
 
 ## The diagnostics addressed to a package author
 
-Thirty-eight rules exist; the [README table](../README.md#diagnostics) lists them. Four are about
-the boundary itself. They are reported in the **consuming** application's build, so what you will
+Forty rules exist; the [README table](../README.md#diagnostics) lists them. Five are about the
+boundary itself. They are reported in the **consuming** application's build, so what you will
 usually see is a bug report quoting one.
 
-**SM0028 — a referenced assembly carries no ShiftMapper declaration metadata.** Warning.
+**SM0028 — a referenced assembly carries no ShiftMapper declaration metadata.** Error.
 
 ```
-ShiftMapper: the profile 'PlatformProfile' is in a referenced assembly that carries no
-ShiftMapper declaration metadata, so nothing it declares could be read. That package has to be
-built with the ShiftMapper generator referenced as an analyzer.
+ShiftMapper: 'PlatformMapper' is in a referenced assembly that carries no ShiftMapper declaration
+metadata, so nothing it declares could be read. That package has to be built with the ShiftMapper
+generator referenced as an analyzer.
 ```
 
-The application called `AddProfile<T>()`, `T` lives in a reference, and that reference has no
-`[ShiftMapperContract]` and no declared-profile attributes naming `T`. The mapper compiles and maps
-nothing from the profile; at run time the profile's constructor still runs and fills the store, but
-no generated code reads from it. The fix is in your `.csproj`, above. It is a warning rather than an
-error because the assembly compiled and the mistake belongs to the package author, not to whoever
-is building now.
+The application included, registered or added a type of yours, and your assembly has no
+`[ShiftMapperContract]` and no marker naming that type. Nothing of yours can be baked, so the build
+stops rather than mapping nothing in silence. The fix is in your `.csproj`, above.
 
-**SM0031 — two assemblies declare a conversion for the same type pair.** Error.
+**SM0031 — two packs declare a conversion for the same type pair.** Error.
 
 ```
-ShiftMapper: 'PackageA' and 'PackageB' both declare a conversion from 'long' to 'string'. Near
-beats far everywhere else, but these are the same distance away, so which one applied would depend
-on reference order. Declare the pair in this project to settle it.
+ShiftMapper: 'FirstConversions' and 'SecondConversions' both declare a conversion from 'long' to
+'string'. Near beats far everywhere else, but these are the same distance away, so which one applied
+would depend on the order they were added. Declare the pair on the mapper to settle it.
 ```
 
-The one place near-beats-far cannot decide, so it is the one error in the group: whichever won,
-half the application's maps would convert the other way and nobody reading either package could see
-why. Two declarations of one pair from the **same** assembly stay silent — that is one package
-listing a pair twice, harmless and not the application's problem. A `CreateConversion` in the application's own source is nearer than either package, so it wins the lookup — and it clears the error, because the application has made the decision the rule was asking for. Removing one of the two `AddProfile` calls, or one package dropping the pair, settles it too.
-its own `CreateConversion`, which wins over both. For you, the lesson is to declare conversions for
-pairs you own; a rule for `long` to `string` will meet another package's rule for `long` to
-`string` eventually.
+The one place nearest-wins cannot decide, so it is an error: whichever won, half the application's
+maps would convert the other way and nobody reading either pack could see why. One pack listing a
+pair twice stays silent. A `CreateConversion` on the application's mapper, or a pack it adds
+itself when the clash is between registration-wide packs, is nearer than either and settles it.
+For you, the lesson is to declare conversions for pairs you own; a rule for `long` to `string` will
+meet another package's rule for `long` to `string` eventually.
 
 **SM0032 — a declared conversion could not be read.** Warning.
 
@@ -588,24 +630,35 @@ them and the one reading them disagree about the shape, in a way the contract ve
 catch. It exists so the pair fails loudly with the package named, rather than as a downstream SM0002
 with nothing to connect it to the package that was supposed to supply it.
 
-**SM0033 — a referenced assembly declares a newer ShiftMapper contract.** Warning.
+**SM0033 — a referenced assembly declares a different ShiftMapper contract.** Warning.
 
 ```
-ShiftMapper: 'PackageA' carries ShiftMapper declaration metadata version 2, and this ShiftMapper
-understands version 1. Its profiles were ignored. Update the ShiftMapper package in this project.
+ShiftMapper: 'PackageA' carries ShiftMapper declaration metadata version 1, and this ShiftMapper
+reads version 2. Its mappers and packs were ignored. Build the package and this project against the
+same ShiftMapper.
 ```
 
-Your package was built against a newer ShiftMapper than the application uses. The assembly is
-refused whole, so the application also gets SM0028 for each of your profiles it added — two messages
-for one cause, and the SM0033 is the one to act on. The fix is on the application's side; what you
-can do is state the ShiftMapper version your package needs, and not bump it lightly. The current
-contract version is 1.
+Your package was built against a different ShiftMapper than the application uses. The assembly is
+refused whole, so the application also gets SM0028 for each of your types it asked for — two
+messages for one cause, and the SM0033 is the one to act on. State the ShiftMapper version your
+package needs, and do not bump it lightly. The current contract version is 2.
+
+**SM0039 — a sealed mapper from a referenced assembly cannot be registered here.** Error.
+
+```
+ShiftMapper: 'PlatformMapper' is declared in 'Contoso.Platform' and is sealed, so this project cannot
+generate the adapter that applies its own packs to it. Unseal it in the package, or include it in a
+mapper of this project with IncludeMapper instead of registering it directly.
+```
+
+The application registered your mapper directly, and the adapter that would carry its packs has
+nothing to override. Do not seal a mapper you ship.
 
 ### The ones you cause but do not see
 
 Every projection-loss rule the README describes for a map applies to a map that arrived from you,
 and is reported in the consumer's build against their mapper class. A `BeforeMap` or `AfterMap` in
-your profile costs every consumer that map's projection (SM0018); a `ConstructUsing` does the same
+your mapper costs every consumer that map's projection (SM0018); a `ConstructUsing` does the same
 (SM0015); a `Condition` likewise (SM0017); a conversion with no query form costs every map that
 touches the pair (SM0030). The shape of each travels precisely so that the consumer's build can say
 so. Before you ship a hook, ask whether the value is derivable from the source — a `ForMember`
@@ -615,28 +668,31 @@ projects, and a hook does not.
 
 ## Checklist
 
-1. Put every declaration in a class deriving from `ShiftMapperProfile`, not `ShiftMapperBase`.
-   Only profiles are written to metadata.
-2. Keep the profile's constructor parameterless unless a rule genuinely needs a service; a
-   profile with dependencies makes every consuming mapper DI-only.
+1. Put maps in a `partial class` deriving from `ShiftMapperBase`, and rules in a class deriving
+   from `ShiftMapperConversions`. Every one of them is written to metadata; there is no other kind.
+2. Do not seal a mapper you ship (SM0039 for whoever registers it), and keep its constructor
+   parameterless unless a rule genuinely needs a service; a dependency makes every mapper that
+   includes it DI-only.
 3. Write declarations in statement position — constructor body, expression-bodied constructor, or
    private helper methods — never inside `if`, loops or lambdas (SM0035).
-4. Do not add other profiles from a package profile and expect the consumer to see them; ship
-   profiles the application adds directly.
-5. For each `CreateConversion`, decide the query form deliberately. Supply one that produces the
+4. A mapper may include other mappers and add packs in its constructor; that composition travels,
+   so a consumer that includes or registers the mapper follows it.
+5. Put rules meant for the APPLICATION's maps in a pack, not on your mapper. A rule on your mapper
+   reaches only your mapper's maps, by design.
+6. For each `CreateConversion`, decide the query form deliberately. Supply one that produces the
    same value as the memory form, or omit it and accept that every map touching the pair reports
    SM0030 in every consumer. Never invent a query form that returns something different.
-6. Register conversions for pairs you own. A pair another package might also claim is an SM0031
-   error for whoever references both.
-7. For a convention, use `FillIfPossible` for anything that reads through a navigation or an
+7. Register conversions for pairs you own. A pair another package's pack might also claim is an
+   SM0031 error for whoever adds both at the same level.
+8. For a convention, use `FillIfPossible` for anything that reads through a navigation or an
    attribute-nominated member, so one rule serves the id-only shape too. Add
    `WhenDestinationIs<T>()` if your member type could appear in types that are not yours.
-8. Reference `ShiftSoftware.ShiftMapper` as an ordinary dependency: analyzers included, not
+9. Reference `ShiftSoftware.ShiftMapper` as an ordinary dependency: analyzers included, not
    `PrivateAssets="all"`.
-9. Turn on `EmitCompilerGeneratedFiles` and read `ShiftMapper.Declarations.g.cs` before you
-   publish. If a rule is not in that file, no consumer will get it.
-10. Treat removing or moving a declaration as a breaking change: a consumer's generated code bakes
+10. Turn on `EmitCompilerGeneratedFiles` and read `ShiftMapper.Declarations.g.cs` before you
+    publish. If a rule is not in that file, no consumer will get it.
+11. Treat removing or moving a declaration as a breaking change: a consumer's generated code bakes
     in that the pair converts, and one that ships without rebuilding throws on first map.
-11. Fix SM0035, SM0038 and SM0002 in your own build; they are not repeated on the other side.
-12. State the ShiftMapper version your package was built against. An application on an older one
-    gets SM0033 and SM0028, and nothing from you.
+12. Fix SM0035, SM0038 and SM0002 in your own build; they are not repeated on the other side.
+13. State the ShiftMapper version your package was built against. An application on a different
+    one gets SM0033 and SM0028, and nothing from you.

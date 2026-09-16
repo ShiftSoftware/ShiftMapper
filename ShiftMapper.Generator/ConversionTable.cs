@@ -1,11 +1,21 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
+using System.Linq;
 using Microsoft.CodeAnalysis;
 
 namespace ShiftMapper.Generator;
 
 /// <summary>
-/// The global type-pair conversions one mapper declared — what <c>CreateConversion</c> registers.
+/// The type-pair conversions that can answer for the maps of ONE declaring scope — what
+/// <c>CreateConversion</c> registers, arranged by how near each registration is.
+///
+/// <para><b>LEVELS.</b> Every entry carries the scope that declared it (a mapper or a pack) and a
+/// level: 0 for the declaring mapper's own rules, then the packs it added, then the mapper being
+/// generated and its packs when that is a different mapper, then the packs the registration gave
+/// every mapper. <see cref="Find"/> walks the levels in that order and the first level with an
+/// answer wins, so a rule written nearer to the map always beats one written further away —
+/// which is the rule the runtime does NOT have to reproduce, because the generated call names the
+/// scope this found.</para>
 ///
 /// <para><b>THIS ONE HOLDS SYMBOLS, unlike everything that reaches <see cref="MapModel"/>.</b> It is
 /// allowed to, because it never survives the analysis: it is built from the declaration syntax at
@@ -64,80 +74,102 @@ internal sealed class ConversionTable
     /// <summary>Whether anything is registered at all — the cheap test before any symbol work.</summary>
     public bool IsEmpty => _entries.Count == 0;
 
-    public void Add(ITypeSymbol source, ITypeSymbol destination, bool hasQueryForm) =>
-        _entries.Add(new Entry(source, destination, hasQueryForm));
+    /// <summary>Every entry, for building a chain out of several scopes' tables.</summary>
+    public IReadOnlyList<Entry> Entries => _entries;
 
     /// <summary>
-    /// Adds a conversion DECLARED BY A REFERENCED ASSEMBLY, whose members the generator can name.
+    /// Adds a conversion read from SOURCE, declared by <paramref name="scope"/>.
+    ///
+    /// <para>A scope that registers the same pair twice keeps the LAST one, because that is what
+    /// its constructor does to the runtime dictionary, and the two halves have to agree.</para>
     /// </summary>
+    public void Add(string scope, int level, ITypeSymbol source, ITypeSymbol destination, bool hasQueryForm) =>
+        Put(new Entry(scope, level, source, destination, hasQueryForm));
+
     /// <summary>
-    /// Adds a conversion a PROFILE declared, recovered from metadata.
+    /// Adds a conversion DECLARED BY A REFERENCED ASSEMBLY, recovered from metadata.
     ///
     /// <para><paramref name="hasQueryForm"/> is separate from <paramref name="queryAccess"/> on
-    /// purpose. A profile's query expression is not a named member anywhere — it is a lambda that
-    /// its constructor registers at run time, which <c>AddProfile</c> already runs — so the pair
-    /// projects with nothing to name. Deriving "has a query form" from "has a member to call" would
-    /// declare every profile conversion unprojectable.</para>
+    /// purpose. A declared query expression is not a named member anywhere — it is a lambda that
+    /// the declaring constructor registers at run time, which materialisation already runs — so
+    /// the pair projects with nothing to name. Deriving "has a query form" from "has a member to
+    /// call" would declare every declared conversion unprojectable.</para>
     /// </summary>
     public void AddDeclared(
+        string scope,
+        int level,
         ITypeSymbol source,
         ITypeSymbol destination,
         bool hasQueryForm,
         string? memoryCall = null,
         string? queryAccess = null,
         string? declaringAssembly = null) =>
-        _entries.Add(new Entry(
-            source, destination, hasQueryForm, memoryCall, queryAccess, declaringAssembly));
+        Put(new Entry(scope, level, source, destination, hasQueryForm, memoryCall, queryAccess, declaringAssembly));
+
+    /// <summary>Adds an entry as-is — how a chain is assembled from several scopes' tables.</summary>
+    public void Add(Entry entry) => Put(entry);
+
+    private void Put(Entry entry)
+    {
+        for (int i = 0; i < _entries.Count; i++)
+        {
+            Entry existing = _entries[i];
+
+            if (existing.Scope == entry.Scope
+                && SymbolEqualityComparer.Default.Equals(existing.Source, entry.Source)
+                && SymbolEqualityComparer.Default.Equals(existing.Destination, entry.Destination))
+            {
+                _entries[i] = entry;
+                return;
+            }
+        }
+
+        _entries.Add(entry);
+    }
 
     /// <summary>
-    /// SM0031 — pairs that MORE THAN ONE referenced assembly claims, as ready-made messages.
+    /// SM0031 — pairs that MORE THAN ONE scope at the SAME level claims, as ready-made messages.
     ///
-    /// <para>An ERROR, and the one case where near-beats-far cannot decide: two packages are the
-    /// same distance away, so whichever the generator picked would be arbitrary and the answer
-    /// would change when a reference was reordered. The application has to say which it wants.</para>
-    ///
-    /// <para>Two declarations from the SAME assembly stay silent — that is one package listing a
-    /// pair twice, which is harmless and not the application's problem to solve.</para>
+    /// <para>An ERROR, and the one case where near-beats-far cannot decide: two packs given to the
+    /// same mapper are the same distance away, so whichever the generator picked would be arbitrary
+    /// and the answer would change when a line was reordered. The mapper has to say which it
+    /// wants — and a declaration at a NEARER level does exactly that, which is why a pair settled
+    /// there stays silent.</para>
     /// </summary>
     public IEnumerable<string> ConflictingDeclarations
     {
         get
         {
-            var byPair = new Dictionary<string, SortedSet<string>>(StringComparer.Ordinal);
-
-            // Pairs THIS project declared in its own source. A local declaration is nearer than any
-            // package, so it wins the lookup outright — and the message below tells the developer
-            // to write one to settle the clash. That promise was empty until this set existed: local
-            // entries were skipped and the error fired regardless, so the fix the message named
-            // did not work.
-            var settledLocally = new HashSet<string>(StringComparer.Ordinal);
+            // pair -> level -> scopes claiming it
+            var byPair = new Dictionary<string, SortedDictionary<int, SortedSet<string>>>(StringComparer.Ordinal);
 
             foreach (Entry entry in _entries)
             {
                 string pair = entry.Source.ToDisplayString() + " -> " + entry.Destination.ToDisplayString();
 
-                if (entry.DeclaringAssembly is null)
-                {
-                    settledLocally.Add(pair);
-                    continue;
-                }
+                if (!byPair.TryGetValue(pair, out SortedDictionary<int, SortedSet<string>> levels))
+                    byPair[pair] = levels = new SortedDictionary<int, SortedSet<string>>();
 
-                if (!byPair.TryGetValue(pair, out SortedSet<string> assemblies))
-                    byPair[pair] = assemblies = new SortedSet<string>(StringComparer.Ordinal);
+                if (!levels.TryGetValue(entry.Level, out SortedSet<string> scopes))
+                    levels[entry.Level] = scopes = new SortedSet<string>(StringComparer.Ordinal);
 
-                assemblies.Add(entry.DeclaringAssembly);
+                scopes.Add(Readable(entry.Scope));
             }
 
-            foreach (KeyValuePair<string, SortedSet<string>> pair in byPair)
+            foreach (KeyValuePair<string, SortedDictionary<int, SortedSet<string>>> pair in byPair)
             {
-                if (pair.Value.Count < 2 || settledLocally.Contains(pair.Key))
+                // The NEAREST level that claims the pair is the one that answers. A clash there is
+                // an error; a clash further away has already been settled.
+                SortedSet<string> nearest = pair.Value.First().Value;
+
+                if (nearest.Count < 2)
                     continue;
 
                 yield return
-                    "SM0031|'" + string.Join("' and '", pair.Value) + "' both declare a conversion " +
+                    "SM0031|'" + string.Join("' and '", nearest) + "' both declare a conversion " +
                     "from '" + pair.Key.Replace(" -> ", "' to '") + "'. Near beats far everywhere " +
                     "else, but these are the same distance away, so which one applied would depend " +
-                    "on reference order. Declare the pair in this project to settle it.";
+                    "on the order they were added. Declare the pair on the mapper to settle it.";
             }
         }
     }
@@ -162,7 +194,7 @@ internal sealed class ConversionTable
                     continue;
 
                 string line =
-                    $"customizations.RegisterQueryConversion(typeof({Full(entry.Source)}), " +
+                    $"customizations.RegisterQueryConversion(typeof({entry.Scope}), typeof({Full(entry.Source)}), " +
                     $"typeof({Full(entry.Destination)}), {entry.QueryAccess});";
 
                 if (seen.Add(line))
@@ -177,18 +209,29 @@ internal sealed class ConversionTable
     private static string Short(ITypeSymbol type) =>
         type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
 
+    /// <summary><c>global::A.B.C</c> as <c>C</c>, for a message.</summary>
+    private static string Readable(string scope)
+    {
+        int dot = scope.LastIndexOf('.');
+
+        return dot < 0 ? scope : scope.Substring(dot + 1);
+    }
+
     /// <summary>
     /// The registration that answers for a pair, or null.
     ///
-    /// <para><b>EXACT FIRST, THEN THE NEAREST BASE.</b> A conversion registered for a base type
-    /// answers for everything assignable to it, which is what lets one rule cover an entity
-    /// hierarchy a framework has never seen. Nearest-by-inheritance wins so that a general rule can
-    /// always be narrowed for a particular type.</para>
+    /// <para><b>NEAREST LEVEL FIRST; within a level, EXACT FIRST, THEN THE NEAREST BASE.</b> A
+    /// conversion registered for a base type answers for everything assignable to it, which is what
+    /// lets one rule cover an entity hierarchy a framework has never seen. Nearest-by-inheritance
+    /// wins so that a general rule can always be narrowed for a particular type — but only within
+    /// a level: a rule the mapper wrote for a base type still beats a pack's rule for the exact
+    /// type, because the mapper is nearer than the pack.</para>
     ///
-    /// <para>This is deliberately the same rule the RUNTIME store applies, and it has to be: the
-    /// generator decides here that a conversion exists and emits a lookup, and the runtime decides
-    /// again which registration answers. Two different rules would mean generated code that finds
-    /// a different conversion from the one its diagnostics described.</para>
+    /// <para>This is deliberately the same rule the RUNTIME store applies within a scope, and it
+    /// has to be: the generator decides here that a conversion exists and names its scope in the
+    /// generated call, and the runtime decides again which registration in that scope answers.
+    /// Two different rules would mean generated code that finds a different conversion from the
+    /// one its diagnostics described.</para>
     ///
     /// <para>The destination is matched EXACTLY. A conversion's identity is what it produces, and
     /// widening that to assignability would let a rule producing a base type quietly satisfy a
@@ -197,17 +240,28 @@ internal sealed class ConversionTable
     public Entry? Find(ITypeSymbol source, ITypeSymbol destination)
     {
         Entry? best = null;
+        int bestLevel = int.MaxValue;
         int bestDistance = int.MaxValue;
 
         foreach (Entry entry in _entries)
         {
+            if (entry.Level > bestLevel)
+                continue;
+
             if (!SymbolEqualityComparer.Default.Equals(entry.Destination, destination))
                 continue;
 
             if (SymbolEqualityComparer.Default.Equals(entry.Source, source))
             {
-                _used.Add(entry);
-                return entry;
+                // Exact at this level beats anything at this level and everything further away.
+                if (entry.Level < bestLevel || bestDistance > 0)
+                {
+                    best = entry;
+                    bestLevel = entry.Level;
+                    bestDistance = 0;
+                }
+
+                continue;
             }
 
             // VALUE TYPES ONLY EVER MATCH EXACTLY. Assignability would say an int is an object,
@@ -219,8 +273,9 @@ internal sealed class ConversionTable
 
             int distance = Distance(source, entry.Source);
 
-            if (distance < bestDistance)
+            if (entry.Level < bestLevel || distance < bestDistance)
             {
+                bestLevel = entry.Level;
                 bestDistance = distance;
                 best = entry;
             }
@@ -281,6 +336,8 @@ internal sealed class ConversionTable
     internal sealed class Entry
     {
         public Entry(
+            string scope,
+            int level,
             ITypeSymbol source,
             ITypeSymbol destination,
             bool hasQueryForm,
@@ -288,6 +345,8 @@ internal sealed class ConversionTable
             string? queryAccess = null,
             string? declaringAssembly = null)
         {
+            Scope = scope;
+            Level = level;
             Source = source;
             Destination = destination;
             HasQueryForm = hasQueryForm;
@@ -295,6 +354,19 @@ internal sealed class ConversionTable
             QueryAccess = queryAccess;
             DeclaringAssembly = declaringAssembly;
         }
+
+        /// <summary>
+        /// The mapper or pack that declared it, fully qualified with <c>global::</c> — what the
+        /// generated call passes as <c>typeof(...)</c> so the runtime looks in the same place.
+        /// </summary>
+        public string Scope { get; }
+
+        /// <summary>How far from the map: 0 is the declaring mapper's own rules.</summary>
+        public int Level { get; }
+
+        /// <summary>Same entry, placed at another level — for assembling a chain.</summary>
+        public Entry AtLevel(int level) =>
+            new(Scope, level, Source, Destination, HasQueryForm, MemoryCall, QueryAccess, DeclaringAssembly);
 
         /// <summary>
         /// The referenced assembly this came from, or null when it was declared in source.

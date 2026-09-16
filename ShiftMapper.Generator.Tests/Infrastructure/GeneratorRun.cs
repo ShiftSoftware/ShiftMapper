@@ -12,12 +12,14 @@ public sealed class GeneratorRun
         string source,
         ImmutableArray<Diagnostic> diagnostics,
         ImmutableArray<string> generatedFiles,
-        ImmutableArray<Diagnostic> compilerErrors)
+        ImmutableArray<Diagnostic> compilerErrors,
+        ImmutableArray<string> declarationMetadata = default)
     {
         Source = source;
         Diagnostics = diagnostics;
         GeneratedFiles = generatedFiles;
         CompilerErrors = compilerErrors;
+        DeclarationMetadata = declarationMetadata.IsDefault ? ImmutableArray<string>.Empty : declarationMetadata;
     }
 
     /// <summary>The snippet, kept so a diagnostic's span can be turned back into the code it names.</summary>
@@ -26,8 +28,17 @@ public sealed class GeneratorRun
     /// <summary>What the generator reported — the SM#### messages.</summary>
     public ImmutableArray<Diagnostic> Diagnostics { get; }
 
-    /// <summary>The files the generator wrote, in the order it wrote them.</summary>
+    /// <summary>The mapper files the generator wrote, in the order it wrote them.</summary>
     public ImmutableArray<string> GeneratedFiles { get; }
+
+    /// <summary>
+    /// The declaration METADATA file — what this compilation's mappers and packs declare, as
+    /// assembly attributes — kept apart from the mapper code.
+    /// </summary>
+    public ImmutableArray<string> DeclarationMetadata { get; }
+
+    /// <summary>The metadata as one string.</summary>
+    public string Metadata => string.Join(Environment.NewLine, DeclarationMetadata);
 
     /// <summary>Errors from compiling the snippet WITH the generated files added.</summary>
     public ImmutableArray<Diagnostic> CompilerErrors { get; }
@@ -54,6 +65,10 @@ public static class GeneratorRunAssertions
 
         return matches[0];
     }
+
+    /// <summary>Every diagnostic with this id, possibly none.</summary>
+    public static Diagnostic[] All(this GeneratorRun run, string id) =>
+        run.Diagnostics.Where(d => d.Id == id).ToArray();
 
     /// <summary>Asserts the generator said nothing with this id.</summary>
     public static void None(this GeneratorRun run, string id)

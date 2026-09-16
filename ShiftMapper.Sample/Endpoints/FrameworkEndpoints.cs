@@ -1,4 +1,5 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using Contoso.Platform;
 using ShiftMapper.Sample.Data;
 using ShiftMapper.Sample.Dtos;
 using ShiftMapper.Sample.Mapping;
@@ -9,15 +10,15 @@ namespace ShiftMapper.Sample.Endpoints;
 /// RULES FROM A REFERENCED ASSEMBLY — a package's conversions, arriving as metadata, in two endpoints.
 ///
 /// <para>The map behind this is <c>CreateMap&lt;Brand, BrandFilesDto&gt;()</c> and one
-/// <c>AddProfile&lt;PlatformProfile&gt;()</c>. This project declares no conversion and never names
-/// <c>PlatformConversions</c>. Both conversions arrive from <c>Contoso.Platform</c>, a compiled
+/// <c>o.AddConversions&lt;PlatformConversions&gt;()</c> in Program.cs. This project declares no
+/// conversion of its own. Both conversions arrive from <c>Contoso.Platform</c>, a compiled
 /// assembly referenced the way a NuGet package would be.</para>
 ///
 /// <para>How, given that a generator sees a reference as METADATA with no method bodies: the
-/// package's OWN build wrote the SHAPE of its profile's declarations into the assembly as
-/// attributes, and <c>AddProfile</c> runs the profile's constructor at run time so the
-/// expressions arrive then. A package built without the generator carries no such metadata, and
-/// that is reported (SM0028) rather than silently mapped as nothing.</para>
+/// package's OWN build wrote the SHAPE of its pack's declarations into the assembly as
+/// attributes, and adding the pack runs its constructor at run time so the expressions arrive
+/// then. A package built without the generator carries no such metadata, and that is reported
+/// (SM0028) rather than silently mapped as nothing.</para>
 /// </summary>
 public static class FrameworkEndpoints
 {
@@ -95,6 +96,32 @@ public static class FrameworkEndpoints
             return Results.Ok(dtos);
         })
         .WithName("GetBrandFiles")
+        .WithTags("Framework");
+
+        // GET /api/framework/files
+        //
+        // THE PACKAGE'S OWN MAPPER, INJECTED. PlatformMapper is a class compiled inside
+        // Contoso.Platform, registered directly in Program.cs — and what arrives here is not that
+        // class but the ADAPTER this project's generator wrote for it: a subclass with this
+        // project's packs baked in. FileSummary.Size is a long in the package; the package's own
+        // code would render it with the built-in conversion ("42"), and this one renders the hash
+        // id ("H42") because Program.cs gave every mapper the pack. Nothing in this file can tell
+        // the difference except the type name it prints.
+        app.MapGet("/api/framework/files", (PlatformMapper platform) =>
+        {
+            var files = new List<FileDto>
+            {
+                new() { Name = "  report.pdf ", Url = "/files/1", Size = 42 },
+                new() { Name = "photo.jpg", Url = "/files/2", Size = 1_048_576 },
+            };
+
+            return Results.Ok(new
+            {
+                resolved = platform.GetType().Name,
+                summaries = platform.MapToFileSummaryList(files),
+            });
+        })
+        .WithName("GetFrameworkFiles")
         .WithTags("Framework");
     }
 }

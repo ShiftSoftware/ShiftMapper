@@ -244,7 +244,7 @@ public class MemberConventionTests
             """CreateConversion<long, string>(id => "H" + id, id => "H" + id);""");
 
         run.Compiles()
-           .Emits("Value = Customizations.Conversion<long, string>()(source.BrandId)")
+           .Emits("Value = Customizations.Conversion<long, string>(typeof(global::TestMapper))(source.BrandId)")
            .DoesNotEmit("Value = global::ShiftMapper.ValueConverter.ToInvariantString(source.BrandId)");
     }
 
@@ -557,9 +557,9 @@ public class MemberConventionTests
                 public string Text { get; set; } = "";
             }
 
-            public sealed class FrameworkProfile : ShiftMapperProfile
+            public sealed class FrameworkPack : ShiftMapperConversions
             {
-                public FrameworkProfile()
+                public FrameworkPack()
                 {
                     CreateMemberConvention<SelectDTO>()
                         .NameFrom<KeyAndNameAttribute>("Text")
@@ -587,7 +587,7 @@ public class MemberConventionTests
             {
                 public TestMapper()
                 {
-                    AddProfile<FrameworkProfile>();
+                    AddConversions<FrameworkPack>();
                     CreateMap<Order, OrderDto>();
                 }
             }
@@ -602,7 +602,7 @@ public class MemberConventionTests
 
     /// <summary>
     /// A CONVENTION DECLARED IN A PACKAGE, which is the shape a framework needs: the framework
-    /// ships the rule, an application adds the profile, and its own DTOs are filled by a rule that
+    /// ships the rule in a pack, an application adds it, and its own DTOs are filled by a rule that
     /// names none of its types.
     ///
     /// <para>It rides the declaration metadata like everything else, so what comes back is the same
@@ -633,9 +633,9 @@ public class MemberConventionTests
                 public string Text { get; set; } = "";
             }
 
-            public class FrameworkProfile : ShiftMapperProfile
+            public class FrameworkPack : ShiftMapperConversions
             {
-                public FrameworkProfile() =>
+                public FrameworkPack() =>
                     CreateMemberConvention<SelectDTO>()
                         .NameFrom<KeyAndNameAttribute>("Text")
                         .Fill(d => d.Value, "{Member}ID")
@@ -667,7 +667,7 @@ public class MemberConventionTests
             {
                 public TestMapper()
                 {
-                    AddProfile<FrameworkProfile>();
+                    AddConversions<FrameworkPack>();
                     CreateMap<Product, ProductListDto>();
                 }
             }
