@@ -592,8 +592,8 @@ public partial class AppMapper : ShiftMapperBase
         // ShiftFramework — is referenced the way a NuGet package would be: a compiled assembly,
         // no source. Its PACK declares two conversions with the ORDINARY API — the same
         // CreateConversion this file could use — and its own build wrote their SHAPE into the
-        // assembly as metadata. Program.cs gives that pack to EVERY mapper it registers with one
-        // line, o.AddConversions<PlatformConversions>(), which is how this mapper takes them; the
+        // assembly as metadata. The package's own registration SHARES that pack with every project
+        // that references it, so every mapper Program.cs registers takes it without naming it; the
         // expressions arrive at run time when that pack's constructor runs.
         //
         //   string        -> List<FileDto>   (a JSON column becoming files; memory form only)
@@ -638,19 +638,21 @@ public partial class AppMapper : ShiftMapperBase
         // have both forms, and it projects.
         CreateMap<Brand, BrandHashDto>();
 
-        // A PACKAGE'S RULES, FROM THE REGISTRATION. Nothing in this constructor names
-        // Contoso.Platform's pack, and every map above that converts a long or a JSON column got
-        // its rules anyway: Program.cs writes o.AddConversions<PlatformConversions>() once, for
-        // every mapper it registers, and the generator bakes that into this class exactly as if
-        // the line were here. (Writing AddConversions<PlatformConversions>() HERE instead would
-        // give it to this mapper alone, and would win over the registration-wide one.)
+        // A PACKAGE'S RULES, SHARED BY THE PACKAGE. Nothing in this constructor names
+        // Contoso.Platform's pack, nothing in Program.cs does either, and every map above that
+        // converts a long, a JSON column or a SelectDto got its rules anyway: the package's own
+        // registration wrote o.ShareConversions<PlatformConversions>(), its build recorded that in
+        // metadata, and this project's generator baked the pack into every mapper Program.cs
+        // registers exactly as if o.AddConversions<PlatformConversions>() had been written there.
+        // It sits at the furthest level, so a rule written here or in a pack of this project's
+        // own wins over it; writing AddConversions<PlatformConversions>() HERE is allowed and
+        // changes only that.
         //
-        // The package's MAPPER is registered directly in Program.cs rather than included here —
-        // nothing in this mapper nests a FileSummary, so there is nothing to include it for. Had
-        // there been, IncludeMapper<PlatformMapper>() is the one line, identical to including a
-        // mapper from this project. Either way it is OPT-IN: referencing the package changes
-        // nothing until something asks for it, so a package cannot quietly alter how your maps
-        // behave.
+        // The package's MAPPER is registered by the package itself, in AddContosoPlatform(),
+        // rather than included here — nothing in this mapper nests a FileSummary, so there is
+        // nothing to include it for. Had there been, IncludeMapper<PlatformMapper>() is the one
+        // line, identical to including a mapper from this project. Maps stay opt-in; a shared
+        // pack is the one thing a package applies on your behalf, and the build names it (SM0043).
     }
 
     /// <summary>Proof that constructor injection works on this class.</summary>

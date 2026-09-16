@@ -915,6 +915,42 @@ internal static class DiagnosticDescriptors
         description: "Declare the pair once. When two included mappers both declare it, keep it in " +
                      "one of them, or declare it on the including mapper, whose own declaration wins.");
 
+    /// <summary>
+    /// SM0043 — a referenced package shared a pack with this project, and this registration got it.
+    ///
+    /// INFO, and deliberately not silent: a shared pack is the one declaration that reaches a
+    /// project without the project naming the type, so the build says which packs arrived and from
+    /// where. It sits at the furthest level; anything the registration wrote itself still wins.
+    /// </summary>
+    public static readonly DiagnosticDescriptor SharedPackApplied = new(
+        id: "SM0043",
+        title: "A referenced package shared a pack with every mapper this call registers",
+        messageFormat: "ShiftMapper: {0}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Info,
+        isEnabledByDefault: true,
+        description: "A package wrote o.ShareConversions<T>() in its own registration, so the pack " +
+                     "is applied to every mapper this project registers, after everything the " +
+                     "project wrote itself. Nothing to do; a rule of your own for the same pair " +
+                     "wins.");
+
+    /// <summary>
+    /// SM0044 — a pack shared with referencing projects that they could not name.
+    ///
+    /// AN ERROR in the sharing project's build: the referencing project's generated code names the
+    /// pack in an assembly attribute and in every conversion call, and a non-public type there is a
+    /// compile error in a file nobody can edit. Reported where it can be fixed.
+    /// </summary>
+    public static readonly DiagnosticDescriptor SharedPackNotPublic = new(
+        id: "SM0044",
+        title: "A shared pack must be public",
+        messageFormat: "ShiftMapper: {0}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true,
+        description: "Make the pack public, or add it with AddConversions for this project's " +
+                     "mappers alone.");
+
     public static readonly ImmutableArray<DiagnosticDescriptor> All = ImmutableArray.Create(
         NoSourceProperty,
         NotConvertible,
@@ -956,6 +992,8 @@ internal static class DiagnosticDescriptors
         MapperCannotBeAdapted,
         RegistrationAmbiguous,
         RegistrationsDiffer,
-        MapDeclaredTwice);
+        MapDeclaredTwice,
+        SharedPackApplied,
+        SharedPackNotPublic);
 }
 

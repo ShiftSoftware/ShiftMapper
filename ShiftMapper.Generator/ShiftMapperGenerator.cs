@@ -141,6 +141,16 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                 : ImmutableArray<MapperClassModel>.Empty);
 
         context.RegisterSourceOutput(adapters, static (spc, models) => EmitAdapters(spc, models));
+
+        // THE FOURTH OUTPUT: what this project's registrations SHARE with every project that
+        // references it — o.ShareConversions<T>() — written into the assembly as metadata, the way
+        // a mapper's declarations are. Driven by the same calls, and a string, so an unchanged
+        // registration re-emits nothing.
+        IncrementalValueProvider<string> shared = registers
+            .Combine(context.CompilationProvider)
+            .Select(static (pair, ct) => pair.Left ? SharedPackDeclarations(pair.Right, ct) : string.Empty);
+
+        context.RegisterSourceOutput(shared, static (spc, source) => EmitSharedPacks(spc, source));
     }
 
     // ---------------------------------------------------------------------
@@ -530,7 +540,10 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         for (INamedTypeSymbol? container = classSymbol.ContainingType; container is not null; container = container.ContainingType)
             containers.Insert(0, container.Name);
 
-        // What the registration composed into THIS mapper, for the metadata the runtime reads.
+        // What the registration composed into THIS mapper, for the metadata the runtime reads —
+        // including what referenced packages shared with every registration, which the set already
+        // holds for a registered mapper. Recorded here so the runtime applies the shared pack from
+        // the composition alone, without opening a reference of its own.
         var registrationComposition = new List<string>();
 
         foreach (RegisteredMapper registered in ReadRegistrations(compilation, cancellationToken).Mappers)
@@ -538,7 +551,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             if (registered.Mapper != set.Own.Name)
                 continue;
 
-            foreach (INamedTypeSymbol composed in registered.IncludeTypes.Concat(registered.PackTypes).Concat(registered.CallPacks))
+            foreach (INamedTypeSymbol composed in registered.IncludeTypes.Concat(registered.PackTypes).Concat(registered.CallPacks).Concat(set.ReferencedPacks))
             {
                 string name = FullName(composed);
 

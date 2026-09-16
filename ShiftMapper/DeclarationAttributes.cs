@@ -117,6 +117,27 @@ public sealed class ShiftMapperDeclaredCompositionAttribute : Attribute
 }
 
 /// <summary>
+/// Says that a registration in this assembly SHARED a pack — <c>o.ShareConversions&lt;T&gt;()</c> —
+/// with every project that references it. The generator compiling such a project reads this and
+/// gives the pack to every mapper its own <c>AddShiftMapper</c> calls register, exactly as if
+/// <c>o.AddConversions&lt;T&gt;()</c> had been written at the end of each call.
+///
+/// <para>This is the one declaration that acts without the consumer naming the type, and it is
+/// deliberately the PACKAGE that says so: a framework's hash ids and select conventions are rules
+/// every application should map by, and a line each application has to remember is a line one
+/// of them forgets. The pack sits at the furthest level, so anything the application writes still
+/// wins, and the build says which packs arrived this way (SM0043).</para>
+/// </summary>
+[AttributeUsage(AttributeTargets.Assembly, AllowMultiple = true, Inherited = false)]
+public sealed class ShiftMapperDeclaredSharedPackAttribute : Attribute
+{
+    public ShiftMapperDeclaredSharedPackAttribute(Type pack) => Pack = pack;
+
+    /// <summary>The pack, which every registration in a referencing project receives.</summary>
+    public Type Pack { get; }
+}
+
+/// <summary>
 /// Names the ADAPTER the generator wrote in this assembly for a mapper registered from a referenced
 /// package — the subclass that re-bakes the package's maps with this project's conversions.
 /// <c>AddShiftMapper</c> reads it to hand out the adapter where the package type was asked for.

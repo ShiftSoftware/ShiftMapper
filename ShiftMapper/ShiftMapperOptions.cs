@@ -15,6 +15,13 @@ namespace ShiftMapper;
 ///     o.AddMapper&lt;PlatformMapper&gt;();               // from a referenced package
 ///     o.AddConversions&lt;PlatformConversions&gt;();     // every mapper above
 /// });
+///
+/// // in a package, registering on behalf of every project that references it
+/// services.AddShiftMapper(o =&gt;
+/// {
+///     o.AddMapper&lt;PlatformMapper&gt;();
+///     o.ShareConversions&lt;PlatformConversions&gt;();   // every mapper above, and every mapper every referencing project registers
+/// });
 /// </code>
 ///
 /// <para><b>THE GENERATOR READS THIS LAMBDA.</b> Everything written here is baked into the mappers
@@ -62,6 +69,30 @@ public sealed class ShiftMapperOptions
     /// itself, and a rule a mapper declared itself, still win over it.
     /// </summary>
     public ShiftMapperOptions AddConversions<TPack>() where TPack : ShiftMapperConversions
+    {
+        _packs.Add(typeof(TPack));
+
+        return this;
+    }
+
+    /// <summary>
+    /// <see cref="AddConversions{TPack}"/>, and the same for EVERY <c>AddShiftMapper</c> call in
+    /// every project that references this one — a pack written for you at the end of each of their
+    /// calls, so a framework's rules reach every application without a line each one has to
+    /// remember.
+    ///
+    /// <para>Written by a PACKAGE, in the registration its own <c>AddXxx</c> extension makes. Its
+    /// build writes the pack down in metadata; the generator compiling a referencing project reads
+    /// that and bakes the pack into every mapper the project registers, at the furthest level, so
+    /// anything the project writes itself still wins. The project's build says which packs arrived
+    /// this way (SM0043). The pack must be public (SM0044), because the referencing project's
+    /// generated code names it.</para>
+    ///
+    /// <para>At run time this is <see cref="AddConversions{TPack}"/>: the referencing project's
+    /// registrations apply the pack through the composition their own generator recorded, and
+    /// need nothing from this call.</para>
+    /// </summary>
+    public ShiftMapperOptions ShareConversions<TPack>() where TPack : ShiftMapperConversions
     {
         _packs.Add(typeof(TPack));
 

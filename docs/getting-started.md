@@ -226,6 +226,7 @@ builder.Services.AddShiftMapper(o =>                                      // the
     o.AddMapper<AppMapper>(m => m.IncludeMapper<ReportingMapper>());      // composed here rather than in the constructor
     o.AddMapper<PlatformMapper>();                                        // a mapper from a referenced package
     o.AddConversions<PlatformConversions>();                              // a pack of rules for every mapper above
+    // — or neither package line: a package that registers itself and shares its pack (see the README)
     o.Lifetime = ServiceLifetime.Scoped;                                  // the default
 });
 ```

@@ -1,7 +1,6 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using ShiftMapper.Sample.Data;
 using ShiftMapper.Sample.Endpoints;
-using Contoso.Platform;
 using ShiftMapper.Sample.Mapping;
 using ShiftMapper.Sample.Services;
 
@@ -29,31 +28,32 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 // custom mapping — no ShiftMapper-specific registration involved.
 builder.Services.AddSingleton<IInvoiceNumbering, InvoiceNumbering>();
 
+// THE PACKAGE REGISTERS ITSELF. Contoso.Platform — the sample's stand-in for a framework package,
+// modelled on ShiftFramework — ships this one call, the way a framework's AddXxx does, and it does
+// two things. It registers the package's OWN mapper, PlatformMapper, from the package's own
+// assembly, so it can be injected on its own (GET /api/framework/files). And it SHARES the
+// package's pack — hash ids, the JSON column, the SelectDto convention — with every project that
+// references the package: the package's build wrote that down as metadata, this project's
+// generator read it, and every mapper the call below registers gets the pack as if
+// o.AddConversions<PlatformConversions>() had been written at the end of it. The build says so
+// (SM0043, an info at the call below), and a rule this project writes for the same pair wins.
+//
+// Nothing of the package's appears in the registration below, and nothing can be forgotten. That
+// is the difference from a runtime mapper: there a framework could register its profiles itself,
+// but a pack is applied by THIS project's generator, into Map methods and SQL projections, so the
+// package has to reach that generator — which is what the shared-pack metadata is for.
+builder.Services.AddContosoPlatform();
+
 // THE REGISTRATION — and the generator reads this lambda as well as running it: anything written
 // in it is baked into the mappers at compile time, exactly as if it had been written in their
-// constructors. Three things are said here:
+// constructors. AppMapper is the mapper the endpoints inject. What it INCLUDES (CatalogMapper,
+// InvoiceLabelMapper) and the pack it ADDS are registered along with it, so InvoiceLabelMapper's
+// IInvoiceNumbering dependency is injected the first time anything is mapped without a
+// registration of its own.
 //
-//   1. AppMapper, the mapper the endpoints inject. What it INCLUDES (CatalogMapper,
-//      InvoiceLabelMapper) and the pack it ADDS are registered along with it, so
-//      InvoiceLabelMapper's IInvoiceNumbering dependency is injected the first time anything is
-//      mapped without a registration of its own.
-//
-//   2. PlatformMapper, FROM THE PACKAGE, registered directly so it can be injected on its own.
-//      Its Map methods were compiled inside Contoso.Platform and cannot pick up this project's
-//      rules — so the generator writes an ADAPTER here (Generated/.../Contoso_Platform_PlatformMapper_Adapter),
-//      a subclass with this project's packs baked in, and this call hands it out wherever
-//      PlatformMapper is asked for. GET /api/framework/files shows the difference.
-//
-//   3. The package's pack, given to EVERY mapper in this call: hash ids, the JSON column, the
-//      SelectDto convention. AppMapper never names it and gets it; so does the adapter.
-//
-// Two mappers, so IShiftMapper resolves to a composite that asks each one which pairs it maps.
-builder.Services.AddShiftMapper(o =>
-{
-    o.AddMapper<AppMapper>();
-    o.AddMapper<PlatformMapper>();
-    o.AddConversions<PlatformConversions>();
-});
+// Two calls, two mappers, one registry: IShiftMapper resolves to a composite that asks each one
+// which pairs it maps. The order of the two calls does not matter.
+builder.Services.AddShiftMapper(o => o.AddMapper<AppMapper>());
 
 builder.Services.AddOpenApi();
 

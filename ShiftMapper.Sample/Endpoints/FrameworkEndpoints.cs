@@ -9,16 +9,18 @@ namespace ShiftMapper.Sample.Endpoints;
 /// <summary>
 /// RULES FROM A REFERENCED ASSEMBLY — a package's conversions, arriving as metadata, in two endpoints.
 ///
-/// <para>The map behind this is <c>CreateMap&lt;Brand, BrandFilesDto&gt;()</c> and one
-/// <c>o.AddConversions&lt;PlatformConversions&gt;()</c> in Program.cs. This project declares no
-/// conversion of its own. Both conversions arrive from <c>Contoso.Platform</c>, a compiled
-/// assembly referenced the way a NuGet package would be.</para>
+/// <para>The map behind this is <c>CreateMap&lt;Brand, BrandFilesDto&gt;()</c> and nothing else:
+/// this project declares no conversion of its own and names none of the package's. Both
+/// conversions arrive from <c>Contoso.Platform</c>, a compiled assembly referenced the way a NuGet
+/// package would be, whose own registration — <c>AddContosoPlatform()</c> in Program.cs — SHARES
+/// its pack with every project that references it.</para>
 ///
 /// <para>How, given that a generator sees a reference as METADATA with no method bodies: the
 /// package's OWN build wrote the SHAPE of its pack's declarations into the assembly as
-/// attributes, and adding the pack runs its constructor at run time so the expressions arrive
-/// then. A package built without the generator carries no such metadata, and that is reported
-/// (SM0028) rather than silently mapped as nothing.</para>
+/// attributes, and the share as one more, so this project's generator applies the pack to every
+/// mapper it registers; adding the pack runs its constructor at run time so the expressions
+/// arrive then. A package built without the generator carries no such metadata, and that is
+/// reported (SM0028) rather than silently mapped as nothing.</para>
 /// </summary>
 public static class FrameworkEndpoints
 {
@@ -101,12 +103,13 @@ public static class FrameworkEndpoints
         // GET /api/framework/files
         //
         // THE PACKAGE'S OWN MAPPER, INJECTED. PlatformMapper is a class compiled inside
-        // Contoso.Platform, registered directly in Program.cs — and what arrives here is not that
-        // class but the ADAPTER this project's generator wrote for it: a subclass with this
-        // project's packs baked in. FileSummary.Size is a long in the package; the package's own
-        // code would render it with the built-in conversion ("42"), and this one renders the hash
-        // id ("H42") because Program.cs gave every mapper the pack. Nothing in this file can tell
-        // the difference except the type name it prints.
+        // Contoso.Platform and registered by the package itself, in AddContosoPlatform() — so what
+        // arrives here is the package's own class, mapping by the package's own rules:
+        // FileSummary.Size is a long in the package, and its own build baked the hash id in ("H42")
+        // because that same registration gave the mapper the pack. Had Program.cs registered
+        // PlatformMapper itself instead, this would be the ADAPTER this project's generator writes
+        // — a subclass with this project's packs baked in on top — and it would win over the
+        // package's registration in either order. The type name printed says which it was.
         app.MapGet("/api/framework/files", (PlatformMapper platform) =>
         {
             var files = new List<FileDto>

@@ -17,7 +17,8 @@ namespace ShiftMapper.Generator;
 /// conversions and conventions that may answer for its members are decided by HOW NEAR they were
 /// written to it: the declaring mapper's own rules first, then the packs it added, then the mapper
 /// being generated and its packs, then the packs the registration gave every mapper, then the
-/// built-in table. A flat list cannot say which of two rules is nearer; this can.</para>
+/// packs referenced packages shared with every registration, then the built-in table. A flat list
+/// cannot say which of two rules is nearer; this can.</para>
 /// </summary>
 public sealed partial class ShiftMapperGenerator
 {
@@ -79,8 +80,16 @@ public sealed partial class ShiftMapperGenerator
         /// </summary>
         public List<INamedTypeSymbol> OwnPacks { get; } = new();
 
-        /// <summary>Packs the registration gave every mapper — the furthest level before the built-in table.</summary>
+        /// <summary>Packs the registration gave every mapper — the level after the mapper's own.</summary>
         public List<INamedTypeSymbol> GlobalPacks { get; } = new();
+
+        /// <summary>
+        /// Packs REFERENCED packages shared with every registration in this project — the furthest
+        /// level before the built-in table, so that anything this project wrote itself still wins.
+        /// Only a registered mapper has them, exactly as only a registered mapper has
+        /// <see cref="GlobalPacks"/>.
+        /// </summary>
+        public List<INamedTypeSymbol> ReferencedPacks { get; } = new();
 
         /// <summary>Mappers and packs with no syntax, whose declarations are read from metadata.</summary>
         public List<INamedTypeSymbol> Metadata { get; } = new();
@@ -134,10 +143,14 @@ public sealed partial class ShiftMapperGenerator
         // runtime applies them in.
         CollectComposition(compilation, set, set.Own, baseClass, packBase, visited, cancellationToken);
 
+        bool isRegistered = false;
+
         foreach (RegisteredMapper registered in registrations.Mappers)
         {
             if (registered.Mapper != set.Own.Name)
                 continue;
+
+            isRegistered = true;
 
             foreach (INamedTypeSymbol included in registered.IncludeTypes)
                 Include(compilation, set, included, baseClass, packBase, visited, cancellationToken);
@@ -150,6 +163,20 @@ public sealed partial class ShiftMapperGenerator
             // in the same project is a second registration with its own packs.
             foreach (INamedTypeSymbol pack in registered.CallPacks)
                 AddPack(set, pack, set.GlobalPacks, cancellationToken);
+        }
+
+        // What referenced packages shared: an AddConversions appended to every call, so every
+        // registered mapper gets it — and only a registered one, like a call's own packs. A pack
+        // this project also named itself is already at a nearer level and is not listed twice.
+        if (isRegistered)
+        {
+            foreach (ReferencedPack shared in registrations.ReferencedPacks)
+            {
+                if (set.OwnPacks.Concat(set.GlobalPacks).Any(nearer => SymbolEqualityComparer.Default.Equals(nearer, shared.Pack)))
+                    continue;
+
+                AddPack(set, shared.Pack, set.ReferencedPacks, cancellationToken);
+            }
         }
 
         return set;
@@ -356,7 +383,7 @@ public sealed partial class ShiftMapperGenerator
         /// <summary>
         /// The scope names at each level, nearest first: the declaring scope; its packs; the
         /// mapper being generated and its packs, when the declaring scope is another mapper; the
-        /// registration's global packs.
+        /// registration's global packs; the packs referenced packages shared.
         /// </summary>
         internal static IEnumerable<IReadOnlyList<string>> Levels(DeclarationSet set, DeclarationScope declaring)
         {
@@ -374,6 +401,7 @@ public sealed partial class ShiftMapperGenerator
             }
 
             yield return set.GlobalPacks.Select(FullName).ToList();
+            yield return set.ReferencedPacks.Select(FullName).ToList();
         }
     }
 

@@ -95,7 +95,9 @@ builder.Services.AddShiftMapper(o =>
 ```
 
 The generator reads that lambda too, so what it composes is baked at compile time — see
-[Registration](#registration).
+[Registration](#registration). A framework package can also register itself and share its rules
+with every project that references it, so that neither of the two package lines above has to be
+written — see [Mappers from a referenced assembly](#mappers-from-a-referenced-assembly).
 
 ### 3. Map
 
@@ -696,7 +698,7 @@ public class PlatformConversions : ShiftMapperConversions
 }
 ```
 
-and is added in one of three places, each one line:
+and is added in one of four places, each one line:
 
 ```csharp
 AddConversions<PlatformConversions>();                       // in a mapper's constructor: this mapper
@@ -704,11 +706,14 @@ AddConversions<PlatformConversions>();                       // in a mapper's co
 o.AddMapper<AppMapper>(m => m.AddConversions<PlatformConversions>());   // at registration: this mapper
 
 o.AddConversions<PlatformConversions>();                     // at registration: every mapper in the call
+
+o.ShareConversions<PlatformConversions>();                   // in a PACKAGE's registration: every mapper in the call,
+                                                             // and every mapper every referencing project registers
 ```
 
 **Nearest wins.** For a map declared by mapper P: P's own `CreateConversion` → the packs P added →
 (when P was included by M) M's own → the packs M added → the packs the registration gave every mapper
-→ the built-in table. A `ForMember` on a particular member beats all of them. Two packs at the same
+→ the packs referenced packages shared → the built-in table. A `ForMember` on a particular member beats all of them. Two packs at the same
 distance claiming one pair is an error (**SM0031**) unless something nearer settles it. The generated
 call names the scope that answered — `Customizations.Conversion<long, string>(typeof(PlatformConversions))`
 — so the runtime looks in exactly that store and the two halves cannot disagree.
@@ -785,7 +790,17 @@ plain statements, in the same project as the mappers it configures; a method gro
 variable or an `if` around a line is reported (**SM0035**) rather than half-applied. And because a
 mapper is generated ONCE per project, what any call composes into it is what every call gets — a
 second call that says less is told so (**SM0041**) and gets the union anyway, so the code and the
-store never disagree.
+store never disagree. The same holds for a mapper built with `new` rather than resolved: its code
+has everything its registration composed, its store has only what its constructor did, and the first
+map that needs the difference fails naming the pack. A mapper whose registration composes something
+is a DI mapper; put the composition in the constructor if it must also be built by hand.
+
+**A package may make this call too.** A framework's own `AddXxx` extension can register the
+framework's mapper from the framework's assembly, and every call, from whichever assembly, lands in
+the one registry: `IShiftMapper` covers all of them, in any order. Should the application register
+the package's mapper as well, the application's adapter wins — in either order — because it carries
+the package's rules AND the application's. See the next section for what a package's registration
+can share.
 
 ### Mappers from a referenced assembly
 
@@ -843,9 +858,35 @@ virtual members — and `AddShiftMapper` hands that out wherever `PlatformMapper
 that injects it can tell. A sealed package mapper has nothing to override and is refused (**SM0039**);
 maps over the package's non-public types stay as the package compiled them.
 
-**It is opt-in.** Declarations are keyed by their declaring type, so referencing a package changes
-nothing until something includes, registers or adds it. A package cannot quietly alter how your maps
-behave.
+**A package can register itself, and share its rules.** A framework wants its hash ids and its
+select conventions applied by every application, and a line each application has to remember is a
+line one of them forgets. So the package's own `AddXxx` extension makes the registration, and says
+`ShareConversions` where an application would say `AddConversions`:
+
+```csharp
+// in the package
+public static IServiceCollection AddContosoPlatform(this IServiceCollection services) =>
+    services.AddShiftMapper(o =>
+    {
+        o.AddMapper<PlatformMapper>();               // the package's mapper, from the package's assembly
+        o.ShareConversions<PlatformConversions>();   // this call's mappers, AND every mapper every referencing project registers
+    });
+
+// in the application — nothing of the package's in its own registration
+builder.Services.AddContosoPlatform();
+builder.Services.AddShiftMapper(o => o.AddMapper<AppMapper>());
+```
+
+The package's build writes the share down as metadata; the application's generator reads it from
+every reference and treats it as an `o.AddConversions<PlatformConversions>()` appended to every
+`AddShiftMapper` call in the application — the furthest level, so a rule the application writes for
+the same pair still wins — and records the composition so the runtime applies it from the
+application's own metadata. The application's build says which packs arrived this way (**SM0043**,
+Info). The pack has to be public, because the application's generated code names it (**SM0044**).
+
+**Maps stay opt-in.** A shared pack is the one thing a package applies on your behalf, and it is
+announced. Maps are keyed by their declaring mapper, so referencing a package changes no map of
+yours until something includes or registers it, and a package cannot quietly alter which map runs.
 
 **The package must be built with the ShiftMapper generator** referenced as an analyzer, or nothing
 is written down. That case is an error (**SM0028**) rather than mapping nothing in silence, and
@@ -1130,8 +1171,8 @@ compare against another.
 
 ## Diagnostics
 
-Thirty-eight rules, `SM0001` to `SM0038`. Five stop the build; the rest describe something that
-will not be mapped, or will be mapped in a way worth knowing about.
+Forty-three rules, `SM0001` to `SM0044` (`SM0029` is retired). Ten stop the build; the rest describe
+something that will not be mapped, or will be mapped in a way worth knowing about.
 
 | Id | Default | What it means |
 |---|---|---|
@@ -1176,6 +1217,8 @@ will not be mapped, or will be mapped in a way worth knowing about.
 | SM0040 | **Error** | Two registered mappers each declare their own map for the same pair |
 | SM0041 | Warning | A mapper is registered with different includes or packs in two calls |
 | SM0042 | **Error** | A map is declared twice with nothing to choose between the two |
+| SM0043 | Info | A referenced package shared a pack with every mapper this call registers |
+| SM0044 | **Error** | A pack shared with referencing projects is not public |
 
 `SM0011` is an error because a null nested object in a response looks exactly like a null in the
 database. Two ways forward, both one line: declare the map, or `opt.Ignore()` the property.

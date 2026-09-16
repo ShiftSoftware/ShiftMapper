@@ -1,3 +1,4 @@
+using System.Reflection;
 using Contoso.Platform;
 using Microsoft.Extensions.DependencyInjection;
 using ShiftMapper.Tests.Model;
@@ -237,5 +238,162 @@ public class RegistrationOptionsTests
             .MapToFileSummary(new FileDto { Name = "a", Size = 42 });
 
         Assert.Equal("H42", summary.Size);
+    }
+
+    // -----------------------------------------------------------------
+    // A PACKAGE THAT REGISTERS ITSELF, and the pack it SHARES.
+    // -----------------------------------------------------------------
+
+    /// <summary>
+    /// THE PACKAGE'S OWN CALL: <c>AddContosoPlatform()</c> registers the package's mapper from the
+    /// package's own assembly — no adapter, the package's own class — mapping by the package's own
+    /// rules, and it joins the one registry with whatever this project registers.
+    /// </summary>
+    [Fact]
+    public void A_package_registers_its_own_mapper()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IInvoiceNumbering, InvoiceNumbering>();
+        services.AddContosoPlatform();
+        services.AddShiftMapper<IncludingMapper>();
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+        using IServiceScope scope = provider.CreateScope();
+
+        PlatformMapper mapper = scope.ServiceProvider.GetRequiredService<PlatformMapper>();
+
+        Assert.IsType<PlatformMapper>(mapper, exactMatch: true);
+        Assert.Equal("H42", mapper.MapToFileSummary(new FileDto { Name = "a", Size = 42 }).Size);
+
+        IShiftMapper composite = scope.ServiceProvider.GetRequiredService<IShiftMapper>();
+
+        Assert.IsType<CompositeShiftMapper>(composite);
+        Assert.True(composite.CanMap(typeof(FileDto), typeof(FileSummary)));
+        Assert.True(composite.CanMap(typeof(Doodad), typeof(DoodadDto)));
+    }
+
+    /// <summary>
+    /// THE SHARED PACK. SharedRulesMapper names nothing of the package's and composes nothing;
+    /// registered here, it converts long to string by the package's rule, because the package
+    /// shared its pack and this project's build baked it in — and recorded it as composition, so
+    /// this call applies it without naming it either.
+    /// </summary>
+    [Fact]
+    public void A_shared_pack_reaches_a_mapper_this_project_registers()
+    {
+        var services = new ServiceCollection();
+        services.AddShiftMapper<SharedRulesMapper>();
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+        using IServiceScope scope = provider.CreateScope();
+
+        SharedRulesMapper mapper = scope.ServiceProvider.GetRequiredService<SharedRulesMapper>();
+
+        Assert.Equal("H42", mapper.Map<TicketDto>(new Ticket { Id = 42, Subject = "s" }).Id);
+
+        // The pack was registered along with the mapper, as any composed pack is.
+        Assert.NotNull(scope.ServiceProvider.GetService<PlatformConversions>());
+
+        // And it is written down where the runtime read it from.
+        Assert.Contains(
+            typeof(SharedRulesMapper).Assembly.GetCustomAttributes<ShiftMapperDeclaredCompositionAttribute>(),
+            composition => composition.Mapper == typeof(SharedRulesMapper) && composition.Composed == typeof(PlatformConversions));
+    }
+
+    /// <summary>
+    /// THE UNION RULE, for a shared pack. A mapper is generated once per project with everything
+    /// its registration composed — a shared pack included — so a mapper built by hand has code that
+    /// names the pack and a store nothing put it in. Same as any registration-composed pack: the
+    /// first map fails, saying which pack and why, rather than mapping by a different rule from the
+    /// one its diagnostics described.
+    /// </summary>
+    [Fact]
+    public void A_mapper_built_by_hand_fails_naming_the_shared_pack()
+    {
+        var mapper = new SharedRulesMapper();
+
+        InvalidOperationException error = Assert.Throws<InvalidOperationException>(
+            () => mapper.Map<TicketDto>(new Ticket { Id = 42 }));
+
+        Assert.Contains("PlatformConversions", error.Message);
+        Assert.Contains("built by hand", error.Message);
+    }
+
+    /// <summary>
+    /// THE FALLBACK RULE. The package registers its own mapper, and this project registers the same
+    /// mapper too — through the adapter its generator wrote. The adapter wins, in either order,
+    /// because it is the more specific registration: the package's rules AND this project's.
+    /// </summary>
+    [Fact]
+    public void A_projects_registration_of_a_package_mapper_wins_over_the_packages_own()
+    {
+        foreach (bool packageFirst in new[] { true, false })
+        {
+            var services = new ServiceCollection();
+
+            if (packageFirst)
+                services.AddContosoPlatform();
+
+            #pragma warning disable SM0041 // the other tests' registrations of PlatformMapper name the pack; this one gets the union
+            services.AddShiftMapper<PlatformMapper>();
+            #pragma warning restore SM0041
+
+            if (!packageFirst)
+                services.AddContosoPlatform();
+
+            using ServiceProvider provider = services.BuildServiceProvider();
+            using IServiceScope scope = provider.CreateScope();
+
+            PlatformMapper mapper = scope.ServiceProvider.GetRequiredService<PlatformMapper>();
+
+            Assert.Contains("Adapter", mapper.GetType().Name);
+            Assert.Equal("H42", mapper.MapToFileSummary(new FileDto { Name = "a", Size = 42 }).Size);
+
+            // One registration of the type, whichever came first, and one mapper behind the interface.
+            Assert.Single(services, descriptor => descriptor.ServiceType == typeof(PlatformMapper));
+            Assert.IsType<PlatformMapper>(scope.ServiceProvider.GetRequiredService<IShiftMapper>(), exactMatch: false);
+        }
+    }
+
+    /// <summary>
+    /// A package with rules and NO mapper makes a call that registers nothing — what
+    /// <c>AddXxx()</c> looks like when the package ships only a pack. Harmless in either order:
+    /// the registry is untouched and <c>IShiftMapper</c> is whatever the real registrations make it.
+    /// </summary>
+    [Fact]
+    public void A_call_that_registers_no_mapper_is_harmless_in_either_order()
+    {
+        foreach (bool packFirst in new[] { true, false })
+        {
+            var services = new ServiceCollection();
+
+            if (packFirst)
+                services.AddShiftMapper(o => o.AddConversions<PlatformConversions>());
+
+            services.AddShiftMapper<SharedRulesMapper>();
+
+            if (!packFirst)
+                services.AddShiftMapper(o => o.AddConversions<PlatformConversions>());
+
+            using ServiceProvider provider = services.BuildServiceProvider();
+            using IServiceScope scope = provider.CreateScope();
+
+            Assert.Same(
+                scope.ServiceProvider.GetRequiredService<SharedRulesMapper>(),
+                scope.ServiceProvider.GetRequiredService<IShiftMapper>());
+        }
+    }
+
+    /// <summary>The package registering itself twice is still twice.</summary>
+    [Fact]
+    public void A_package_registering_itself_twice_throws()
+    {
+        var services = new ServiceCollection();
+        services.AddContosoPlatform();
+
+        InvalidOperationException error = Assert.Throws<InvalidOperationException>(
+            () => services.AddContosoPlatform());
+
+        Assert.Contains("registered twice", error.Message);
     }
 }

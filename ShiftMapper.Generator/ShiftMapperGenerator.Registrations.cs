@@ -20,6 +20,13 @@ namespace ShiftMapper.Generator;
 /// into the mappers of THIS compilation; a mapper from a referenced assembly gets an adapter
 /// here instead.</para>
 ///
+/// <para><b>And what REFERENCED assemblies registered on this project's behalf.</b> A package that
+/// wrote <c>o.ShareConversions&lt;T&gt;()</c> in its own registration had its build write the pack
+/// down as <c>[assembly: ShiftMapperDeclaredSharedPack]</c>; every such pack is read here and
+/// treated as an <c>AddConversions</c> appended to every call in this compilation — the furthest
+/// level, so anything written here still wins. Only read when this compilation registers
+/// something, because that is the only thing it can apply to.</para>
+///
 /// <para>Read once per compilation and remembered against it — <c>BuildMapperClass</c> runs once
 /// per partial part and the analyzer runs it again, and the trees do not change in between.</para>
 /// </summary>
@@ -30,6 +37,11 @@ public sealed partial class ShiftMapperGenerator
     private const string OptionsMetadataName = "ShiftMapper.ShiftMapperOptions";
 
     private const string MapperRegistrationMetadataName = "ShiftMapper.MapperRegistration";
+
+    private const string SharedPackAttributeMetadataName = "ShiftMapper.ShiftMapperDeclaredSharedPackAttribute";
+
+    /// <summary>The name of the runtime assembly, which anything carrying its attributes has to reference.</summary>
+    private const string RuntimeAssemblyName = "ShiftMapper";
 
     private static readonly ConditionalWeakTable<Compilation, RegistrationModel> RegistrationsByCompilation = new();
 
@@ -82,6 +94,19 @@ public sealed partial class ShiftMapperGenerator
 
         public List<INamedTypeSymbol> GlobalPackTypes { get; } = new();
 
+        /// <summary>
+        /// The packs a call in THIS compilation shared with every project that references it —
+        /// what its build writes down as <c>ShiftMapperDeclaredSharedPack</c>. Each is also a
+        /// call-wide pack of the call that shared it.
+        /// </summary>
+        public List<INamedTypeSymbol> SharedPacks { get; } = new();
+
+        /// <summary>
+        /// The packs REFERENCED assemblies shared with this one — an <c>AddConversions</c> appended
+        /// to every call here, at the furthest level. Empty when nothing here registers a mapper.
+        /// </summary>
+        public List<ReferencedPack> ReferencedPacks { get; } = new();
+
         /// <summary>SM0035 and friends, located at the offending call.</summary>
         public List<PositionedProblem> Problems { get; } = new();
 
@@ -89,6 +114,24 @@ public sealed partial class ShiftMapperGenerator
 
         /// <summary>How many <c>AddShiftMapper</c> calls have been read — the next call's number.</summary>
         public int Calls { get; set; }
+
+        /// <summary>Where each <c>AddShiftMapper</c> call is, by call number.</summary>
+        public List<LocationInfo?> CallSites { get; } = new();
+    }
+
+    /// <summary>One pack a referenced assembly shared, and which assembly — for the message that says so.</summary>
+    internal sealed class ReferencedPack
+    {
+        public ReferencedPack(INamedTypeSymbol pack, string sharedBy)
+        {
+            Pack = pack;
+            SharedBy = sharedBy;
+        }
+
+        public INamedTypeSymbol Pack { get; }
+
+        /// <summary>The name of the assembly whose registration shared it.</summary>
+        public string SharedBy { get; }
     }
 
     internal static RegistrationModel ReadRegistrations(Compilation compilation, CancellationToken cancellationToken)
@@ -150,7 +193,54 @@ public sealed partial class ShiftMapperGenerator
             }
         }
 
+        // What references shared applies to what this compilation registers, and to nothing else
+        // — so a project with no registration never opens a reference for it.
+        if (model.Mappers.Count > 0)
+            ReadSharedPacks(compilation, model, cancellationToken);
+
         return model;
+    }
+
+    /// <summary>
+    /// Every <c>[assembly: ShiftMapperDeclaredSharedPack]</c> on a referenced assembly. Only
+    /// assemblies that reference the runtime are opened: nothing else can carry the attribute, and
+    /// the framework alone is a couple of hundred references.
+    /// </summary>
+    private static void ReadSharedPacks(Compilation compilation, RegistrationModel model, CancellationToken cancellationToken)
+    {
+        INamedTypeSymbol? attributeType = compilation.GetTypeByMetadataName(SharedPackAttributeMetadataName);
+
+        // A runtime that predates sharing has nothing to read.
+        if (attributeType is null)
+            return;
+
+        foreach (MetadataReference reference in compilation.References)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (compilation.GetAssemblyOrModuleSymbol(reference) is not IAssemblySymbol assembly)
+                continue;
+
+            if (!assembly.Modules.Any(module => module.ReferencedAssemblies.Any(referenced => referenced.Name == RuntimeAssemblyName)))
+                continue;
+
+            foreach (AttributeData attribute in assembly.GetAttributes())
+            {
+                if (!SymbolEqualityComparer.Default.Equals(attribute.AttributeClass, attributeType))
+                    continue;
+
+                if (attribute.ConstructorArguments.Length != 1
+                    || attribute.ConstructorArguments[0].Value is not INamedTypeSymbol pack)
+                {
+                    continue;
+                }
+
+                if (model.ReferencedPacks.Any(existing => SymbolEqualityComparer.Default.Equals(existing.Pack, pack)))
+                    continue;
+
+                model.ReferencedPacks.Add(new ReferencedPack(pack, assembly.Name));
+            }
+        }
     }
 
     private static void ReadRegistration(
@@ -164,6 +254,7 @@ public sealed partial class ShiftMapperGenerator
     {
         LocationInfo? site = LocationInfo.CreateFrom(invocation);
         int callNumber = model.Calls++;
+        model.CallSites.Add(site);
 
         // The short form: AddShiftMapper<TMapper>(lifetime). One mapper, nothing else to read.
         if (method.IsGenericMethod)
@@ -212,9 +303,30 @@ public sealed partial class ShiftMapperGenerator
                 continue;
             }
 
-            if (bound.Name == "AddConversions")
+            if (bound.Name is "AddConversions" or "ShareConversions")
             {
                 callPacks.Add(bound.Target);
+
+                if (bound.Name != "ShareConversions")
+                    continue;
+
+                // A referencing project's generated code names the pack, in an assembly attribute
+                // and in the conversion calls, so a pack it cannot see is an error in a file its
+                // author cannot edit. Said here, where it can be fixed.
+                if (!IsEffectivelyPublic(bound.Target))
+                {
+                    model.Problems.Add(new PositionedProblem(
+                        "SM0044|'" + bound.Target.Name + "' is shared with every project that references this " +
+                        "one, but it is not public, so their generated code could not name it. Make the pack " +
+                        "public, or add it with AddConversions for this project's mappers alone.",
+                        LocationInfo.CreateFrom(call)));
+
+                    continue;
+                }
+
+                if (!model.SharedPacks.Any(existing => SymbolEqualityComparer.Default.Equals(existing, bound.Target)))
+                    model.SharedPacks.Add(bound.Target);
+
                 continue;
             }
 
@@ -283,8 +395,8 @@ public sealed partial class ShiftMapperGenerator
 
     /// <summary>
     /// A call bound to <c>ShiftMapperOptions</c> or <c>MapperRegistration</c> —
-    /// <c>AddMapper&lt;T&gt;</c>, <c>AddConversions&lt;T&gt;</c>, <c>IncludeMapper&lt;T&gt;</c> — with its
-    /// one type argument, or null.
+    /// <c>AddMapper&lt;T&gt;</c>, <c>AddConversions&lt;T&gt;</c>, <c>ShareConversions&lt;T&gt;</c>,
+    /// <c>IncludeMapper&lt;T&gt;</c> — with its one type argument, or null.
     /// </summary>
     private static (string Name, INamedTypeSymbol Target)? OptionsCall(
         SemanticModel semanticModel,
@@ -304,7 +416,7 @@ public sealed partial class ShiftMapperGenerator
 
         string called = name.Identifier.ValueText;
 
-        if (called is not ("AddMapper" or "AddConversions" or "IncludeMapper"))
+        if (called is not ("AddMapper" or "AddConversions" or "ShareConversions" or "IncludeMapper"))
             return null;
 
         if (!IsDeclaredOn(semanticModel, invocation, declaringType, cancellationToken))

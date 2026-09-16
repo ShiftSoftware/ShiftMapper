@@ -1,6 +1,6 @@
 # Diagnostics
 
-Every ShiftMapper message is `SM####`, reported by a `DiagnosticAnalyzer` rather than by the generator, so `.editorconfig` tunes them per folder and the IDE shows them live. Forty-one rules in use, SM0001 to SM0042 (SM0029 is retired); nine stop the build (SM0011, SM0012, SM0016, SM0028, SM0031, SM0035, SM0039, SM0040, SM0042). The [README table](../README.md#diagnostics) is the one-line summary; this page gives each rule what it is protecting, what is still generated, and how to answer it.
+Every ShiftMapper message is `SM####`, reported by a `DiagnosticAnalyzer` rather than by the generator, so `.editorconfig` tunes them per folder and the IDE shows them live. Forty-three rules in use, SM0001 to SM0044 (SM0029 is retired); ten stop the build (SM0011, SM0012, SM0016, SM0028, SM0031, SM0035, SM0039, SM0040, SM0042, SM0044). The [README table](../README.md#diagnostics) is the one-line summary; this page gives each rule what it is protecting, what is still generated, and how to answer it.
 
 <a id="sm0001"></a>
 ## SM0001 — Destination property is not mapped
@@ -1306,3 +1306,66 @@ closures are for.
 **The fix** is to give the pair one home: keep the `CreateMap` in one of the two included mappers,
 or declare it on the including mapper, whose own declaration wins over both (each then reports
 SM0027 so the losing lines are not forgotten).
+
+<a id="sm0043"></a>
+## SM0043 — A referenced package shared a pack with every mapper this call registers
+
+**Info.** Reported at each `AddShiftMapper` call that registers a mapper, once per shared pack,
+naming the pack and the assembly that shared it. Nothing is wrong; this is the build saying which
+rules arrived without a line of yours asking for them.
+
+A package registers itself with the same `AddShiftMapper` an application uses, and where it writes
+`o.ShareConversions<T>()` instead of `o.AddConversions<T>()` its build records the pack as
+`[assembly: ShiftMapperDeclaredSharedPack]`. Your generator reads that from every reference and
+treats it as an `AddConversions<T>()` appended to every `AddShiftMapper` call in your project — the
+furthest level before the built-in table, so a rule you wrote yourself, in a mapper or in a pack of
+your own, wins over it. That is the one declaration that reaches you without you naming the type,
+which is why it is announced rather than silent.
+
+```csharp
+// in Contoso.Platform — the package's own registration
+services.AddShiftMapper(o =>
+{
+    o.AddMapper<PlatformMapper>();
+    o.ShareConversions<PlatformConversions>();
+});
+
+// in the application
+builder.Services.AddContosoPlatform();
+builder.Services.AddShiftMapper(o => o.AddMapper<AppMapper>());   // SM0043
+```
+
+> info SM0043: every mapper this call registers also gets 'PlatformConversions', which
+> 'Contoso.Platform' shares with every project that references it; it is applied after everything
+> written here, so a rule of your own for the same pair wins
+
+**Nothing to do.** To override one of its rules, declare the pair yourself — in the mapper, or in a
+pack given to the call. Turn the message off in `.editorconfig` if you would rather not see it;
+the pack still applies, because the metadata that carries it is what your generated code was built
+from. A shared pack is a REGISTRATION's pack: a mapper nothing registers does not get it, and a
+registered mapper built by hand rather than resolved from the container has the pack in its code
+and not in its store, and its first map says so (see the note under
+[Registration](../README.md#registration)).
+
+<a id="sm0044"></a>
+## SM0044 — A shared pack must be public
+
+**Error.** Reported at the `ShareConversions` call, in the package's own build. One of the rules
+that stop the build.
+
+The referencing project's generated code names the shared pack — in an assembly attribute, and in
+every conversion call the pack answers — so a pack that project cannot see is a compile error in a
+file nobody can edit. It is reported here instead, where it can be fixed.
+
+```csharp
+internal class PlatformConversions : ShiftMapperConversions { /* ... */ }
+
+services.AddShiftMapper(o => o.ShareConversions<PlatformConversions>());   // SM0044
+```
+
+> error SM0044: 'PlatformConversions' is shared with every project that references this one, but
+> it is not public, so their generated code could not name it. Make the pack public, or add it with
+> AddConversions for this project's mappers alone
+
+**The fix** is in the message: make the pack public, or keep it to this project's mappers with
+`AddConversions`.

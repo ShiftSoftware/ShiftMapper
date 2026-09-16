@@ -47,3 +47,5 @@ SM0039 | ShiftMapper | Error | A sealed mapper from a referenced assembly cannot
 SM0040 | ShiftMapper | Error | Two registered mappers declare their own map for the same pair
 SM0041 | ShiftMapper | Warning | A mapper is registered with different includes or packs in two calls
 SM0042 | ShiftMapper | Error | A map is declared twice with nothing to choose between the two
+SM0043 | ShiftMapper | Info | A referenced package shared a pack with every mapper this call registers
+SM0044 | ShiftMapper | Error | A shared pack must be public

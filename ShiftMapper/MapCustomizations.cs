@@ -273,7 +273,9 @@ public sealed class MapCustomizations
                 $"'{typeof(TDestination).Name}' by '{scope.Name}'. It was declared with " +
                 "CreateConversion when this mapper was compiled, so the declaration has been " +
                 "removed, or the mapper no longer includes the mapper or adds the pack that " +
-                "declared it.");
+                "declared it — or the pack came from the mapper's registration (AddShiftMapper, " +
+                "or a pack a referenced package shared) and this mapper was built by hand rather " +
+                "than resolved from the service provider.");
         }
 
         var typed = (Func<TSource, TDestination>)memory;

@@ -11,6 +11,10 @@
     project's DECLARATIONS into the assembly as attributes, which is the only thing a consumer's
     generator can see. The expressions themselves arrive at run time, when the consumer includes or
     registers the mapper and its constructor runs.
+
+    The package also REGISTERS ITSELF (ContosoPlatformServiceCollectionExtensions.cs): its own
+    AddShiftMapper call registers its mapper and SHARES its pack, and the generator writes the share
+    down too, so a consumer's build applies the pack to every mapper the consumer registers.
   -->
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>

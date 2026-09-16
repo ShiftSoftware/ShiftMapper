@@ -9,10 +9,13 @@ namespace Contoso.Platform;
 ///
 /// <para>Written with the ORDINARY API, the same CreateConversion and CreateMemberConvention a
 /// mapper uses. This project's own build emits what these lines DECLARE into the assembly as
-/// metadata, and an application adds the pack with one line — to one mapper, or to every mapper it
-/// registers:</para>
+/// metadata — and because <c>AddContosoPlatform()</c> SHARES the pack, every project that
+/// references this one gets it on every mapper it registers, with no line of its own to remember.
+/// The application's build says so (SM0043). An application may still add it by hand, to a
+/// mapper nothing registers, or to say it explicitly:</para>
 ///
 /// <code>
+/// o.ShareConversions&lt;PlatformConversions&gt;();      // in the package's own registration: every referencing project
 /// AddConversions&lt;PlatformConversions&gt;();          // in a mapper's constructor
 /// o.AddConversions&lt;PlatformConversions&gt;();        // at registration, for every mapper in the call
 /// </code>

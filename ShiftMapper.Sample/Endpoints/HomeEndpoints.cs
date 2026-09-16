@@ -41,7 +41,7 @@ public static class HomeEndpoints
                 "GET  /api/products/fingerprints (the same, with no query form; ?project=true refuses)",
                 "GET  /api/brands/hashed     (A REFERENCED ASSEMBLY's rule, in the SQL; ?sql=true)",
                 "GET  /api/brands/files      (the same package's other rule, in memory only; ?project=true)",
-                "GET  /api/framework/files   (the package's OWN mapper, injected — through the adapter this project generated)",
+                "GET  /api/framework/files   (the package's OWN mapper, registered by the package itself and injected)",
                 "GET  /api/products/list     (MEMBER CONVENTION from a package, in the SQL; ?sql=true)",
                 "POST /api/products/preview  (the same rule read BACKWARDS: ids off a posted select DTO)",
             }

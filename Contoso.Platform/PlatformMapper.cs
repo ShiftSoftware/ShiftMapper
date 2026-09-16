@@ -10,16 +10,19 @@ namespace Contoso.Platform;
 /// <para>Nothing here is special, and that is the point. This project's own build generates the
 /// Map methods onto this class, as it does for any mapper, AND emits what these lines DECLARE into
 /// the assembly as metadata, because a generator compiling an application sees a reference as
-/// metadata and no method bodies. An application then has two ways to use it, each one line:</para>
+/// metadata and no method bodies. The package REGISTERS this mapper itself, in
+/// <c>AddContosoPlatform()</c>, so an application injects it after one call and writes nothing
+/// else; an application that wants its maps inside a mapper of its own has one more line:</para>
 ///
 /// <code>
+/// builder.Services.AddContosoPlatform();   // in Program.cs: injectable on its own, mapping by the package's rules
 /// IncludeMapper&lt;PlatformMapper&gt;();     // in a mapper's constructor: its maps become that mapper's maps
-/// o.AddMapper&lt;PlatformMapper&gt;();        // at registration: injectable on its own, re-baked with the app's packs
 /// </code>
 ///
 /// <para>The package's RULES — conversions and the member convention — live in
-/// <see cref="PlatformConversions"/>, a pack, so an application can give them to every mapper it
-/// registers without taking any map along.</para>
+/// <see cref="PlatformConversions"/>, a pack, which the same registration SHARES with every
+/// project that references this one, so they reach the application's own mappers without the
+/// application naming them.</para>
 /// </summary>
 public partial class PlatformMapper : ShiftMapperBase
 {
@@ -37,9 +40,10 @@ public class FileSummary
     public string Name { get; set; } = string.Empty;
 
     /// <summary>
-    /// <c>long</c> to <c>string</c>. Inside this package that is the built-in conversion; a project
-    /// that registers <see cref="PlatformMapper"/> with <see cref="PlatformConversions"/> as a
-    /// registration-wide pack gets the hash id instead — through the adapter its generator writes.
+    /// <c>long</c> to <c>string</c> — the hash id, because <c>AddContosoPlatform()</c> gives this
+    /// mapper the package's own pack. An application that registers <see cref="PlatformMapper"/>
+    /// itself instead gets the same through the adapter its generator writes, plus whatever packs
+    /// of its own that call adds.
     /// </summary>
     public string Size { get; set; } = string.Empty;
 }

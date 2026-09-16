@@ -40,6 +40,14 @@ namespace Microsoft.Extensions.DependencyInjection;
 /// <see cref="ShiftMapperAdapterAttribute"/>. This method hands out the adapter wherever the
 /// package type is asked for. Nothing that injects the mapper can tell.</para>
 ///
+/// <para><b>A PACKAGE MAY REGISTER ITSELF.</b> A framework's own <c>AddXxx</c> extension can make
+/// this call for its own mapper and pack — <c>o.ShareConversions&lt;T&gt;()</c> then hands the pack
+/// to every call every referencing project makes, through metadata its generator reads, so the
+/// application registers nothing of the package's. Every call, from whichever assembly, lands in the
+/// one registry kept in the collection. Should the application register the package's mapper too,
+/// its adapter wins in either order: the package's own registration is the fallback, not a
+/// duplicate.</para>
+///
 /// <para><b>WHAT ENDS UP IN THE CONTAINER.</b> Every registered mapper under its own type; every
 /// mapper it includes and every pack it adds under theirs (so they may take constructor
 /// dependencies without a separate registration); and <see cref="IShiftMapper"/>, which resolves
@@ -157,11 +165,25 @@ public static class ShiftMapperServiceCollectionExtensions
                     "generated (see SM0035 and SM0028).");
             }
 
-            if (!registry.TryAdd(mapper, options.Lifetime, registering))
+            switch (registry.Add(mapper, options.Lifetime, registering))
             {
-                throw new InvalidOperationException(
-                    $"ShiftMapper: '{mapper.Name}' is registered twice. Each mapper is registered " +
-                    "once; put every include and pack it needs on that one registration.");
+                case Registry.Outcome.Duplicate:
+                    throw new InvalidOperationException(
+                        $"ShiftMapper: '{mapper.Name}' is registered twice. Each mapper is registered " +
+                        "once; put every include and pack it needs on that one registration.");
+
+                // The package's own registration arriving AFTER the application's: the adapter is
+                // already in the container with everything the application composed into it, and
+                // the package has nothing to add.
+                case Registry.Outcome.Yielded:
+                    continue;
+
+                // The application's registration arriving after the package's own: the package's
+                // descriptor goes, and the adapter registered below takes its place — same type,
+                // so nothing that injects the mapper can tell.
+                case Registry.Outcome.Replaced:
+                    services.RemoveAll(mapper);
+                    break;
             }
 
             // What the generator BAKED into the mapper: the constructor's includes and packs, and
@@ -418,14 +440,51 @@ public static class ShiftMapperServiceCollectionExtensions
 
         public IReadOnlyList<Entry> Mappers => _mappers;
 
-        public bool TryAdd(Type mapper, ServiceLifetime lifetime, Assembly registering)
+        public enum Outcome
         {
-            if (_mappers.Any(entry => entry.Mapper == mapper))
-                return false;
+            Added,
 
-            _mappers.Add(new Entry(mapper, lifetime, registering));
+            /// <summary>The mapper was registered by its own assembly; this registration, from another, replaces it.</summary>
+            Replaced,
 
-            return true;
+            /// <summary>This registration is the mapper's own assembly's, and another assembly's is already in.</summary>
+            Yielded,
+
+            /// <summary>Neither side is the mapper's own assembly, or both are: two registrations that mean the same thing.</summary>
+            Duplicate,
+        }
+
+        /// <summary>
+        /// THE FALLBACK RULE. A mapper's own assembly registering it is a package registering
+        /// itself; a registration from any other assembly goes through an adapter carrying that
+        /// project's packs, and is the more specific of the two. The adapter wins whichever call
+        /// comes first — a framework's <c>AddXxx</c> may run before or after the application's
+        /// <c>AddShiftMapper</c>, and the container has to come out the same. The entry keeps its
+        /// position, so the order <see cref="CompositeShiftMapper"/> asks in does not depend on it
+        /// either.
+        /// </summary>
+        public Outcome Add(Type mapper, ServiceLifetime lifetime, Assembly registering)
+        {
+            int index = _mappers.FindIndex(entry => entry.Mapper == mapper);
+
+            if (index < 0)
+            {
+                _mappers.Add(new Entry(mapper, lifetime, registering));
+
+                return Outcome.Added;
+            }
+
+            bool existingIsOwn = _mappers[index].Registering == mapper.Assembly;
+            bool incomingIsOwn = registering == mapper.Assembly;
+
+            if (existingIsOwn && !incomingIsOwn)
+            {
+                _mappers[index] = new Entry(mapper, lifetime, registering);
+
+                return Outcome.Replaced;
+            }
+
+            return incomingIsOwn && !existingIsOwn ? Outcome.Yielded : Outcome.Duplicate;
         }
 
         public sealed class Entry

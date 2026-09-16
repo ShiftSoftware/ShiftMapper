@@ -34,7 +34,8 @@ public sealed partial class ShiftMapperAnalyzer
         var reporter = new DiagnosticReporter(context.ReportDiagnostic, trees);
 
         // SM0035 — a registration written where the generator cannot read it: a conditional
-        // statement in the lambda, or no lambda at all.
+        // statement in the lambda, or no lambda at all. SM0044 — a pack shared with projects that
+        // could not name it.
         foreach (PositionedProblem problem in registrations.Problems)
         {
             int split = problem.Problem.IndexOf('|');
@@ -42,10 +43,33 @@ public sealed partial class ShiftMapperAnalyzer
             if (split < 0)
                 continue;
 
-            reporter.Report(
-                DiagnosticDescriptors.DeclarationNotBakeable,
-                problem.Location,
-                problem.Problem.Substring(split + 1));
+            DiagnosticDescriptor descriptor = problem.Problem.Substring(0, split) == "SM0044"
+                ? DiagnosticDescriptors.SharedPackNotPublic
+                : DiagnosticDescriptors.DeclarationNotBakeable;
+
+            reporter.Report(descriptor, problem.Location, problem.Problem.Substring(split + 1));
+        }
+
+        // SM0043 — what referenced packages shared, said once per call that registers something,
+        // at the call: the one declaration a project receives without naming the type is the one
+        // the build should point at.
+        if (registrations.ReferencedPacks.Count > 0)
+        {
+            foreach (IGrouping<int, ShiftMapperGenerator.RegisteredMapper> call in registrations.Mappers.GroupBy(m => m.Call))
+            {
+                LocationInfo? site = registrations.CallSites[call.Key];
+
+                foreach (ShiftMapperGenerator.ReferencedPack shared in registrations.ReferencedPacks)
+                {
+                    reporter.Report(
+                        DiagnosticDescriptors.SharedPackApplied,
+                        site,
+                        $"every mapper this call registers also gets '{shared.Pack.Name}', which " +
+                        $"'{shared.SharedBy}' shares with every project that references it; it is " +
+                        "applied after everything written here, so a rule of your own for the same " +
+                        "pair wins");
+                }
+            }
         }
 
         // THE ADAPTERS. Their declaration problems land at the AddMapper call; their maps'
