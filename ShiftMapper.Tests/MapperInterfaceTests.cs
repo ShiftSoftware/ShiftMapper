@@ -6,7 +6,7 @@ using Xunit;
 namespace ShiftMapper.Tests;
 
 /// <summary>
-/// <c>IShiftMapper</c> at runtime — the door a library comes in through.
+/// <c>IMapper</c> at runtime — the door a library comes in through.
 ///
 /// The point of the interface is that code can be written against it without naming
 /// <c>TestMapper</c>, so most of these tests go through <see cref="PretendFramework"/> at the foot
@@ -14,13 +14,13 @@ namespace ShiftMapper.Tests;
 /// constructor parameter, of the interface type, and no idea what implements it.
 /// </summary>
 [Collection(DatabaseCollection.Name)]
-public class ShiftMapperInterfaceTests
+public class MapperInterfaceTests
 {
     private readonly DatabaseFixture _fixture;
 
-    public ShiftMapperInterfaceTests(DatabaseFixture fixture) => _fixture = fixture;
+    public MapperInterfaceTests(DatabaseFixture fixture) => _fixture = fixture;
 
-    private IShiftMapper Mapper => _fixture.Services.GetRequiredService<IShiftMapper>();
+    private IMapper Mapper => _fixture.Services.GetRequiredService<IMapper>();
 
     private static Brand ABrand() => new()
     {
@@ -288,7 +288,7 @@ public class ShiftMapperInterfaceTests
 
         Assert.Same(
             scope.ServiceProvider.GetRequiredService<Mapper>(),
-            scope.ServiceProvider.GetRequiredService<IShiftMapper>());
+            scope.ServiceProvider.GetRequiredService<IMapper>());
     }
 
     [Fact]
@@ -300,8 +300,8 @@ public class ShiftMapperInterfaceTests
         using IServiceScope second = provider.CreateScope();
 
         Assert.NotSame(
-            first.ServiceProvider.GetRequiredService<IShiftMapper>(),
-            second.ServiceProvider.GetRequiredService<IShiftMapper>());
+            first.ServiceProvider.GetRequiredService<IMapper>(),
+            second.ServiceProvider.GetRequiredService<IMapper>());
     }
 
     /// <summary>
@@ -330,7 +330,7 @@ public class ShiftMapperInterfaceTests
     [Fact]
     public void A_mapper_with_nothing_registered_refuses_the_runtime_door_and_says_why()
     {
-        IShiftMapper bare = new Mapper();
+        IMapper bare = new Mapper();
 
         InvalidOperationException error = Assert.Throws<InvalidOperationException>(
             () => bare.CanMap(typeof(Brand), typeof(BrandDto)));
@@ -363,9 +363,9 @@ public class BrandProxy : Brand
 /// </summary>
 public sealed class PretendFramework
 {
-    private readonly IShiftMapper _mapper;
+    private readonly IMapper _mapper;
 
-    public PretendFramework(IShiftMapper mapper) => _mapper = mapper;
+    public PretendFramework(IMapper mapper) => _mapper = mapper;
 
     public bool Handles<TEntity, TDto>() => _mapper.CanMap(typeof(TEntity), typeof(TDto));
 

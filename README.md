@@ -778,7 +778,7 @@ builder.Services.AddShiftMapper(o =>
 
 **What it registers** is the calling assembly's GENERATED mapper — the class the generator wrote
 holding every map the assembly can see — read from the assembly's own metadata, so nothing is
-named; and `Mapper`, the one object application code injects, together with `IShiftMapper` for
+named; and `Mapper`, the one object application code injects, together with `IMapper` for
 library code. Both resolve to the same instance. Mapper classes are not registered: the generated
 mapper builds them from the provider on first use.
 
@@ -808,7 +808,7 @@ want in your assembly. `Registered` names everything, for the project that wants
 it did not write down; a local class it leaves out is reported (**SM0005**) so nothing goes missing
 in silence. An `AddMapper` under `All` changes nothing and is reported (**SM0046**), because the
 line says a mode was probably intended. A package class not taken stays reachable through
-`IShiftMapper` if the package registered itself — only the typed methods are absent.
+`IMapper` if the package registered itself — only the typed methods are absent.
 
 A package can share a mapper class the way it shares a pack: `o.ShareMapper<T>()` in its own
 registration puts the class into the generated mapper of every referencing project under
@@ -826,7 +826,7 @@ framework's assembly, and every call, from whichever assembly, lands in the one 
 is then made of every generated mapper registered, the application's FIRST: it already carries
 every package's maps, re-baked with the application's rules, so a package's own registration is the
 fallback — for a host that has no generator of its own, or a library mapping through
-`IShiftMapper`. See the next section.
+`IMapper`. See the next section.
 
 ### Mappers from a referenced assembly
 
@@ -1037,7 +1037,7 @@ an object a delegate returned. Asking for one throws a message naming the map ra
 somewhere inside EF. When a map has to project, the answer is a constructor ShiftMapper can match
 by name plus `ForMember` for the arguments convention cannot work out.
 
-### For libraries: `IShiftMapper`
+### For libraries: `IMapper`
 
 The methods above are strongly typed, and that is the point of them: a destination with no map is
 a compile error at the call site. A **library** cannot use them — code in a shared package has to
@@ -1045,7 +1045,7 @@ map an entity to a DTO in an application it has never seen, and its types are ge
 which no typed overload can be chosen for. So `Mapper` also implements one interface:
 
 ```csharp
-public interface IShiftMapper
+public interface IMapper
 {
     TDestination Map<TDestination>(object source);
     TDestination Map<TSource, TDestination>(TSource source);
@@ -1060,7 +1060,7 @@ every generated mapper the container registered answers in turn — the applicat
 it carries every package's maps as well — so a library reaches every pair the application mapped.
 
 ```csharp
-public class Repository<TEntity, TDto>(IShiftMapper mapper, DbContext db)
+public class Repository<TEntity, TDto>(IMapper mapper, DbContext db)
 {
     public IQueryable<TDto> List() => mapper.ProjectTo<TEntity, TDto>(db.Set<TEntity>());
 

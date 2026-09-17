@@ -27,7 +27,7 @@ namespace ShiftMapper;
 /// map needs at run time (the <c>MapFrom</c> trees, the compiled projections), and
 /// <see cref="Root{TGenerated}"/> is how an extension method reaches its own assembly's one.</para>
 ///
-/// <para><b>THE DOOR THAT NEEDS NO TYPES</b> is <see cref="IShiftMapper"/>, which this class
+/// <para><b>THE DOOR THAT NEEDS NO TYPES</b> is <see cref="IMapper"/>, which this class
 /// implements — explicitly, so that <c>mapper.Map&lt;SomeDto&gt;(thing)</c> keeps failing to
 /// compile when there is no map rather than binding to an <c>object</c> overload and throwing at
 /// run time. A library generic over its entity types injects the interface and is dispatched at
@@ -41,7 +41,7 @@ namespace ShiftMapper;
 /// with none, which still serves every typed extension method (their generated mappers are built
 /// on first use) and refuses only the run-time door.</para>
 /// </summary>
-public sealed class Mapper : IShiftMapper
+public sealed class Mapper : IMapper
 {
     private readonly ShiftMapperBase[] _registered;
 
@@ -49,13 +49,13 @@ public sealed class Mapper : IShiftMapper
     private readonly ConcurrentDictionary<Type, ShiftMapperBase> _byType = new();
 
     /// <summary>Which registered mapper answers for a pair through the run-time door — null when none does.</summary>
-    private readonly ConcurrentDictionary<(Type Source, Type Destination), IShiftMapper?> _owners = new();
+    private readonly ConcurrentDictionary<(Type Source, Type Destination), IMapper?> _owners = new();
 
     private readonly IServiceProvider? _services;
 
     /// <summary>
     /// A mapper with nothing registered. Every typed extension method works — its generated mapper
-    /// is built on first use, parameterless — and the run-time door (<see cref="IShiftMapper"/>)
+    /// is built on first use, parameterless — and the run-time door (<see cref="IMapper"/>)
     /// throws, since there is nothing to dispatch to. For tests and tools; an application resolves
     /// its mapper from the container.
     /// </summary>
@@ -159,7 +159,7 @@ public sealed class Mapper : IShiftMapper
     }
 
     /// <inheritdoc/>
-    TDestination IShiftMapper.Map<TDestination>(object source)
+    TDestination IMapper.Map<TDestination>(object source)
     {
         if (source is null)
             throw new ArgumentNullException(nameof(source));
@@ -168,7 +168,7 @@ public sealed class Mapper : IShiftMapper
     }
 
     /// <inheritdoc/>
-    TDestination IShiftMapper.Map<TSource, TDestination>(TSource source)
+    TDestination IMapper.Map<TSource, TDestination>(TSource source)
     {
         if (source is null)
             throw new ArgumentNullException(nameof(source));
@@ -176,7 +176,7 @@ public sealed class Mapper : IShiftMapper
         // The declared type first, then what is actually in front of us — the same two steps a
         // generated door takes, so a value handed in through a base-typed variable still finds
         // its map.
-        IShiftMapper? owner = Find(typeof(TSource), typeof(TDestination))
+        IMapper? owner = Find(typeof(TSource), typeof(TDestination))
             ?? Find(source.GetType(), typeof(TDestination));
 
         if (owner is null)
@@ -186,7 +186,7 @@ public sealed class Mapper : IShiftMapper
     }
 
     /// <inheritdoc/>
-    TDestination IShiftMapper.Map<TSource, TDestination>(TSource source, TDestination destination)
+    TDestination IMapper.Map<TSource, TDestination>(TSource source, TDestination destination)
     {
         if (source is null)
             throw new ArgumentNullException(nameof(source));
@@ -199,7 +199,7 @@ public sealed class Mapper : IShiftMapper
         // with the message below, which is what a single mapper would have said.
         foreach (ShiftMapperBase mapper in Dispatchable())
         {
-            var door = (IShiftMapper)mapper;
+            var door = (IMapper)mapper;
 
             if (door.CanMap(typeof(TSource), typeof(TDestination)))
                 return door.Map(source, destination);
@@ -212,7 +212,7 @@ public sealed class Mapper : IShiftMapper
     }
 
     /// <inheritdoc/>
-    System.Linq.IQueryable<TDestination> IShiftMapper.ProjectTo<TSource, TDestination>(System.Linq.IQueryable<TSource> source)
+    System.Linq.IQueryable<TDestination> IMapper.ProjectTo<TSource, TDestination>(System.Linq.IQueryable<TSource> source)
     {
         if (source is null)
             throw new ArgumentNullException(nameof(source));
@@ -221,7 +221,7 @@ public sealed class Mapper : IShiftMapper
     }
 
     /// <inheritdoc/>
-    bool IShiftMapper.CanMap(Type source, Type destination)
+    bool IMapper.CanMap(Type source, Type destination)
     {
         if (source is null)
             throw new ArgumentNullException(nameof(source));
@@ -232,15 +232,15 @@ public sealed class Mapper : IShiftMapper
         return Find(source, destination) is not null;
     }
 
-    private IShiftMapper Owner(Type source, Type destination) =>
+    private IMapper Owner(Type source, Type destination) =>
         Find(source, destination) ?? throw NoMap(source, destination);
 
-    private IShiftMapper? Find(Type source, Type destination) =>
+    private IMapper? Find(Type source, Type destination) =>
         _owners.GetOrAdd((source, destination), static (pair, self) =>
         {
             foreach (ShiftMapperBase mapper in self.Dispatchable())
             {
-                var door = (IShiftMapper)mapper;
+                var door = (IMapper)mapper;
 
                 if (door.CanMap(pair.Source, pair.Destination))
                     return door;

@@ -25,7 +25,7 @@ public static class Competitors
     /// <para>Built once and shared, which is how every AutoMapper application uses it — the
     /// configuration is a singleton and the cost of building it is paid at start-up, not here.</para>
     /// </summary>
-    public static IMapper AutoMapperInstance { get; } = new MapperConfiguration(
+    public static AutoMapper.IMapper AutoMapperInstance { get; } = new MapperConfiguration(
         cfg =>
         {
             // ISOCode -> IsoCode is found by AutoMapper's default case-insensitive matching, the

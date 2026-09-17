@@ -29,7 +29,7 @@ namespace Microsoft.Extensions.DependencyInjection;
 /// <para><b>WHAT IT REGISTERS</b> is the GENERATED MAPPER of the calling assembly — the class the
 /// generator wrote holding every map that assembly can see: the mapper classes declared in it,
 /// and those declared by every package it references — and <see cref="Mapper"/>, the one object
-/// application code injects, together with <see cref="IShiftMapper"/> for library code. Nothing is
+/// application code injects, together with <see cref="IMapper"/> for library code. Nothing is
 /// named: the assembly's metadata says which class was generated.</para>
 ///
 /// <para><b>THE LAMBDA IS READ AT COMPILE TIME.</b> The generator finds these calls and bakes the
@@ -38,7 +38,7 @@ namespace Microsoft.Extensions.DependencyInjection;
 ///
 /// <para><b>A PACKAGE MAY MAKE THIS CALL TOO.</b> A framework's own <c>AddXxx</c> extension can
 /// call it for its own assembly, so that a host with no generator of its own — or one that maps
-/// only through <see cref="IShiftMapper"/> — still has the package's maps at run time;
+/// only through <see cref="IMapper"/> — still has the package's maps at run time;
 /// <c>o.ShareConversions&lt;T&gt;()</c> there hands the pack to every project that references the
 /// package, through metadata their generators read. Every call, from whichever assembly, lands in
 /// the one registry kept in the collection, and <see cref="Mapper"/> is made of all of them, the
@@ -140,7 +140,7 @@ public static class ShiftMapperServiceCollectionExtensions
     }
 
     /// <summary>
-    /// <see cref="Mapper"/> and <see cref="IShiftMapper"/>, over every generated mapper registered
+    /// <see cref="Mapper"/> and <see cref="IMapper"/>, over every generated mapper registered
     /// so far — re-registered on every call, because a second call changes the answer. The
     /// shortest lifetime of the lot: a Mapper living longer than one of its generated mappers
     /// would capture one scope's instance forever.
@@ -148,7 +148,7 @@ public static class ShiftMapperServiceCollectionExtensions
     private static void RegisterMapper(IServiceCollection services, Registry registry)
     {
         services.RemoveAll(typeof(Mapper));
-        services.RemoveAll(typeof(IShiftMapper));
+        services.RemoveAll(typeof(IMapper));
 
         ServiceLifetime lifetime = registry.Entries.Count == 0
             ? ServiceLifetime.Scoped
@@ -166,7 +166,7 @@ public static class ShiftMapperServiceCollectionExtensions
         // Resolved THROUGH the registration above rather than built again, so the interface and
         // the class are one object per scope however they are asked for.
         services.Add(new ServiceDescriptor(
-            typeof(IShiftMapper),
+            typeof(IMapper),
             serviceProvider => serviceProvider.GetRequiredService<Mapper>(),
             lifetime));
     }

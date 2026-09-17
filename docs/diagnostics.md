@@ -1097,7 +1097,7 @@ repository projecting `IQueryable<TEntity>` to `TDto` names no pair, so nothing 
 ```csharp
 public class Repository<TEntity, TDto>
 {
-    public IQueryable<TDto> List(IQueryable<TEntity> source, IShiftMapper mapper) =>
+    public IQueryable<TDto> List(IQueryable<TEntity> source, IMapper mapper) =>
         mapper.ProjectTo<TEntity, TDto>(source);   // type parameters: silent, by design
 }
 ```
@@ -1107,7 +1107,7 @@ have had to prove a negative over an open world and accuse that repository of a 
 made. Inverted to "this concrete call, on this concrete pair, on this mapper, is known to throw", it
 is decidable. Two more silences follow from the same principle: `mapper.Map<Destination>(source)` on
 the same pair says nothing, because the map is not broken, only its projection; and a call through
-`IShiftMapper` with concrete type arguments says nothing, because the interface carries no metadata
+`IMapper` with concrete type arguments says nothing, because the interface carries no metadata
 — only the mapper class does.
 
 **The fix** is `Map`, or fixing the map's own diagnostic so it projects again. Where the refusal is

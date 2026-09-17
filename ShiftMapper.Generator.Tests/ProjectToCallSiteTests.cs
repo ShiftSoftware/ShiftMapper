@@ -8,7 +8,7 @@ namespace ShiftMapper.Generator.Tests;
 ///
 /// <para><b>This is the SOUND version of a rule that could not be built as first imagined.</b> The
 /// obvious rule is a warning when a map "is only ever ProjectTo'd", which asks an analyzer to prove a
-/// negative over an open world — <c>IShiftMapper.ProjectTo</c> exists so an earlier-compiled
+/// negative over an open world — <c>IMapper.ProjectTo</c> exists so an earlier-compiled
 /// assembly can project without naming the mapper, and through a generic repository the type
 /// arguments are type PARAMETERS naming no pair at all. Every call it could not see would be a false
 /// accusation against correct code.</para>
@@ -98,7 +98,7 @@ public class ProjectToCallSiteTests
                 where TEntity : class
                 where TDto : class
             {
-                public IQueryable<TDto> List(IQueryable<TEntity> source, IShiftMapper mapper) =>
+                public IQueryable<TDto> List(IQueryable<TEntity> source, IMapper mapper) =>
                     mapper.ProjectTo<TEntity, TDto>(source);
             }
             """);

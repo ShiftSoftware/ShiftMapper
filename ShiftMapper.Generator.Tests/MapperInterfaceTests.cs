@@ -4,13 +4,13 @@ using Xunit;
 namespace ShiftMapper.Generator.Tests;
 
 /// <summary>
-/// The generated implementation of <c>IShiftMapper</c> — the door a library comes in through when
+/// The generated implementation of <c>IMapper</c> — the door a library comes in through when
 /// it cannot name the application's mapper class.
 ///
 /// These tests are about the SHAPE of what is emitted. What it does at runtime is covered in
 /// ShiftMapper.Tests, against a real generated mapper and a real database.
 /// </summary>
-public class ShiftMapperInterfaceTests
+public class MapperInterfaceTests
 {
     private const string TwoMaps =
         """
@@ -41,7 +41,7 @@ public class ShiftMapperInterfaceTests
     {
         GeneratorRun run = GeneratorHarness.Run(TwoMaps);
 
-        run.Compiles().Emits("internal sealed class GeneratedMapper : global::ShiftMapper.ShiftMapperBase, global::ShiftMapper.IShiftMapper");
+        run.Compiles().Emits("internal sealed class GeneratedMapper : global::ShiftMapper.ShiftMapperBase, global::ShiftMapper.IMapper");
     }
 
     /// <summary>
@@ -58,11 +58,11 @@ public class ShiftMapperInterfaceTests
         GeneratorRun run = GeneratorHarness.Run(TwoMaps);
 
         run.Compiles()
-           .Emits("TDestination global::ShiftMapper.IShiftMapper.Map<TDestination>(object source)")
-           .Emits("TDestination global::ShiftMapper.IShiftMapper.Map<TSource, TDestination>(TSource source)")
-           .Emits("TDestination global::ShiftMapper.IShiftMapper.Map<TSource, TDestination>(TSource source, TDestination destination)")
-           .Emits("global::System.Linq.IQueryable<TDestination> global::ShiftMapper.IShiftMapper.ProjectTo<TSource, TDestination>(")
-           .Emits("bool global::ShiftMapper.IShiftMapper.CanMap(global::System.Type source, global::System.Type destination)")
+           .Emits("TDestination global::ShiftMapper.IMapper.Map<TDestination>(object source)")
+           .Emits("TDestination global::ShiftMapper.IMapper.Map<TSource, TDestination>(TSource source)")
+           .Emits("TDestination global::ShiftMapper.IMapper.Map<TSource, TDestination>(TSource source, TDestination destination)")
+           .Emits("global::System.Linq.IQueryable<TDestination> global::ShiftMapper.IMapper.ProjectTo<TSource, TDestination>(")
+           .Emits("bool global::ShiftMapper.IMapper.CanMap(global::System.Type source, global::System.Type destination)")
 
            // The same members in their implicit spelling would be the bug this guards against.
            .DoesNotEmit("public TDestination Map<TDestination>(object source)")
@@ -114,7 +114,7 @@ public class ShiftMapperInterfaceTests
         GeneratorRun run = GeneratorHarness.Run(TwoMaps);
 
         run.Compiles()
-           .Emits("return ((global::ShiftMapper.IShiftMapper)this).Map<TDestination>((object)source!);");
+           .Emits("return ((global::ShiftMapper.IMapper)this).Map<TDestination>((object)source!);");
     }
 
     /// <summary>
@@ -199,8 +199,8 @@ public class ShiftMapperInterfaceTests
             """);
 
         run.Compiles()
-           .Emits("internal sealed class GeneratedMapper : global::ShiftMapper.ShiftMapperBase, global::ShiftMapper.IShiftMapper")
-           .Emits("bool global::ShiftMapper.IShiftMapper.CanMap(global::System.Type source, global::System.Type destination)")
+           .Emits("internal sealed class GeneratedMapper : global::ShiftMapper.ShiftMapperBase, global::ShiftMapper.IMapper")
+           .Emits("bool global::ShiftMapper.IMapper.CanMap(global::System.Type source, global::System.Type destination)")
            .Emits("return false;");
     }
 
@@ -224,6 +224,6 @@ public class ShiftMapperInterfaceTests
             }
             """);
 
-        run.Compiles().Emits("internal sealed class GeneratedMapper : global::ShiftMapper.ShiftMapperBase, global::ShiftMapper.IShiftMapper");
+        run.Compiles().Emits("internal sealed class GeneratedMapper : global::ShiftMapper.ShiftMapperBase, global::ShiftMapper.IMapper");
     }
 }

@@ -11,7 +11,7 @@ namespace Microsoft.Extensions.DependencyInjection;
 ///
 /// <para>Two things happen in the one call below. <b>This assembly's generated mapper</b> is
 /// registered, holding every map this package declares, so a host with no generator of its own —
-/// or a library mapping through <c>IShiftMapper</c> — reaches them at run time. An application
+/// or a library mapping through <c>IMapper</c> — reaches them at run time. An application
 /// that references the package has these maps in its OWN generated mapper as well, re-baked with
 /// its own rules, and that one answers first; this registration is the fallback. <b>The pack is
 /// SHARED</b> — <c>ShareConversions</c> rather than <c>AddConversions</c> — which is

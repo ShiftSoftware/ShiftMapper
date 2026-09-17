@@ -11,7 +11,7 @@ namespace ShiftMapper.Generator;
 ///
 /// <para><b>WHY THE OBVIOUS RULE COULD NOT BE BUILT.</b> The obvious rule is a diagnostic when a
 /// map "is only ever <c>ProjectTo</c>'d". That asks an analyzer to prove a
-/// NEGATIVE over an open world: <c>IShiftMapper.ProjectTo&lt;TSource, TDestination&gt;</c> exists
+/// NEGATIVE over an open world: <c>IMapper.ProjectTo&lt;TSource, TDestination&gt;</c> exists
 /// precisely so an earlier-compiled assembly can project without naming the mapper, and through a
 /// generic repository the type arguments are type PARAMETERS carrying no pair information at all.
 /// Every call the analyzer could not see would become a false accusation against correct code, and

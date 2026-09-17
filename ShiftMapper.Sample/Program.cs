@@ -92,7 +92,7 @@ app.MapHomeEndpoints();
 app.MapInvoiceEndpoints();
 app.MapProductEndpoints();
 
-// These two use the ShiftMapper-generated IShiftMapper.
+// These two use the ShiftMapper-generated IMapper.
 app.MapBrandEndpoints();
 app.MapStockEndpoints();
 

@@ -14,9 +14,9 @@ namespace ShiftMapper;
 /// <code>
 /// public class Repository&lt;TEntity, TDto&gt;
 /// {
-///     private readonly IShiftMapper _mapper;
+///     private readonly IMapper _mapper;
 ///
-///     public Repository(IShiftMapper mapper) =&gt; _mapper = mapper;
+///     public Repository(IMapper mapper) =&gt; _mapper = mapper;
 ///
 ///     public TDto Read(TEntity entity) =&gt; _mapper.Map&lt;TEntity, TDto&gt;(entity);
 /// }
@@ -39,7 +39,7 @@ namespace ShiftMapper;
 /// both resolve to the same instance. Under it, every generated mapper the container registered
 /// answers in turn — the application's first, since it carries every package's maps as well.
 /// </summary>
-public interface IShiftMapper
+public interface IMapper
 {
     /// <summary>
     /// Creates a new <typeparamref name="TDestination"/> from a source whose type is only known

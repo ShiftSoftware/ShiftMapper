@@ -140,13 +140,13 @@ through `IncludeBase` as `UPPER([c].[Sku])`.
 
 | AutoMapper | ShiftMapper |
 |---|---|
-| `IMapper` injected | `Mapper`, the one class in the runtime package, injected; `IShiftMapper` for a library generic over its types |
+| `AutoMapper.IMapper` injected | `ShiftMapper.Mapper`, the one class in the runtime package, injected; `ShiftMapper.IMapper` for a library generic over its types — the same simple name, so a project that references both packages while porting needs `using IMapper = ShiftMapper.IMapper;` |
 | `mapper.Map<TDestination>(source)` | `mapper.Map<TDestination>(source)` or `source.Map<TDestination>(mapper)` |
-| `mapper.Map<TSource, TDestination>(source)` | the generated extension methods infer the source: `mapper.Map<TDestination>(source)`, or `mapper.MapToXxx(source)`; on `IShiftMapper`, `Map<TSource, TDestination>(source)` |
+| `mapper.Map<TSource, TDestination>(source)` | the generated extension methods infer the source: `mapper.Map<TDestination>(source)`, or `mapper.MapToXxx(source)`; on `IMapper`, `Map<TSource, TDestination>(source)` |
 | `mapper.Map(source, destination)` | `mapper.Map(source, destination)` — not generated for a destination with nothing assignable after construction (a positional record) |
 | `mapper.Map<TDestination>(null)` | `Map` throws on a null source; `mapper.MapOrNull<TDestination>(maybe)` returns null |
 | `mapper.Map<List<TDto>>(items)` | `mapper.Map<List<TDto>>(items)`, also `TDto[]`, `HashSet<TDto>`, `IReadOnlyList<TDto>`, and a typed `MapToBrandDtoList(items)` |
-| `mapper.Map(source, sourceType, destinationType)` | `IShiftMapper.Map<TDestination>(object source)` — the source type is taken from the object; the destination is still a type parameter |
+| `mapper.Map(source, sourceType, destinationType)` | `IMapper.Map<TDestination>(object source)` — the source type is taken from the object; the destination is still a type parameter |
 | `mapper.Map<TDestination>(source, opts => opts.Items["key"] = value)` | none |
 | `query.ProjectTo<TDto>(mapper.ConfigurationProvider)` | `query.ProjectTo<TDto>(mapper)` or `mapper.ProjectTo<TDto>(query)` — one parameter, no `parameters`, no `membersToExpand` |
 | `mapper.ConfigurationProvider` / `IConfigurationProvider` | none — there is no configuration object at run time |
@@ -301,7 +301,9 @@ A workable order for the port itself:
 
 1. Turn each `Profile` into a `class : ShiftMapperBase`, and delete the `MapperConfiguration` —
    the generator reads every mapper class in the project on its own, so nothing lists them.
-   Replace `AddAutoMapper(...)` with `AddShiftMapper()`, and `IMapper` with `Mapper`. Everything inside the profiles that is
+   Replace `AddAutoMapper(...)` with `AddShiftMapper()`, and the injected `IMapper` with `Mapper` (ShiftMapper has
+   an `IMapper` too, for libraries; while both packages are referenced the simple name is ambiguous, so alias it or
+   drop the AutoMapper reference first). Everything inside the profiles that is
    `CreateMap`, `ForMember`, `MapFrom`, `Ignore`, `ReverseMap`, `Include`, `IncludeBase`, `As` and
    open-generic `CreateMap` compiles unchanged. A `CreateConversion` written in a profile now
    reaches only that mapper's maps; move the ones meant for everything into a

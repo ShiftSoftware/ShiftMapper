@@ -34,7 +34,7 @@ public sealed class DatabaseFixture : IDisposable
         // mapper includes (NumberedMapper, with its dependency; GadgetMapper, without) is
         // registered along with it — nothing is registered by hand.
         //
-        // FOUR mappers, so IShiftMapper resolves to a composite over all of them.
+        // FOUR mappers, so IMapper resolves to a composite over all of them.
         services.AddShiftMapper();
 
         _services = services.BuildServiceProvider();

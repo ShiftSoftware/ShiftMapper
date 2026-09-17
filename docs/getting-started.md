@@ -40,7 +40,7 @@ referenced packages declare:
 // ShiftMapper.Sample/Generated/.../ShiftMapper.Generated.g.cs
 namespace ShiftMapper.Generated.ShiftMapper_Sample
 {
-    internal sealed class GeneratedMapper : global::ShiftMapper.ShiftMapperBase, global::ShiftMapper.IShiftMapper
+    internal sealed class GeneratedMapper : global::ShiftMapper.ShiftMapperBase, global::ShiftMapper.IMapper
     {
         public global::ShiftMapper.Sample.Dtos.BrandDto MapToBrandDto(/* ... */)
 ```
@@ -238,7 +238,7 @@ One call, hand-written library code
 (`ShiftMapper/ShiftMapperServiceCollectionExtensions.cs`), and it does three things: registers the
 calling assembly's **generated mapper**, read from the assembly's own metadata so nothing is named;
 registers **`Mapper`**, the one object application code injects, made of every generated mapper
-any call registered — this assembly's first; and registers **`IShiftMapper`** for libraries that
+any call registered — this assembly's first; and registers **`IMapper`** for libraries that
 cannot name your types, resolving to the same object. Mapper classes are not registered: the
 generated mapper builds them from the provider on first use, with their dependencies injected.
 Scoped is the default so a mapper class may safely depend on a `DbContext`.
@@ -345,7 +345,7 @@ Two practical notes:
   `memory`/`query` pair, which is the two-backend decision in its purest form).
 - **[extension-points.md](extension-points.md)** — `ForMember` and its options, the map-level
   hooks, included mappers, packs, member conventions, inheritance and open generics, rules arriving from a
-  referenced assembly, and `IShiftMapper` for library code that cannot name your mapper.
+  referenced assembly, and `IMapper` for library code that cannot name your mapper.
 - **[diagnostics.md](diagnostics.md)** — all thirty-eight rules, what each one is protecting, and
   how to answer it.
 - **[automapper-migration.md](automapper-migration.md)** — what carries over unchanged, what is

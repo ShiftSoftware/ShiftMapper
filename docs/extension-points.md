@@ -289,7 +289,7 @@ application that has chosen `MapperDiscovery.LocalAndRegistered` takes your clas
 names them with `o.AddMapper<PlatformMapper>()` — or when you share them: `o.ShareMapper<PlatformMapper>()`
 in your own registration, the mapper analogue of sharing a pack, announced in the application's
 build (SM0043). Under `MapperDiscovery.Registered` only what the application names is taken, shared
-or not. Whatever it takes, your own registration keeps your maps reachable through `IShiftMapper`. Declarations may be split across
+or not. Whatever it takes, your own registration keeps your maps reachable through `IMapper`. Declarations may be split across
 private helper methods; the generator reads the whole class body, not only the constructor. What
 it will not read is a declaration inside an `if`, a loop, a lambda or any other position it cannot
 bake — that is SM0035, an error, and it applies in your build exactly as it does in an application's,
@@ -340,7 +340,7 @@ classes an application is meant to call by type; leave the rest to the run-time 
 assembly, lands in the one registry the collection holds, and `Mapper` is made of every generated
 mapper registered — the application's FIRST, since it already carries your maps re-baked with its
 own rules, and yours as the fallback: for a host that has no generator of its own, or a library
-mapping through `IShiftMapper` in a host that never registered. The application never injects your
+mapping through `IMapper` in a host that never registered. The application never injects your
 generated mapper; it cannot even name it.
 
 **Dependencies are allowed and resolved late.** A mapper class or pack may take constructor

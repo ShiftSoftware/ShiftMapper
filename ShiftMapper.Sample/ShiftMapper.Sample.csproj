@@ -31,7 +31,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Normal reference: gives us the IShiftMapper / MapperConfiguration types at runtime. -->
+    <!-- Normal reference: gives us the Mapper / IMapper types at runtime. -->
     <ProjectReference Include="..\ShiftMapper\ShiftMapper.csproj" />
 
     <!-- THE SAMPLE'S STAND-IN FOR A FRAMEWORK PACKAGE (modelled on ShiftFramework), referenced the

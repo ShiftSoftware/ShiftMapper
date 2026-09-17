@@ -63,7 +63,7 @@ public class RegistrationOptionsTests
 
     /// <summary>The interface and the class are one object per scope, however they are asked for.</summary>
     [Fact]
-    public void IShiftMapper_and_Mapper_resolve_to_the_same_instance()
+    public void IMapper_and_Mapper_resolve_to_the_same_instance()
     {
         var services = new ServiceCollection();
         services.AddSingleton<IInvoiceNumbering, InvoiceNumbering>();
@@ -74,7 +74,7 @@ public class RegistrationOptionsTests
 
         Assert.Same(
             scope.ServiceProvider.GetRequiredService<Mapper>(),
-            scope.ServiceProvider.GetRequiredService<IShiftMapper>());
+            scope.ServiceProvider.GetRequiredService<IMapper>());
     }
 
     /// <summary>
@@ -125,7 +125,7 @@ public class RegistrationOptionsTests
 
         // Both spellings, and the run-time door.
         Assert.Equal("H7", new FileDto { Size = 7 }.Map<FileSummary>(mapper).Size);
-        Assert.Equal("H9", scope.ServiceProvider.GetRequiredService<IShiftMapper>()
+        Assert.Equal("H9", scope.ServiceProvider.GetRequiredService<IMapper>()
             .Map<FileSummary>(new FileDto { Size = 9 }).Size);
     }
 
@@ -161,7 +161,7 @@ public class RegistrationOptionsTests
             Assert.Same(typeof(PlatformMapper).Assembly, mapper.Registered[1].GetType().Assembly);
 
             // Whichever call came first, the run-time door answers with this assembly's mapper.
-            IShiftMapper door = scope.ServiceProvider.GetRequiredService<IShiftMapper>();
+            IMapper door = scope.ServiceProvider.GetRequiredService<IMapper>();
 
             Assert.True(door.CanMap(typeof(FileDto), typeof(FileSummary)));
             Assert.True(door.CanMap(typeof(Doodad), typeof(DoodadDto)));
@@ -181,7 +181,7 @@ public class RegistrationOptionsTests
 
         Assert.Single(mapper.Registered);
 
-        IShiftMapper door = mapper;
+        IMapper door = mapper;
 
         Assert.True(door.CanMap(typeof(FileDto), typeof(FileSummary)));
         Assert.Equal("H42", door.Map<FileSummary>(new FileDto { Name = "a", Size = 42 }).Size);

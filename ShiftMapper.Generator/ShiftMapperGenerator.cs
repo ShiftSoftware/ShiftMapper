@@ -89,10 +89,10 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     /// mapper without naming the application's mapper class. Spelled with global:: because a
     /// mapper may well live in a namespace of the developer's own that starts with ShiftMapper.
     /// </summary>
-    private const string MapperInterfaceType = "global::ShiftMapper.IShiftMapper";
+    private const string MapperInterfaceType = "global::ShiftMapper.IMapper";
 
     /// <summary>The same interface as a metadata name, for looking its symbol up — the mark of a mapper that was generated for.</summary>
-    private const string MapperInterfaceMetadataName = "ShiftMapper.IShiftMapper";
+    private const string MapperInterfaceMetadataName = "ShiftMapper.IMapper";
 
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
@@ -6154,7 +6154,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     }
 
     /// <summary>
-    /// Writes the explicit implementation of <c>IShiftMapper</c> — the door a LIBRARY comes in
+    /// Writes the explicit implementation of <c>IMapper</c> — the door a LIBRARY comes in
     /// through when it has to map for an application whose mapper class it cannot name.
     ///
     /// EXPLICIT, every member of it, and that is the decision worth explaining. An implicit
@@ -6207,7 +6207,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     }
 
     /// <summary>
-    /// <c>IShiftMapper.Map&lt;TDestination&gt;(object)</c> — the only door where the source type
+    /// <c>IMapper.Map&lt;TDestination&gt;(object)</c> — the only door where the source type
     /// is not known until the value arrives.
     ///
     /// Two passes, and their order is the design. EXACT runtime type first, so a mapper holding
@@ -6262,7 +6262,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     }
 
     /// <summary>
-    /// <c>IShiftMapper.Map&lt;TSource, TDestination&gt;(TSource)</c> — both types named, which is
+    /// <c>IMapper.Map&lt;TSource, TDestination&gt;(TSource)</c> — both types named, which is
     /// how a generic library method usually has them.
     ///
     /// It ends by falling through to the object door rather than throwing. TSource is whatever
@@ -6293,7 +6293,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     }
 
     /// <summary>
-    /// <c>IShiftMapper.Map&lt;TSource, TDestination&gt;(TSource, TDestination)</c> — copying onto
+    /// <c>IMapper.Map&lt;TSource, TDestination&gt;(TSource, TDestination)</c> — copying onto
     /// an object the caller already has.
     ///
     /// The EXACT declared pair, with no runtime-type fallback, and unlike everywhere else that is
@@ -6331,7 +6331,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     }
 
     /// <summary>
-    /// <c>IShiftMapper.ProjectTo&lt;TSource, TDestination&gt;</c> — the reason the interface is
+    /// <c>IMapper.ProjectTo&lt;TSource, TDestination&gt;</c> — the reason the interface is
     /// worth having at all.
     ///
     /// A framework writing a list endpoint can hand EF one expression covering the whole graph,
@@ -6363,7 +6363,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     }
 
     /// <summary>
-    /// <c>IShiftMapper.CanMap</c> — asked, rather than discovered by catching an exception.
+    /// <c>IMapper.CanMap</c> — asked, rather than discovered by catching an exception.
     ///
     /// One test per map, and <c>IsAssignableFrom</c> rather than <c>==</c> so that the answer
     /// matches the create methods rule for rule: they accept a subclass of a mapped type, and an

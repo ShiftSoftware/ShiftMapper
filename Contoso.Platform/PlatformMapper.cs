@@ -13,7 +13,7 @@ namespace Contoso.Platform;
 /// bodies. An application that references this package gets this map in ITS generated mapper —
 /// <c>mapper.MapToFileSummary(dto)</c> works there with nothing written — and the package
 /// REGISTERS its own generated mapper too, in <c>AddContosoPlatform()</c>, so a host with no
-/// generator of its own still has the map at run time through <c>IShiftMapper</c>.</para>
+/// generator of its own still has the map at run time through <c>IMapper</c>.</para>
 ///
 /// <para>The package's RULES — conversions and the member convention — live in
 /// <see cref="PlatformConversions"/>, a pack, which the same registration SHARES with every

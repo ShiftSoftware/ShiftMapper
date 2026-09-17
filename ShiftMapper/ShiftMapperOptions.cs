@@ -21,7 +21,7 @@ public enum MapperDiscovery
     /// Every mapper class this project declares, plus the PACKAGE mapper classes this project
     /// names with <see cref="ShiftMapperOptions.AddMapper{TMapper}"/> and those a package shared
     /// with <see cref="ShiftMapperOptions.ShareMapper{TMapper}"/>. A package's other mappers stay
-    /// out of this assembly — and stay reachable through <see cref="IShiftMapper"/> if the package
+    /// out of this assembly — and stay reachable through <see cref="IMapper"/> if the package
     /// registered itself.
     /// </summary>
     LocalAndRegistered = 1,

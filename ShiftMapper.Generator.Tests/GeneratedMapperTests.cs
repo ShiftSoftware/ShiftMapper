@@ -53,7 +53,7 @@ public class GeneratedMapperTests
            .Emits("global using ShiftMapper.Generated.ShiftMapperSnippet;")
            .Emits("[assembly: global::ShiftMapper.ShiftMapperGenerated(typeof(global::ShiftMapper.Generated.ShiftMapperSnippet.GeneratedMapper))]")
            .Emits("namespace ShiftMapper.Generated.ShiftMapperSnippet")
-           .Emits("internal sealed class GeneratedMapper : global::ShiftMapper.ShiftMapperBase, global::ShiftMapper.IShiftMapper")
+           .Emits("internal sealed class GeneratedMapper : global::ShiftMapper.ShiftMapperBase, global::ShiftMapper.IMapper")
            .Emits("internal static class MapperExtensions");
 
         Assert.Single(run.GeneratedFiles);
@@ -189,7 +189,7 @@ public class GeneratedMapperTests
             Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.CreateScope(provider);
 
         var mapper = (Mapper)scope.ServiceProvider.GetService(typeof(Mapper))!;
-        var door = (IShiftMapper)scope.ServiceProvider.GetService(typeof(IShiftMapper))!;
+        var door = (IMapper)scope.ServiceProvider.GetService(typeof(IMapper))!;
 
         Assert.Same(mapper, door);
         Assert.Single(mapper.Registered);
@@ -207,7 +207,7 @@ public class GeneratedMapperTests
 
         Assert.True(door.CanMap(stockType, dtoType));
 
-        object dto = typeof(IShiftMapper).GetMethod(nameof(IShiftMapper.Map), new[] { typeof(object) })!
+        object dto = typeof(IMapper).GetMethod(nameof(IMapper.Map), new[] { typeof(object) })!
             .MakeGenericMethod(dtoType)
             .Invoke(door, new[] { stock })!;
 

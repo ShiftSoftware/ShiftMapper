@@ -31,7 +31,7 @@ public class ComparisonBenchmarks
 {
     private readonly ServiceProvider _provider = Container.Build();
     private Mapper _shift = null!;
-    private readonly IMapper _auto = Competitors.AutoMapperInstance;
+    private readonly AutoMapper.IMapper _auto = Competitors.AutoMapperInstance;
     private readonly MapperlyMapper _mapperly = new();
 
     private Brand _brand = null!;

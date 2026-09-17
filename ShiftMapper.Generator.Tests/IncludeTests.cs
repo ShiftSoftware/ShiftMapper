@@ -66,7 +66,7 @@ public class IncludeTests
             """);
 
         run.Compiles()
-           .Emits("internal sealed class GeneratedMapper : global::ShiftMapper.ShiftMapperBase, global::ShiftMapper.IShiftMapper")
+           .Emits("internal sealed class GeneratedMapper : global::ShiftMapper.ShiftMapperBase, global::ShiftMapper.IMapper")
            .Emits("MapToBrandDto(global::Brand source)")
            .Emits("MapToStockDto(global::Stock source)")
            .Emits("_ShiftMapperProjection_Brand_To_BrandDto");

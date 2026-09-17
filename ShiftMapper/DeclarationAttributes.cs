@@ -165,7 +165,7 @@ public sealed class ShiftMapperGeneratedAttribute : Attribute
 {
     public ShiftMapperGeneratedAttribute(Type generated) => Generated = generated;
 
-    /// <summary>The generated class: derives from <see cref="ShiftMapperBase"/>, implements <see cref="IShiftMapper"/>, parameterless.</summary>
+    /// <summary>The generated class: derives from <see cref="ShiftMapperBase"/>, implements <see cref="IMapper"/>, parameterless.</summary>
     public Type Generated { get; }
 }
 
