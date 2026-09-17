@@ -35,13 +35,7 @@ public sealed class DatabaseFixture : IDisposable
         // registered along with it — nothing is registered by hand.
         //
         // FOUR mappers, so IShiftMapper resolves to a composite over all of them.
-        services.AddShiftMapper(o =>
-        {
-            o.AddMapper<IncludingMapper>();
-            o.AddMapper<ConversionMapper>();
-            o.AddMapper<DeclaredMapper>();
-            o.AddMapper<TestMapper>();
-        });
+        services.AddShiftMapper();
 
         _services = services.BuildServiceProvider();
 
@@ -51,17 +45,10 @@ public sealed class DatabaseFixture : IDisposable
     }
 
     /// <summary>A mapper resolved from DI, the way application code gets one.</summary>
-    public TestMapper Mapper => _services.GetRequiredService<TestMapper>();
+    /// <summary>THE mapper: every map declared in this project, and in Contoso.Platform, behind one object.</summary>
+    public Mapper Mapper => _services.GetRequiredService<Mapper>();
 
     /// <summary>The mapper including the mapper that needs DI.</summary>
-    public IncludingMapper IncludingMapper => _services.GetRequiredService<IncludingMapper>();
-
-    /// <summary>The mapper carrying the pack of type-pair conversions.</summary>
-    public ConversionMapper ConversionMapper => _services.GetRequiredService<ConversionMapper>();
-
-    /// <summary>The mapper whose conversions come from a referenced assembly.</summary>
-    public DeclaredMapper DeclaredMapper => _services.GetRequiredService<DeclaredMapper>();
-
     public IServiceProvider Services => _services;
 
     public TestDbContext CreateContext()

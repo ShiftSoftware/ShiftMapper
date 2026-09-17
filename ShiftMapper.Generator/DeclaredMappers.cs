@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
+using System.Threading;
 using Microsoft.CodeAnalysis;
 
 namespace ShiftMapper.Generator;
@@ -24,7 +25,7 @@ namespace ShiftMapper.Generator;
 /// </summary>
 internal static class DeclaredMappers
 {
-    private const string ContractAttribute = "ShiftMapper.ShiftMapperContractAttribute";
+    internal const string ContractAttribute = "ShiftMapper.ShiftMapperContractAttribute";
 
     private const string MapperAttribute = "ShiftMapper.ShiftMapperDeclaredMapperAttribute";
 
@@ -150,6 +151,53 @@ internal static class DeclaredMappers
         /// <summary>What each found mapper's <c>ConfigureDefaults</c> set.</summary>
         public Dictionary<string, DeclaredDefaults> Defaults { get; } = new(StringComparer.Ordinal);
     }
+
+    /// <summary>
+    /// Every MAPPER a referenced assembly declares — what the generated mapper of this compilation
+    /// includes without being asked. Only assemblies that reference the runtime are opened, since
+    /// nothing else can carry the attribute; a mapper this compilation cannot construct (generic,
+    /// abstract) or cannot name is left out.
+    /// </summary>
+    public static List<INamedTypeSymbol> AllMappers(Compilation compilation, CancellationToken cancellationToken)
+    {
+        var mappers = new List<INamedTypeSymbol>();
+
+        INamedTypeSymbol? mapperMarker = compilation.GetTypeByMetadataName(MapperAttribute);
+
+        if (mapperMarker is null)
+            return mappers;
+
+        foreach (MetadataReference reference in compilation.References)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (compilation.GetAssemblyOrModuleSymbol(reference) is not IAssemblySymbol assembly)
+                continue;
+
+            if (!assembly.Modules.Any(module => module.ReferencedAssemblies.Any(referenced => referenced.Name == RuntimeAssemblyName)))
+                continue;
+
+            foreach (AttributeData attribute in assembly.GetAttributes())
+            {
+                if (!Same(attribute.AttributeClass, mapperMarker)
+                    || attribute.ConstructorArguments.Length < 1
+                    || attribute.ConstructorArguments[0].Value is not INamedTypeSymbol mapper)
+                {
+                    continue;
+                }
+
+                if (mapper.IsGenericType || mapper.IsAbstract || !compilation.IsSymbolAccessibleWithin(mapper, compilation.Assembly))
+                    continue;
+
+                if (!mappers.Any(existing => SymbolEqualityComparer.Default.Equals(existing, mapper)))
+                    mappers.Add(mapper);
+            }
+        }
+
+        return mappers;
+    }
+
+    private const string RuntimeAssemblyName = "ShiftMapper";
 
     /// <summary>
     /// Reads the declarations of the given TYPES — the mappers and packs something asked for that
@@ -280,7 +328,7 @@ internal static class DeclaredMappers
                 }
 
                 foreach (AttributeData map in maps)
-                    ReadMap(map, members, includes, recovered, problems);
+                    ReadMap(compilation, map, members, includes, recovered, problems);
             }
         }
 
@@ -347,6 +395,7 @@ internal static class DeclaredMappers
     }
 
     private static void ReadMap(
+        Compilation compilation,
         AttributeData attribute,
         List<AttributeData> members,
         List<AttributeData> includes,
@@ -355,6 +404,15 @@ internal static class DeclaredMappers
     {
         if (Types(attribute, out INamedTypeSymbol? declaredBy, out INamedTypeSymbol? source, out INamedTypeSymbol? destination))
             return;
+
+        // A pair over a type THIS compilation cannot see — internal to the package — cannot be
+        // generated here at all: the method would name a type it has no access to. The package's
+        // own generated mapper still has it, and the run-time door still reaches that one.
+        if (!compilation.IsSymbolAccessibleWithin(source!, compilation.Assembly)
+            || !compilation.IsSymbolAccessibleWithin(destination!, compilation.Assembly))
+        {
+            return;
+        }
 
         string pair = Key(declaredBy!) + "|" + Key(source!) + "|" + Key(destination!);
 

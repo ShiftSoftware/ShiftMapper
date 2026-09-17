@@ -3,12 +3,12 @@
 namespace ShiftMapper.Generator;
 
 /// <summary>
-/// One mapper the developer wrote — a partial class deriving from <c>ShiftMapperBase</c> —
-/// together with every map declared inside it.
+/// The GENERATED MAPPER of one compilation, with every map it holds — or, for the analyzer's
+/// per-class pass, one hand-written mapper class with what is its own to report: where its
+/// declarations are written (SM0035), and whether it could be included at all (SM0005).
 ///
-/// A partial class can be split over several files, so ONE type may produce several of
-/// these. They are grouped by <see cref="FullyQualifiedName"/> and merged before anything
-/// is emitted; otherwise two declarations would try to write the same file.
+/// Rendered as TEXT rather than carried as symbols, like every other thing that reaches the
+/// emitter: this is what the compiler caches between keystrokes.
 /// </summary>
 internal sealed class MapperClassModel
 {
@@ -21,31 +21,21 @@ internal sealed class MapperClassModel
         ImmutableArray<MapModel> maps,
         MapperSkipReason skipReason = MapperSkipReason.None,
         LocationInfo? location = null,
-        ImmutableArray<string> openGenericProblems = default,
+        ImmutableArray<PositionedProblem> openGenericProblems = default,
         ImmutableArray<string> profileProblems = default,
         ImmutableArray<string> declaredProblems = default,
         ImmutableArray<string> queryRegistrations = default,
         ImmutableArray<PositionedProblem> declarationProblems = default,
-        bool isSealed = false,
-        string? adapterOf = null,
-        ImmutableArray<string> mirroredConstructors = default,
-        ImmutableArray<string> baseSourceTypes = default,
-        ImmutableArray<string> registrationComposition = default)
+        ImmutableArray<string> composition = default,
+        ImmutableArray<string> localMappers = default)
     {
-        IsSealed = isSealed;
-        AdapterOf = adapterOf;
-
-        RegistrationComposition = registrationComposition.IsDefault
+        Composition = composition.IsDefault
             ? ImmutableArray<string>.Empty
-            : registrationComposition;
+            : composition;
 
-        MirroredConstructors = mirroredConstructors.IsDefault
+        LocalMappers = localMappers.IsDefault
             ? ImmutableArray<string>.Empty
-            : mirroredConstructors;
-
-        BaseSourceTypes = baseSourceTypes.IsDefault
-            ? ImmutableArray<string>.Empty
-            : baseSourceTypes;
+            : localMappers;
 
         DeclarationProblems = declarationProblems.IsDefault
             ? ImmutableArray<PositionedProblem>.Empty
@@ -60,7 +50,7 @@ internal sealed class MapperClassModel
             : queryRegistrations;
 
         OpenGenericProblems = openGenericProblems.IsDefault
-            ? ImmutableArray<string>.Empty
+            ? ImmutableArray<PositionedProblem>.Empty
             : openGenericProblems;
 
         ProfileProblems = profileProblems.IsDefault
@@ -77,133 +67,71 @@ internal sealed class MapperClassModel
         Maps = maps;
     }
 
-    /// <summary>Containing namespace, or null when the class sits in the global namespace.</summary>
+    /// <summary>The namespace the class is declared in, or null for the global namespace.</summary>
     public string? NamespaceName { get; }
 
-    /// <summary>
-    /// Names of the types this mapper is nested inside, outermost first. Empty for a
-    /// top-level class. The generated part has to reproduce this nesting, or it would
-    /// declare a brand new top-level type instead of extending the developer's one.
-    /// </summary>
+    /// <summary>The types the class is nested inside, outermost first; empty for the generated mapper.</summary>
     public ImmutableArray<string> ContainingTypes { get; }
 
-    /// <summary>Simple name of the class, e.g. <c>AppMapper</c>.</summary>
     public string ClassName { get; }
 
-    /// <summary>e.g. <c>global::MyApp.Mapping.AppMapper</c>.</summary>
+    /// <summary><c>global::</c>-qualified, the key everything about the class is stored under.</summary>
     public string FullyQualifiedName { get; }
 
-    /// <summary>Whether the mapper is visible outside its assembly (see CS0051).</summary>
     public bool IsPublic { get; }
 
     /// <summary>
-    /// Whether the developer sealed the class. A sealed mapper gets no <c>virtual</c> members —
-    /// C# refuses them — and so cannot be adapted from another project (SM0039).
+    /// What the generated mapper COMPOSES — every mapper class, local and packaged, and every pack
+    /// the registration gave it — fully qualified. Written into the assembly as metadata, which is
+    /// what the runtime builds the mapper classes from on first use, and what a consuming project's
+    /// generator follows.
     /// </summary>
-    public bool IsSealed { get; }
+    public ImmutableArray<string> Composition { get; }
 
     /// <summary>
-    /// For an ADAPTER — the subclass generated for a mapper registered from a referenced package
-    /// — the fully qualified base mapper. Null for an ordinary mapper. An adapter's members
-    /// <c>override</c> the base's, its constructors mirror the base's, and its
-    /// <c>DeclaringType</c> is the base.
+    /// The mapper classes declared in THIS compilation, fully qualified — the ones whose maps are
+    /// reported from their own files, by the analyzer's per-class pass, rather than at the end of
+    /// the compilation.
     /// </summary>
-    public string? AdapterOf { get; }
+    public ImmutableArray<string> LocalMappers { get; }
 
-    /// <summary>
-    /// The base's accessible constructors, each rendered as
-    /// <c>"(global::X a, global::Y b) : base(a, b)"</c>, so the adapter can be built with the same
-    /// dependencies. Empty for an ordinary mapper.
-    /// </summary>
-    public ImmutableArray<string> MirroredConstructors { get; }
-
-    /// <summary>
-    /// The source types the base already has extension methods for. The adapter's extension class
-    /// only covers the others — for these, the base's own methods dispatch virtually.
-    /// </summary>
-    public ImmutableArray<string> BaseSourceTypes { get; }
-
-    /// <summary>
-    /// What the REGISTRATION composed into this mapper — includes and packs written in
-    /// <c>AddShiftMapper</c> rather than in the constructor — fully qualified. Written into the
-    /// assembly as metadata, so the runtime applies exactly what was baked whichever call resolves
-    /// the mapper.
-    /// </summary>
-    public ImmutableArray<string> RegistrationComposition { get; }
-
-    /// <summary>The maps declared by CreateMap calls inside this declaration.</summary>
+    /// <summary>Every map the generated mapper holds, before merging.</summary>
     public ImmutableArray<MapModel> Maps { get; }
 
     /// <summary>
-    /// Open generic declarations the generator refused, already worded — SM0026.
-    ///
-    /// They belong to the CLASS rather than to a map, because a refused one produces no map at
-    /// all: there is nothing to hang the message on except the declaration that asked for it.
+    /// Open generic declarations the generator refused, already worded — SM0026 — each at the
+    /// declaration that asked for it, since a refused one produces no map to hang the message on.
     /// </summary>
-    public ImmutableArray<string> OpenGenericProblems { get; }
+    public ImmutableArray<PositionedProblem> OpenGenericProblems { get; }
 
     /// <summary>
-    /// What went wrong with this mapper's includes, each prefixed by the id that should report it
-    /// — SM0027 or SM0028.
-    ///
-    /// The id travels IN the string because these belong to the class rather than to a map, and
-    /// there is nothing else to hang them on; keeping them in one list rather than three parallel
-    /// ones is what stops the merge in EmitAll growing a limb per diagnostic.
+    /// What went wrong with the set as a whole, each prefixed by the id that should report it.
+    /// The id travels IN the string because these belong to no map; one list rather than several
+    /// parallel ones keeps the model from growing a limb per diagnostic.
     /// </summary>
     public ImmutableArray<string> ProfileProblems { get; }
 
     /// <summary>
-    /// What went wrong with conversions declared by REFERENCED ASSEMBLIES, each prefixed by the id
-    /// that reports it — SM0031, SM0032 or SM0033.
-    ///
-    /// Belongs to the class rather than to a map for the same reason the include problems do: a bad
-    /// declaration produces no map to hang a message on.
+    /// What went wrong with declarations read from REFERENCED ASSEMBLIES, each prefixed by the id
+    /// that reports it — SM0028, SM0031, SM0032, SM0033 and the rest.
     /// </summary>
     public ImmutableArray<string> DeclaredProblems { get; }
 
     /// <summary>
     /// The lines the generated mapper needs so a projection can splice a declared conversion's
     /// query form — one <c>RegisterQueryConversion</c> call each, already written out.
-    ///
-    /// <para>Rendered here as TEXT rather than carried as symbols, like every other thing that
-    /// reaches this model. That is not a formality: this is what the compiler caches between
-    /// keystrokes.</para>
     /// </summary>
     public ImmutableArray<string> QueryRegistrations { get; }
 
     /// <summary>
-    /// SM0035 — declarations written somewhere the generator cannot bake them.
-    ///
-    /// <para>PER PART, and reported per part, because the position of a call is a fact about the
-    /// file it was written in. That is also why these are the only problems carrying their own
-    /// <see cref="LocationInfo"/>: the other channels describe the mapper as a whole and are right
-    /// to point at the class.</para>
+    /// SM0035 — declarations written somewhere the generator cannot bake them. PER CLASS, because
+    /// the position of a call is a fact about the file it was written in.
     /// </summary>
     public ImmutableArray<PositionedProblem> DeclarationProblems { get; }
 
-    /// <summary>
-    /// Set when the class derives from ShiftMapperBase but nothing can be generated for it.
-    /// Reported as SM0005 rather than left silent.
-    /// </summary>
+    /// <summary>Set when the class derives from ShiftMapperBase but cannot be included. Reported as SM0005.</summary>
     public MapperSkipReason SkipReason { get; }
 
     /// <summary>Where the class is declared, so SM0005 points at the right line.</summary>
     public LocationInfo? Location { get; }
-
-    /// <summary>
-    /// Unique, identifier-safe id for this mapper, used for the generated file name and
-    /// the extension class name. Derived from the FULL name so a nested type and a
-    /// top-level type of the same name cannot collide.
-    /// </summary>
-    public string SafeIdentifier
-    {
-        get
-        {
-            string name = FullyQualifiedName.StartsWith("global::", System.StringComparison.Ordinal)
-                ? FullyQualifiedName.Substring("global::".Length)
-                : FullyQualifiedName;
-
-            return name.Replace('.', '_').Replace('+', '_');
-        }
-    }
 }

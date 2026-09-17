@@ -1,4 +1,5 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using ShiftMapper;
 using ShiftMapper.Sample.Data;
 using ShiftMapper.Sample.Dtos;
 using ShiftMapper.Sample.Entities;
@@ -24,7 +25,7 @@ public static class InvoiceEndpoints
         // same one query rather than filtering in memory afterwards.
         //
         // Add ?sql=true to read what EF made of it.
-        group.MapGet("/", (AppDbContext db, AppMapper mapper, bool sql = false) =>
+        group.MapGet("/", (AppDbContext db, Mapper mapper, bool sql = false) =>
         {
             IQueryable<InvoiceDto> query = db.Invoices
                 .AsNoTracking()
@@ -48,7 +49,7 @@ public static class InvoiceEndpoints
         //
         // This is the form to use when you already have the entity: after a save, inside a unit
         // of work, or anywhere the object is in hand rather than in the database.
-        group.MapGet("/{id:int}", async (int id, AppDbContext db, AppMapper mapper) =>
+        group.MapGet("/{id:int}", async (int id, AppDbContext db, Mapper mapper) =>
         {
             var invoice = await WithFullGraph(db).FirstOrDefaultAsync(i => i.Id == id);
 
@@ -59,7 +60,7 @@ public static class InvoiceEndpoints
         .WithName("GetInvoiceById");
 
         // POST /api/invoices  -> create an invoice from a customer + list of (product, quantity).
-        group.MapPost("/", async (CreateInvoiceRequest request, AppDbContext db, AppMapper mapper) =>
+        group.MapPost("/", async (CreateInvoiceRequest request, AppDbContext db, Mapper mapper) =>
         {
             if (request.Lines is null || request.Lines.Count == 0)
                 return Results.BadRequest("An invoice must have at least one line.");
@@ -116,7 +117,7 @@ public static class InvoiceEndpoints
         // because every step of this chain is a REQUIRED navigation and a guard would only be
         // there for a null the model says cannot happen; and no Brand.Country, because nothing on
         // the DTO asks for it.
-        group.MapGet("/lines/flat", (AppDbContext db, AppMapper mapper, bool sql = false) =>
+        group.MapGet("/lines/flat", (AppDbContext db, Mapper mapper, bool sql = false) =>
         {
             IQueryable<InvoiceLineFlatDto> query = db.InvoiceLines
                 .AsNoTracking()
@@ -144,7 +145,7 @@ public static class InvoiceEndpoints
         // cannot be absent from a template that is itself compiled, so the generator writes
         // `Total = default!` and Compose replaces it. If that ever stopped working, the two
         // values below would differ and everything else would still look fine.
-        group.MapGet("/{id:int}/receipt", async (int id, AppDbContext db, AppMapper mapper) =>
+        group.MapGet("/{id:int}/receipt", async (int id, AppDbContext db, Mapper mapper) =>
         {
             Invoice? invoice = await db.Invoices
                 .AsNoTracking()
@@ -191,7 +192,7 @@ public static class InvoiceEndpoints
         // (SM0015). It throws a message naming this map and what to do instead, rather than
         // failing somewhere inside EF — which is the whole reason the generator emits a throwing
         // projection rather than no projection at all.
-        group.MapGet("/{id:int}/label", async (int id, AppDbContext db, AppMapper mapper, bool project = false) =>
+        group.MapGet("/{id:int}/label", async (int id, AppDbContext db, Mapper mapper, bool project = false) =>
         {
             if (project)
             {

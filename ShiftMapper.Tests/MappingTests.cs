@@ -8,7 +8,7 @@ namespace ShiftMapper.Tests;
 /// </summary>
 public class MappingTests
 {
-    private static TestMapper NewMapper() => new(new InvoiceNumbering());
+    private static Mapper NewMapper() => Mappers.Fresh();
 
     private static Brand NewBrand() => new()
     {
@@ -86,7 +86,7 @@ public class MappingTests
     [Fact]
     public void A_reversed_map_runs_its_conversions_the_other_way()
     {
-        TestMapper mapper = NewMapper();
+        Mapper mapper = NewMapper();
 
         StockDto dto = mapper.Map<StockDto>(NewStock());
         Assert.Equal("7", dto.Id);
@@ -130,7 +130,7 @@ public class MappingTests
     [Fact]
     public void Elements_convert_in_both_directions()
     {
-        TestMapper mapper = NewMapper();
+        Mapper mapper = NewMapper();
 
         StockTextDto dto = mapper.Map<StockTextDto>(NewStock());
         Stock back = mapper.Map<Stock>(dto);
@@ -253,7 +253,7 @@ public class MappingTests
     [Fact]
     public void The_extension_methods_do_the_same_thing_as_the_instance_methods()
     {
-        TestMapper mapper = NewMapper();
+        Mapper mapper = NewMapper();
         Brand brand = NewBrand();
 
         BrandDto viaInstance = mapper.Map<BrandDto>(brand);

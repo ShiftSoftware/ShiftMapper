@@ -65,7 +65,7 @@ public class MemberOptionTests
     public void The_two_backends_agree_about_a_converted_value()
     {
         using TestDbContext context = _fixture.CreateContext();
-        TestMapper mapper = _fixture.Mapper;
+        Mapper mapper = _fixture.Mapper;
 
         List<Invoice> entities = context.Invoices
             .Include(invoice => invoice.Lines)
@@ -193,8 +193,8 @@ public class MemberOptionTests
     {
         var invoice = new Invoice { Id = 1, Number = "0001" };
 
-        var first = new TestMapper(new Numbering("A/"));
-        var second = new TestMapper(new Numbering("B/"));
+        var first = Mappers.With(new Numbering("A/"));
+        var second = Mappers.With(new Numbering("B/"));
 
         // Mapped twice through each, so the second call is the one that reads the cached field.
         Assert.Equal("A/0001", first.Map<InvoiceDto>(invoice).Number);
@@ -217,7 +217,7 @@ public class MemberOptionTests
             .OrderBy(i => i.Id)
             .First();
 
-        TestMapper mapper = _fixture.Mapper;
+        Mapper mapper = _fixture.Mapper;
 
         Assert.Equal(mapper.Map<InvoiceDto>(invoice).Total, mapper.Map<InvoiceDto>(invoice).Total);
         Assert.Equal(mapper.Map<InvoiceDto>(invoice).Number, mapper.Map<InvoiceDto>(invoice).Number);

@@ -5,15 +5,16 @@ ships DTOs and the rules for mapping them — and you want the maps, type-pair c
 member conventions you write to apply in every application that references you. The application
 should write one line per thing it wants, and nothing else.
 
-Those lines are `IncludeMapper<YourMapper>()`, `o.AddMapper<YourMapper>()` and
-`AddConversions<YourConversions>()` — or, for the rules, no line at all: your own registration can
-share a pack with every application that references you. This page is about what has to be true on
-your side for them to work, and why: how a declaration compiled into your DLL is visible to a
-source generator that can only see metadata, what travels and what does not, what your `.csproj`
-needs, and which diagnostics are addressed to you rather than to the application.
+For the maps, that line is nothing at all: every mapper class a referenced package declares is
+generated into the application's own mapper. For the rules it is `AddConversions<YourConversions>()`
+— or nothing either, because your own registration can share a pack with every application that
+references you. This page is about what has to be true on your side for that to work, and why: how
+a declaration compiled into your DLL is visible to a source generator that can only see metadata,
+what travels and what does not, what your `.csproj` needs, and which diagnostics are addressed to
+you rather than to the application.
 
 The [README](../README.md) is the front door and already covers the application's view of
-[included mappers](../README.md#composing-mappers-includemapper),
+[several mapper classes](../README.md#several-mapper-classes-one-mapper),
 [packs](../README.md#packs-rules-shared-between-mappers),
 [member conventions](../README.md#member-conventions),
 [registration](../README.md#registration) and
@@ -32,7 +33,7 @@ A package writes an ordinary mapper and an ordinary pack, with the ordinary API:
 
 ```csharp
 // Contoso.Platform/PlatformMapper.cs — compiled into its own assembly
-public partial class PlatformMapper : ShiftMapperBase
+public class PlatformMapper : ShiftMapperBase
 {
     public PlatformMapper() =>
         CreateMap<FileDto, FileSummary>()
@@ -58,28 +59,25 @@ public class PlatformConversions : ShiftMapperConversions
 }
 ```
 
-The package registers its own mapper and SHARES its pack, in the one `AddXxx` a framework ships
-anyway:
+The package registers its own generated mapper and SHARES its pack, in the one `AddXxx` a
+framework ships anyway:
 
 ```csharp
 // Contoso.Platform/ContosoPlatformServiceCollectionExtensions.cs
 public static IServiceCollection AddContosoPlatform(this IServiceCollection services) =>
-    services.AddShiftMapper(o =>
-    {
-        o.AddMapper<PlatformMapper>();               // from this assembly: no adapter needed
-        o.ShareConversions<PlatformConversions>();   // this call's mappers, and every referencing project's
-    });
+    services.AddShiftMapper(o => o.ShareConversions<PlatformConversions>());
+    // registers this assembly's generated mapper; shares the pack with every referencing project
 ```
 
-An application calls that, registers its own mapper, and declares maps that name none of the
-package's rules — nothing of the package's appears in its registration:
+An application calls that, registers itself, and declares maps that name none of the package's
+rules — nothing of the package's appears in its registration:
 
 ```csharp
 // ShiftMapper.Sample/Program.cs and Mapping/AppMapper.cs, abridged
 builder.Services.AddContosoPlatform();
-builder.Services.AddShiftMapper(o => o.AddMapper<AppMapper>());
+builder.Services.AddShiftMapper();
 
-public partial class AppMapper : ShiftMapperBase
+public class AppMapper : ShiftMapperBase
 {
     public AppMapper()
     {
@@ -93,8 +91,9 @@ public partial class AppMapper : ShiftMapperBase
 `GET /api/brands/hashed?sql=true` shows the package's hash rule in the SQL Server statement;
 `GET /api/products/list?sql=true` shows the convention's member-init inside the `SELECT`;
 `GET /api/brands/files?project=true` shows the refusal for the pair that declared no query form;
-`GET /api/framework/files` shows the package's own mapper, injected after the package registered it
-itself. Those four endpoints are the worked example for everything below.
+`GET /api/framework/files` shows the package's own map called through the application's `Mapper`,
+generated into the application from the package's metadata. Those four endpoints are the worked
+example for everything below.
 
 There is no second API for packages. Nothing in the sample is an attribute written by hand. What
 makes that possible is the mechanism in the next section, which is the thing a library author
@@ -159,13 +158,13 @@ attributes and rebuilds the same internal model it would have built from your so
 to the same code that handles a local map. Property matching, conversions, nesting, projection,
 every diagnostic — none of it can tell a package's map from a local one, and none of it tries.
 
-The **expressions** arrive because `IncludeMapper<T>()` and `AddConversions<T>()` are the
-declaration calls that also do something at run time: they record `T` so the mapper can construct
-it on first use — and a mapper registered directly is constructed by `AddShiftMapper`. Constructing
-`PlatformConversions` runs its constructor, and its constructor calls the real `CreateConversion`,
-which puts the delegate and the tree into a store the consuming mapper merges into its own;
-constructing `PlatformMapper` does the same for its `MapFrom`. This is the same path a mapper or
-pack in the application's own project takes. Nothing about it is package-specific.
+The **expressions** arrive because the application's generated mapper CONSTRUCTS your classes
+on first use — every mapper class and pack it folded in is written into its composition metadata,
+and the runtime reads that list. Constructing `PlatformConversions` runs its constructor, and its
+constructor calls the real `CreateConversion`, which puts the delegate and the tree into a store the
+generated mapper merges into its own; constructing `PlatformMapper` does the same for its
+`MapFrom`. This is the same path a mapper class or pack in the application's own project takes.
+Nothing about it is package-specific.
 
 So the consuming generator emits, for a package's `MapFrom`, exactly what it emits for a local one —
 a lookup by member name against the store the declaring constructor filled. From the sample's
@@ -199,21 +198,22 @@ Strings are used only where the value really is a string — a member name, a co
 in two places where an attribute array cannot hold a pair: `IncludedBases` spells a base pair as
 `"global::A->global::B"`, and a convention's `Fill` spells an entry as `"Target=path"`.
 
-### Keyed by declaring type, so it is opt-in — with one announced exception
+### Keyed by declaring type — and what that means for what reaches whom
 
-Every attribute names the mapper or pack that declared it, and the consuming generator reads only
-attributes for the types the application actually asked for — included, registered or added — and
-for what those compose in turn. It also walks only the assemblies those types live in; a package
-nothing asks for is never scanned for declarations at all. Referencing your package changes no map
-in an application until it asks, which is what stops a dependency from quietly altering which map
-runs.
+Every attribute names the mapper class or pack that declared it. The consuming generator reads
+every MAPPER CLASS every referenced assembly declares — cheaply, only from assemblies that
+reference ShiftMapper — and generates their maps into the application's own mapper, each map with
+its declaring class's rules and defaults. So your maps are callable in the application from the
+reference alone. Your RULES are not applied to the application's own maps by the reference alone:
+a pack is read only when something asks for it — a mapper class that adds it, a registration that
+adds it, or your own registration sharing it — because a dependency must not quietly alter how the
+application's own `long`s render.
 
-The exception is `ShiftMapperDeclaredSharedPack`, which is keyed by nothing: it is your
+The sharing case is `ShiftMapperDeclaredSharedPack`, which is keyed by nothing: it is your
 registration saying "every project that references me gets this pack", and the consuming generator
-does read it from every reference — cheaply, only from assemblies that reference ShiftMapper, and
-only when the application registers something for it to apply to. It is the one declaration that
-acts without the application naming a type, so it is applied at the furthest level and announced
-(SM0043). See [Your registration can share the pack](#mappers-and-packs).
+does read it from every reference — only when the application registers something for it to apply
+to. It is the one rule that acts without the application naming a type, so it is applied at the
+furthest level and announced (SM0043). See [Your registration can share the pack](#mappers-and-packs).
 
 ### Three-state options
 
@@ -247,7 +247,7 @@ never written by hand:
 | `ShiftMapperContract` | assembly; the format version |
 | `ShiftMapperDeclaredMapper` | mapper — a presence marker, carrying its `ConfigureDefaults`; emitted even for a mapper that declares nothing |
 | `ShiftMapperDeclaredPack` | pack — a presence marker |
-| `ShiftMapperDeclaredComposition` | `IncludeMapper<T>()` or `AddConversions<T>()` in a mapper's constructor, and whatever a registration in the same project composed into it |
+| `ShiftMapperDeclaredComposition` | `AddConversions<T>()` in a mapper class's constructor; and, on the generated mapper, every mapper class and pack it folded in |
 | `ShiftMapperDeclaredMap` | `CreateMap<A, B>()`, with its ignores, conditions, included bases, `As`, hook and factory flags, and options |
 | `ShiftMapperDeclaredMember` | member customised with `MapFrom` or `MapFromSource` (the shape; the tree is runtime) |
 | `ShiftMapperDeclaredInclude` | `Include<TDerived, TDerivedDestination>()` |
@@ -255,19 +255,19 @@ never written by hand:
 | `ShiftMapperDeclaredConvention` | `CreateMemberConvention<T>()`, with its `Fill` entries, `NameFrom`, `WhenDestinationIs` and `Direction` |
 | `ShiftMapperDeclaredOpenMap` | open generic `CreateMap(typeof(W<>), typeof(WDto<>))` |
 | `ShiftMapperDeclaredSharedPack` | `o.ShareConversions<T>()` in a registration — the pack every referencing project's registrations get |
+| `ShiftMapperDeclaredSharedMapper` | `o.ShareMapper<T>()` in a registration — the mapper class every referencing project takes under `MapperDiscovery.LocalAndRegistered` |
 
-And one more, written by the CONSUMER's build rather than yours: `ShiftMapperAdapter` names the
-subclass it generated for a mapper of yours it registered directly, so its `AddShiftMapper` hands
-that out.
+And one more, on every assembly the generator ran over: `ShiftMapperGenerated` names the
+assembly's generated mapper, which is what `AddShiftMapper` registers and `Mapper` builds.
 
 Two consequences of that list are worth knowing before you design a package:
 
-- **Every mapper and every pack is emitted**, and a mapper's declarations are ALSO generated code
-  in your assembly. There is no separate "profile" kind of class: what you ship is what you use.
-- **Composition crosses the boundary.** A mapper that includes another mapper or adds a pack in its
-  constructor writes that down, and a consumer that includes or registers your mapper follows it —
-  into a third assembly if that is where it leads. Types that are not public are left out, because
-  an attribute cannot name them.
+- **Every mapper class and every pack is emitted**, and their maps are ALSO generated into your own
+  assembly's mapper. There is no separate "profile" kind of class: what you ship is what you use.
+- **Composition crosses the boundary.** A mapper class that adds a pack in its constructor writes
+  that down, and a consumer follows it — into a third assembly if that is where it leads. Types
+  that are not public are left out, because an attribute cannot name them; a map over one of them
+  is generated only in your own assembly, and the run-time door still reaches it there.
 
 One known gap, recorded rather than hidden: a `MapFromSource` whose conversion your generator could
 not resolve is reported in **your** build as SM0002, and in a consumer that member falls through to
@@ -277,45 +277,40 @@ ordinary name matching instead of staying unmapped. Fix it where it is reported.
 
 ## Mappers and packs
 
-There is one kind of class for maps and one for rules. The [README](../README.md#composing-mappers-includemapper)
+There is one kind of class for maps and one for rules. The [README](../README.md#several-mapper-classes-one-mapper)
 covers the application's view; what follows is what matters when the mapper is yours and the
 application is somebody else's.
 
-**A mapper is a mapper on both sides.** Your `PlatformMapper` gets its own generated `Map` methods
-in your assembly, and a consumer can use it three ways: include it (`IncludeMapper<PlatformMapper>()`
-— its maps become the including mapper's, re-baked there with the including mapper's rules where
-those are nearer), register it (`o.AddMapper<PlatformMapper>()` — injectable on its own, through the
-adapter described below), or both — or you register it yourself, from your own assembly, in the
-registration described under packs below, and the consumer only injects it. Declarations may be split across private helper methods; the
-generator reads the whole class body, not only the constructor. What it will not read is a
-declaration inside an `if`, a loop, a lambda or any other position it cannot bake — that is
-SM0035, an error, and it applies in your build exactly as it does in an application's, because it
-is the same generator.
+**A mapper class is read on both sides.** Your `PlatformMapper` is generated into your own
+assembly's mapper, and — by default — into the mapper of every project that references you,
+re-baked there with that project's rules where those are nearer. The application writes nothing:
+`mapper.MapToFileSummary(dto)` is a typed method on its `Mapper` from the reference alone. An
+application that has chosen `MapperDiscovery.LocalAndRegistered` takes your classes only when it
+names them with `o.AddMapper<PlatformMapper>()` — or when you share them: `o.ShareMapper<PlatformMapper>()`
+in your own registration, the mapper analogue of sharing a pack, announced in the application's
+build (SM0043). Under `MapperDiscovery.Registered` only what the application names is taken, shared
+or not. Whatever it takes, your own registration keeps your maps reachable through `IShiftMapper`. Declarations may be split across
+private helper methods; the generator reads the whole class body, not only the constructor. What
+it will not read is a declaration inside an `if`, a loop, a lambda or any other position it cannot
+bake — that is SM0035, an error, and it applies in your build exactly as it does in an application's,
+because it is the same generator.
 
-**Its members are `virtual`, and it must not be `sealed`.** A consumer that registers your mapper
-directly cannot give your compiled `Map` methods its own packs, so its generator writes a SUBCLASS
-— the adapter — with the same maps re-baked and this project's rules baked in, overriding yours,
-and `AddShiftMapper` hands that out wherever your type is asked for. Nothing that injects your
-mapper can tell. A sealed mapper has nothing to override and is refused (SM0039); maps over your
-non-public types are `internal` and stay as you compiled them. Your constructors are mirrored on
-the adapter, so the same dependencies are injected.
+**Your defaults are yours.** `ConfigureDefaults` on your mapper class governs your maps wherever
+they end up; it travels on the `ShiftMapperDeclaredMapper` marker. If a map of yours needs a
+particular option, set it on that `CreateMap`; it travels as declared and wins over your default
+for that map only.
 
-**Your defaults are yours.** `ConfigureDefaults` on your mapper governs your maps wherever they end
-up; it travels on the `ShiftMapperDeclaredMapper` marker. If a map of yours needs a particular
-option, set it on that `CreateMap`; it travels as declared and wins over your default for that map
-only.
-
-**Near beats far.** A pair the application declares both in your mapper and in its own mapper
-keeps the application's version in that mapper, and the clash is reported (SM0027). The same order
-holds at run time: the including mapper's own registrations are in the store before yours are
-merged in, and a merge never overwrites. So the generator and the runtime cannot disagree about
-which declaration ran.
+**Near beats far.** A pair the application declares itself AND you declare keeps the application's
+version in the application, and the clash is reported there (SM0027, a warning): overriding a
+package's map is a thing to do on purpose. Two packages both declaring a pair is an error in the
+application (SM0042); declare maps for the types you own.
 
 **A pack holds rules and nothing else.** `ShiftMapperConversions` has `CreateConversion` and
 `CreateMemberConvention` and no `CreateMap`, so adding it cannot bring maps along, and it can be
-given to one mapper or to every mapper of a registration. Put the rules you want applications to
-apply to THEIR maps in a pack; a rule written on your mapper reaches only your mapper's maps, which
-is the point — including your mapper cannot change how the application's own `long`s render.
+given to one mapper class or to every map of a registration. Put the rules you want applications to
+apply to THEIR maps in a pack; a rule written on your mapper class reaches only your class's maps,
+which is the point — referencing your package cannot change how the application's own `long`s
+render.
 
 **Your registration can share the pack.** A rule every application should map by — hash ids, a
 select convention — is a rule one application will forget to add. So make the registration
@@ -324,53 +319,49 @@ an application would write `AddConversions`:
 
 ```csharp
 public static IServiceCollection AddContosoPlatform(this IServiceCollection services) =>
-    services.AddShiftMapper(o =>
-    {
-        o.AddMapper<PlatformMapper>();
-        o.ShareConversions<PlatformConversions>();
-    });
+    services.AddShiftMapper(o => o.ShareConversions<PlatformConversions>());
 ```
 
-`ShareConversions` is `AddConversions` for the mappers of that call, and it makes your build write
+`ShareConversions` is `AddConversions` for your own assembly's maps, and it makes your build write
 `[assembly: ShiftMapperDeclaredSharedPack(typeof(PlatformConversions))]`. The generator compiling any
 project that references you reads that and treats it as an `o.AddConversions<PlatformConversions>()`
-appended to every `AddShiftMapper` call in that project: every mapper the project registers gets the
-pack, at the furthest level, so a rule the project wrote itself for the same pair wins; the project's
-build says so (SM0043, Info); and the composition is recorded in the project's own metadata, so its
-runtime applies the pack without opening your assembly. What the application has to do is reference
-you and call `AddContosoPlatform()` — and the pack applies from the reference alone, so even the call
-cannot be forgotten. The pack must be public (SM0044), because the application's generated code names
-it. Two packages sharing a rule for the same pair are the same distance from every map, and that is
-SM0031 in the application, as it is for any two packs.
+for every map in that project — including your maps generated there — at the furthest level, so a
+rule the project wrote itself for the same pair wins; the project's build says so (SM0043, Info);
+and the composition is recorded in the project's own metadata, so its runtime applies the pack
+without opening your assembly. A project that makes no `AddShiftMapper` call at all does not get it.
+The pack must be public (SM0044), because the application's generated code names it. Two packages
+sharing a rule for the same pair are the same distance from every map, and that is SM0031 in the
+application, as it is for any two packs.
 
-**Your mapper is registered from your assembly.** `o.AddMapper<PlatformMapper>()` in your own
-registration needs no adapter — the packs of that call were baked into your mapper by your own build
-— and the application injects `PlatformMapper` as it injects its own. Every `AddShiftMapper` call,
-from whichever assembly, lands in the one registry the collection holds, so `IShiftMapper` covers
-your mapper and the application's alike, whichever call came first. If the application registers
-your mapper as well, its adapter wins in either order: the adapter carries your rules plus the
-application's, and your registration is the fallback.
+**Your registration registers your generated mapper, and may share your classes.** `o.ShareMapper<T>()`
+beside `o.ShareConversions<T>()` says that every referencing project should have that class in its
+generated mapper without naming it (under `LocalAndRegistered`; `All` had it anyway). Share the
+classes an application is meant to call by type; leave the rest to the run-time door. Every `AddShiftMapper` call, from whichever
+assembly, lands in the one registry the collection holds, and `Mapper` is made of every generated
+mapper registered — the application's FIRST, since it already carries your maps re-baked with its
+own rules, and yours as the fallback: for a host that has no generator of its own, or a library
+mapping through `IShiftMapper` in a host that never registered. The application never injects your
+generated mapper; it cannot even name it.
 
-**Dependencies are allowed and resolved late.** A mapper or pack may take constructor arguments. It
-is resolved from the consuming mapper's `Services` the first time anything is mapped — registered
-if the application registered it, constructed with its dependencies injected otherwise — not while
-the consuming mapper's constructor runs, because the service provider is not assigned until after
-that constructor returns. `AddShiftMapper` registers what a mapper composes along with it, so
-nothing needs registering by hand. A mapper built by hand has no provider, and a dependency then
-fails the first map naming the type:
+**Dependencies are allowed and resolved late.** A mapper class or pack may take constructor
+arguments. It is constructed from the generated mapper's `Services` the first time anything is
+mapped — registered if the application registered it, constructed with its dependencies injected
+otherwise — not at startup, because the service provider is assigned after the generated mapper is
+constructed. A `Mapper` built outside a container has no provider, and a dependency then fails the
+first map naming the type:
 
 ```
-ShiftMapper: the mapper 'X' takes constructor arguments, so it has to come from DI, but 'AppMapper'
-was not resolved from a service provider. Resolve the mapper through AddShiftMapper, or give the
+ShiftMapper: the mapper 'X' takes constructor arguments, so it has to come from DI, but the mapper
+was not resolved from a service provider. Resolve Mapper through AddShiftMapper(), or give the
 mapper a parameterless constructor.
 ```
 
-For a package this is a design choice with a cost on the other side: **a dependency makes every
-mapper that includes you DI-only**, including in the application's tests, because everything a
-mapper composes is built together and one that cannot be built fails the first map. Prefer a
-parameterless constructor. An included mapper's or pack's own `Services` property is never
-assigned by inclusion — only a mapper resolved from DI has one — so an expression cannot reach one
-through it.
+For a package this is a design choice with a cost on the other side: **a dependency makes the
+generated mapper of every project that references you DI-only**, including in the application's
+tests, because everything a generated mapper composes is built together and one that cannot be
+built fails the first map. Prefer a parameterless constructor. A mapper class built this way is
+handed the generated mapper's provider, so its `Services` property works from a `MapFrom` — but
+not from its constructor, which runs first.
 
 ---
 
@@ -639,7 +630,7 @@ because they will not be reported again on the other side.
 
 ## The diagnostics addressed to a package author
 
-Forty rules exist; the [README table](../README.md#diagnostics) lists them. Five are about the
+Forty rules exist; the [README table](../README.md#diagnostics) lists them. Four are about the
 boundary itself. They are reported in the **consuming** application's build, so what you will
 usually see is a bug report quoting one.
 
@@ -651,8 +642,9 @@ metadata, so nothing it declares could be read. That package has to be built wit
 generator referenced as an analyzer.
 ```
 
-The application included, registered or added a type of yours, and your assembly has no
-`[ShiftMapperContract]` and no marker naming that type. Nothing of yours can be baked, so the build
+The application added a pack of yours, and your assembly has no `[ShiftMapperContract]` and no
+marker naming that type. (A mapper class of yours is simply invisible in that case: nothing announces
+it, so nothing is asked for.) Nothing of yours can be baked, so the build
 stops rather than mapping nothing in silence. The fix is in your `.csproj`, above.
 
 **SM0031 — two packs declare a conversion for the same type pair.** Error.
@@ -696,17 +688,6 @@ refused whole, so the application also gets SM0028 for each of your types it ask
 messages for one cause, and the SM0033 is the one to act on. State the ShiftMapper version your
 package needs, and do not bump it lightly. The current contract version is 2.
 
-**SM0039 — a sealed mapper from a referenced assembly cannot be registered here.** Error.
-
-```
-ShiftMapper: 'PlatformMapper' is declared in 'Contoso.Platform' and is sealed, so this project cannot
-generate the adapter that applies its own packs to it. Unseal it in the package, or include it in a
-mapper of this project with IncludeMapper instead of registering it directly.
-```
-
-The application registered your mapper directly, and the adapter that would carry its packs has
-nothing to override. Do not seal a mapper you ship.
-
 ### The ones you cause but do not see
 
 Every projection-loss rule the README describes for a map applies to a map that arrived from you,
@@ -721,17 +702,18 @@ projects, and a hook does not.
 
 ## Checklist
 
-1. Put maps in a `partial class` deriving from `ShiftMapperBase`, and rules in a class deriving
-   from `ShiftMapperConversions`. Every one of them is written to metadata; there is no other kind.
-2. Do not seal a mapper you ship (SM0039 for whoever registers it), and keep its constructor
-   parameterless unless a rule genuinely needs a service; a dependency makes every mapper that
-   includes it DI-only.
+1. Put maps in classes deriving from `ShiftMapperBase`, and rules in a class deriving from
+   `ShiftMapperConversions`. Every one of them is written to metadata; there is no other kind, and
+   none of them needs to be `partial`.
+2. Keep a mapper class's constructor parameterless unless a rule genuinely needs a service; a
+   dependency makes the generated mapper of every project that references you DI-only.
 3. Write declarations in statement position — constructor body, expression-bodied constructor, or
    private helper methods — never inside `if`, loops or lambdas (SM0035).
-4. A mapper may include other mappers and add packs in its constructor; that composition travels,
-   so a consumer that includes or registers the mapper follows it.
-5. Put rules meant for the APPLICATION's maps in a pack, not on your mapper. A rule on your mapper
-   reaches only your mapper's maps, by design.
+4. A mapper class may add packs in its constructor; that composition travels, so a consumer's
+   generated mapper follows it.
+5. Put rules meant for the APPLICATION's maps in a pack, not on your mapper class. A rule on your
+   class reaches only that class's maps, by design. Declare maps only for types you own; a pair two
+   packages both declare is an error in every application that references both (SM0042).
 6. For each `CreateConversion`, decide the query form deliberately. Supply one that produces the
    same value as the memory form, or omit it and accept that every map touching the pair reports
    SM0030 in every consumer. Never invent a query form that returns something different.

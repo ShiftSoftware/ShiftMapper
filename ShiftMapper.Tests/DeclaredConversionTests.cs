@@ -18,7 +18,7 @@ public class DeclaredConversionTests
 
     public DeclaredConversionTests(DatabaseFixture fixture) => _fixture = fixture;
 
-    private DeclaredMapper Mapper => _fixture.DeclaredMapper;
+    private Mapper Mapper => _fixture.Mapper;
 
     /// <summary>
     /// A conversion declared by a referenced assembly runs. It is a DIRECT CALL in the generated

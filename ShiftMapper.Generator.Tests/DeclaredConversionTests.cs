@@ -58,7 +58,6 @@ public class DeclaredConversionTests
         {
             public TestMapper()
             {
-                IncludeMapper<FrameworkMapper>();
                 AddConversions<FrameworkPack>();
                 CreateMap<Entity, EntityDto>();
             }
@@ -124,12 +123,13 @@ public class DeclaredConversionTests
     // -----------------------------------------------------------------
 
     /// <summary>
-    /// REFERENCING THE PACKAGE IS NOT ENOUGH — the mapper must ASK. That is the difference between
-    /// a rule you opted into and one a reference imposed on you, and it is why declarations are
-    /// keyed by profile.
+    /// REFERENCING IS ENOUGH for the package's MAPS: its mapper is in the application's generated
+    /// mapper without a line naming it. Its PACK is not — a conversion the package declared for its
+    /// own maps does not reach the application's, unless the application adds it or the package
+    /// shares it. That is the difference between a map you can call and a rule imposed on you.
     /// </summary>
     [Fact]
-    public void A_package_that_is_referenced_but_not_added_changes_nothing()
+    public void A_referenced_packages_maps_are_generated_but_its_pack_stays_with_its_own_maps()
     {
         GeneratorRun run = Run(
             """
@@ -141,16 +141,18 @@ public class DeclaredConversionTests
 
             public partial class TestMapper : ShiftMapperBase
             {
-                // No IncludeMapper, no AddConversions: the package is referenced and says nothing.
+                // No AddConversions: the package's pack says nothing about this map.
                 public TestMapper() => CreateMap<Entity, EntityDto>();
             }
             """);
 
         run.Compiles()
+           .Emits("MapToFileSummary(global::Framework.FileDto source)")
            .DoesNotEmit("Customizations.Conversion<long, string>(")
-           .DoesNotEmit("MapToFileSummary")
            // The built-in conversion is what fills it, because nothing overrode it.
            .Emits("ToInvariantString(source.Id)");
+
+        run.None("SM0028");
     }
 
     /// <summary>A conversion the APPLICATION declares wins over the package's.</summary>
@@ -201,7 +203,6 @@ public class DeclaredConversionTests
                 public TestMapper()
                 {
                     CreateMap<FileDto, FileSummary>().ForMember(d => d.Name, opt => opt.Ignore());
-                    IncludeMapper<FrameworkMapper>();
                 }
             }
             """);
@@ -229,11 +230,12 @@ public class DeclaredConversionTests
             applicationSource: Application,
             runGeneratorOnPackage: false);
 
-        // Once for the mapper it includes, once for the pack it adds — and an ERROR, because a
-        // package that says nothing would otherwise map nothing in silence.
+        // Once, for the pack the application adds — and an ERROR, because a package that says
+        // nothing would otherwise map nothing in silence. Its MAPPER is not reported, because a
+        // package built without the generator does not announce one: there is nothing to ask for.
         Microsoft.CodeAnalysis.Diagnostic[] reported = run.All("SM0028");
 
-        Assert.Equal(2, reported.Length);
+        Assert.Single(reported);
         Assert.All(reported, d => Assert.Contains("declaration metadata", d.GetMessage()));
         Assert.All(reported, d => Assert.Equal(Microsoft.CodeAnalysis.DiagnosticSeverity.Error, d.Severity));
         run.DoesNotEmit("MapToFileSummary");

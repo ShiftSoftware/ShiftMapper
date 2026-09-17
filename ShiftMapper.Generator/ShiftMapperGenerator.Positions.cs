@@ -10,7 +10,7 @@ namespace ShiftMapper.Generator;
 /// <summary>
 /// WHERE A DECLARATION IS WRITTEN, and whether that position can be honoured at compile time.
 ///
-/// <para>Every declaration API — <c>CreateMap</c>, <c>IncludeMapper</c>, <c>AddConversions</c>, <c>CreateConversion</c>,
+/// <para>Every declaration API — <c>CreateMap</c>, <c>AddConversions</c>, <c>CreateConversion</c>,
 /// <c>CreateMemberConvention</c> — is read from SYNTAX and baked into emitted code. The reader is a
 /// flat sweep (<c>DescendantNodes().OfType&lt;InvocationExpressionSyntax&gt;()</c>) with no notion of
 /// statement position, so until this file existed a declaration written inside an <c>if</c>, a loop,
@@ -115,7 +115,6 @@ public sealed partial class ShiftMapperGenerator
         string? called = name?.Identifier.ValueText switch
         {
             "CreateMap" => "CreateMap",
-            "IncludeMapper" => "IncludeMapper",
             "AddConversions" => "AddConversions",
             "CreateConversion" => "CreateConversion",
             "CreateMemberConvention" => "CreateMemberConvention",
@@ -143,7 +142,7 @@ public sealed partial class ShiftMapperGenerator
     /// <c>AddShiftMapper</c>, whose direct statements are read exactly like a constructor's. Null
     /// for a call inside a mapper, where the constructor or method is the stop.
     /// </param>
-    private static string? DescribeUnbakeablePosition(InvocationExpressionSyntax invocation, SyntaxNode? stopAt = null)
+    private static string? DescribeUnbakeablePosition(ExpressionSyntax invocation, SyntaxNode? stopAt = null)
     {
         for (SyntaxNode? node = invocation.Parent; node is not null; node = node.Parent)
         {

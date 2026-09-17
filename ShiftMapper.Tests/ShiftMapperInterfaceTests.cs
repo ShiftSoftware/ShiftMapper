@@ -287,7 +287,7 @@ public class ShiftMapperInterfaceTests
         using IServiceScope scope = provider.CreateScope();
 
         Assert.Same(
-            scope.ServiceProvider.GetRequiredService<TestMapper>(),
+            scope.ServiceProvider.GetRequiredService<Mapper>(),
             scope.ServiceProvider.GetRequiredService<IShiftMapper>());
     }
 
@@ -324,25 +324,26 @@ public class ShiftMapperInterfaceTests
     }
 
     /// <summary>
-    /// A class the generator produced nothing for cannot implement the interface, so registering
-    /// it would hand the application a mapper whose every call throws. It is refused at
-    /// registration instead, pointing at the diagnostic that already explained it.
+    /// A Mapper built with nothing registered serves the typed methods — their generated mapper is
+    /// built on first use — and refuses the run-time door with a message that says what to do.
     /// </summary>
     [Fact]
-    public void Registering_a_mapper_that_generated_nothing_says_why()
+    public void A_mapper_with_nothing_registered_refuses_the_runtime_door_and_says_why()
     {
-        InvalidOperationException error = Assert.Throws<InvalidOperationException>(
-            () => new ServiceCollection().AddShiftMapper<NotPartialMapper>());
+        IShiftMapper bare = new Mapper();
 
-        Assert.Contains("no mapping code was generated", error.Message);
-        Assert.Contains("SM0005", error.Message);
+        InvalidOperationException error = Assert.Throws<InvalidOperationException>(
+            () => bare.CanMap(typeof(Brand), typeof(BrandDto)));
+
+        Assert.Contains("no registered generated mapper", error.Message);
+        Assert.Contains("AddShiftMapper()", error.Message);
     }
 
     private static ServiceProvider BuildProvider()
     {
         var services = new ServiceCollection();
         services.AddSingleton<IInvoiceNumbering, InvoiceNumbering>();
-        services.AddShiftMapper<TestMapper>();
+        services.AddShiftMapper();
 
         return services.BuildServiceProvider();
     }
@@ -355,17 +356,6 @@ public class ShiftMapperInterfaceTests
 public class BrandProxy : Brand
 {
 }
-
-/// <summary>
-/// A mapper the generator writes nothing for, because it is not partial. It exists to prove
-/// AddShiftMapper refuses it; SM0005 is exactly what this class is here to trigger, so it is
-/// silenced rather than left to make every build noisier.
-/// </summary>
-#pragma warning disable SM0005
-public class NotPartialMapper : ShiftMapperBase
-{
-}
-#pragma warning restore SM0005
 
 /// <summary>
 /// A framework, in miniature. Every method here is generic over the entity and the DTO, and

@@ -46,10 +46,10 @@ public class CollectionApiTests
         GeneratorRun run = OneMap();
 
         run.Compiles()
-           .Emits($"public virtual global::System.Collections.Generic.List<global::Destination> MapToDestinationList({Sequence})")
-           .Emits($"public virtual global::Destination[] MapToDestinationArray({Sequence})")
-           .Emits($"public virtual global::System.Collections.Generic.HashSet<global::Destination> MapToDestinationHashSet({Sequence})")
-           .Emits($"public virtual TDestination Map<TDestination>({Sequence})");
+           .Emits($"public global::System.Collections.Generic.List<global::Destination> MapToDestinationList({Sequence})")
+           .Emits($"public global::Destination[] MapToDestinationArray({Sequence})")
+           .Emits($"public global::System.Collections.Generic.HashSet<global::Destination> MapToDestinationHashSet({Sequence})")
+           .Emits($"public TDestination Map<TDestination>({Sequence})");
     }
 
     /// <summary>
@@ -92,8 +92,8 @@ public class CollectionApiTests
     {
         OneMap()
             .Compiles()
-            .Emits("public virtual global::Destination[] MapToDestinationArray(")
-            .DoesNotEmit("public virtual global::Destination[]? MapToDestinationArray(");
+            .Emits("public global::Destination[] MapToDestinationArray(")
+            .DoesNotEmit("public global::Destination[]? MapToDestinationArray(");
     }
 
     /// <inheritdoc cref="The_default_policy_returns_a_non_nullable_collection"/>
@@ -102,7 +102,7 @@ public class CollectionApiTests
     {
         OneMap("o => o.AllowNullCollections = true")
             .Compiles()
-            .Emits("public virtual global::Destination[]? MapToDestinationArray(")
+            .Emits("public global::Destination[]? MapToDestinationArray(")
             .Emits("global::ShiftMapper.ValueConverter.ToArray<global::Source, global::Destination>(source, MapToDestination);");
     }
 
@@ -116,9 +116,9 @@ public class CollectionApiTests
         GeneratorRun run = OneMap();
 
         run.Compiles()
-           .Emits("public virtual global::Destination? MapToDestinationOrNull(global::Source? source) =>")
+           .Emits("public global::Destination? MapToDestinationOrNull(global::Source? source) =>")
            .Emits("source is null ? null : MapToDestination(source);")
-           .Emits("public virtual TDestination? MapOrNull<TDestination>(global::Source? source)")
+           .Emits("public TDestination? MapOrNull<TDestination>(global::Source? source)")
            .Emits("where TDestination : class");
     }
 
@@ -204,8 +204,8 @@ public class CollectionApiTests
         GeneratorRun run = OneMap();
 
         run.Compiles()
-           .Emits($"public static TDestination Map<TDestination>(this {Sequence}, global::TestMapper mapper)")
-           .Emits("public static TDestination? MapOrNull<TDestination>(this global::Source? source, global::TestMapper mapper)")
-           .Emits("return mapper.MapOrNull<TDestination>(source);");
+           .Emits($"public static TDestination Map<TDestination>(this {Sequence}, global::ShiftMapper.Mapper mapper)")
+           .Emits("public static TDestination? MapOrNull<TDestination>(this global::Source? source, global::ShiftMapper.Mapper mapper)")
+           .Emits("Root(mapper).MapOrNull<TDestination>(source);");
     }
 }

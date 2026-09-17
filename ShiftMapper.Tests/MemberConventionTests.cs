@@ -18,7 +18,7 @@ public class MemberConventionTests
 
     public MemberConventionTests(DatabaseFixture fixture) => _fixture = fixture;
 
-    private DeclaredMapper Mapper => _fixture.DeclaredMapper;
+    private Mapper Mapper => _fixture.Mapper;
 
     private static FiledDocument Document => new()
     {

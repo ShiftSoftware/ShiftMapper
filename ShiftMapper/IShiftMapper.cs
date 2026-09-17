@@ -3,13 +3,13 @@ namespace ShiftMapper;
 /// <summary>
 /// One door into a mapper that does not name the mapper.
 ///
-/// WHO THIS IS FOR. The generated methods on your own mapper class — <c>Map&lt;BrandDto&gt;(brand)</c>,
+/// WHO THIS IS FOR. The generated methods on <see cref="Mapper"/> — <c>Map&lt;BrandDto&gt;(brand)</c>,
 /// <c>ProjectTo&lt;BrandDto&gt;(query)</c> — are the primary API, and they are strongly typed: a
 /// destination with no map is a COMPILE error at the call site. Keep using them wherever you can.
 ///
 /// A LIBRARY cannot. Code in a framework package has to map an entity to a DTO in an application it
-/// has never seen, whose mapper class is called something it cannot know, so it has nothing to
-/// write against. This interface is that something: resolve it from DI and map.
+/// has never seen: its types are generic parameters, and a typed overload cannot be chosen for a
+/// type parameter. This interface is what it writes against: resolve it from DI and map.
 ///
 /// <code>
 /// public class Repository&lt;TEntity, TDto&gt;
@@ -32,14 +32,12 @@ namespace ShiftMapper;
 /// line that would fix it. Call <see cref="CanMap"/> first when a missing map is an ordinary
 /// answer rather than a bug — catching an exception to find out is the thing it exists to avoid.
 ///
-/// HOW IT IS IMPLEMENTED. The ShiftMapper generator writes the implementation onto your mapper
-/// class as EXPLICIT interface members. Explicit on purpose: they stay invisible on the class
-/// itself, so <c>mapper.Map&lt;SomeDto&gt;(thing)</c> keeps failing to compile when there is no
-/// map, instead of quietly binding to the <c>object</c> overload and throwing at runtime.
-/// <c>AddShiftMapper</c> registers the mapper under this interface as well as under its own
-/// type, and both resolve to the same instance. With several mappers registered the interface
-/// resolves to a <see cref="CompositeShiftMapper"/>, which asks each mapper <see cref="CanMap"/>
-/// and dispatches to the first that answers.
+/// HOW IT IS IMPLEMENTED. <see cref="Mapper"/> implements it — EXPLICITLY, so the members stay
+/// invisible on the class: <c>mapper.Map&lt;SomeDto&gt;(thing)</c> keeps failing to compile when
+/// there is no map, instead of quietly binding to the <c>object</c> overload and throwing at
+/// runtime. <c>AddShiftMapper</c> registers the interface alongside <see cref="Mapper"/>, and
+/// both resolve to the same instance. Under it, every generated mapper the container registered
+/// answers in turn — the application's first, since it carries every package's maps as well.
 /// </summary>
 public interface IShiftMapper
 {

@@ -124,12 +124,13 @@ public class InvoiceDto
 }
 
 /// <summary>
-/// The mapper under measurement. Three levels of nesting, a conversion, a collection, and two
+/// The mapper class under measurement. Three levels of nesting, a conversion, a collection, and two
 /// customizations — one of which closes over the injected service and one of which does not,
 /// because that difference is what decides whether a compiled delegate can be reused across
-/// instances.
+/// instances. Nothing is generated onto it: the benchmarks map through the <see cref="Mapper"/>
+/// that <see cref="Container"/> builds, which holds this assembly's generated mapper.
 /// </summary>
-public partial class BenchmarkMapper : ShiftMapperBase
+public class BenchmarkMapper : ShiftMapperBase
 {
     private readonly INumbering _numbering;
 
@@ -151,24 +152,16 @@ public partial class BenchmarkMapper : ShiftMapperBase
 }
 
 /// <summary>
-/// The same graph with NOTHING captured, so every one of its customizations can be compiled once
-/// for the whole process. The pair of mappers is the measurement: the difference between them is
-/// what closing over a service costs per request.
+/// The container every benchmark resolves its <see cref="Mapper"/> from — registered the way an
+/// application registers it, with the service the mapper class needs.
 /// </summary>
-public partial class SharedOnlyMapper : ShiftMapperBase
+public static class Container
 {
-    public SharedOnlyMapper()
-    {
-        CreateMap<Brand, BrandDto>();
-        CreateMap<Product, ProductDto>();
-
-        CreateMap<InvoiceLine, InvoiceLineDto>()
-            .ForMember(d => d.LineTotal, opt => opt.MapFrom(s => s.Quantity * s.UnitPrice));
-
-        CreateMap<Invoice, InvoiceDto>()
-            .ForMember(d => d.Total, opt => opt.MapFrom(s => s.Lines.Sum(l => l.Quantity * l.UnitPrice)))
-            .ForMember(d => d.Number, opt => opt.MapFrom(s => "IQ/" + s.Number));
-    }
+    public static Microsoft.Extensions.DependencyInjection.ServiceProvider Build() =>
+        Microsoft.Extensions.DependencyInjection.ServiceCollectionContainerBuilderExtensions.BuildServiceProvider(
+            Microsoft.Extensions.DependencyInjection.ShiftMapperServiceCollectionExtensions.AddShiftMapper(
+                Microsoft.Extensions.DependencyInjection.ServiceCollectionServiceExtensions.AddSingleton<INumbering, Numbering>(
+                    new Microsoft.Extensions.DependencyInjection.ServiceCollection())));
 }
 
 /// <summary>Builds the object graph the benchmarks map, so setup is not part of what is measured.</summary>

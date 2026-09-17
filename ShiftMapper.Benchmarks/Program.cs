@@ -38,7 +38,8 @@ internal static class Shapes
     {
         IQueryable<Invoice> invoices = new List<Invoice> { Sample.Invoice(lines: 1) }.AsQueryable();
 
-        var shift = new SharedOnlyMapper();
+        var shift = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<ShiftMapper.Mapper>(
+            Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.CreateScope(Container.Build()).ServiceProvider);
         var mapperly = new MapperlyMapper();
 
         Show("ShiftMapper", shift.ProjectTo<InvoiceDto>(invoices).Expression);

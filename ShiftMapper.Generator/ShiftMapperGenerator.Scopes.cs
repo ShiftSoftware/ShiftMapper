@@ -9,16 +9,15 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 namespace ShiftMapper.Generator;
 
 /// <summary>
-/// THE SCOPES a mapper is built from: its own class, every mapper it includes, and every pack any
-/// of them adds — each one a place declarations are read from, and each one a boundary rules do
-/// not cross.
+/// THE SCOPES the generated mapper is built from: every mapper class it can see, and every pack
+/// any of them adds — each one a place declarations are read from, and each one a boundary rules
+/// do not cross.
 ///
-/// <para><b>Why scopes and not one flat list.</b> A map is declared by exactly one mapper, and the
-/// conversions and conventions that may answer for its members are decided by HOW NEAR they were
-/// written to it: the declaring mapper's own rules first, then the packs it added, then the mapper
-/// being generated and its packs, then the packs the registration gave every mapper, then the
-/// packs referenced packages shared with every registration, then the built-in table. A flat list
-/// cannot say which of two rules is nearer; this can.</para>
+/// <para><b>Why scopes and not one flat list.</b> A map is declared by exactly one mapper class,
+/// and the conversions and conventions that may answer for its members are decided by HOW NEAR
+/// they were written to it: the declaring class's own rules first, then the packs it added, then
+/// the packs the registration gave every map, then the packs referenced packages shared, then the
+/// built-in table. A flat list cannot say which of two rules is nearer; this can.</para>
 /// </summary>
 public sealed partial class ShiftMapperGenerator
 {
@@ -62,32 +61,28 @@ public sealed partial class ShiftMapperGenerator
             Own = own;
         }
 
-        /// <summary>The mapper being generated — or, for an adapter, the package mapper being adapted.</summary>
+        /// <summary>The type the set is built for — the base class itself, for the generated mapper.</summary>
         public INamedTypeSymbol Mapper { get; }
 
-        /// <summary>The mapper's own scope: all of its partial parts, or none for an adapter.</summary>
+        /// <summary>
+        /// The set's own scope. For the generated mapper this is the base class: a scope with no
+        /// declarations, so every map belongs to the mapper class that declared it and takes that
+        /// class's rules and defaults, and none belongs to the generated class.
+        /// </summary>
         public DeclarationScope Own { get; }
 
-        /// <summary>Every mapper reached through <c>IncludeMapper</c>, transitively, in discovery order.</summary>
+        /// <summary>Every mapper class in the set — local and packaged — in discovery order.</summary>
         public List<DeclarationScope> Included { get; } = new();
 
         /// <summary>Every pack reached from anywhere, keyed by name, so its rules are read once.</summary>
         public Dictionary<string, DeclarationScope> Packs { get; } = new(StringComparer.Ordinal);
 
-        /// <summary>
-        /// Packs at the MAPPER's level: what its own constructor added plus what its registration
-        /// added for it alone. The nearest level after the mapper's own rules.
-        /// </summary>
-        public List<INamedTypeSymbol> OwnPacks { get; } = new();
-
-        /// <summary>Packs the registration gave every mapper — the level after the mapper's own.</summary>
+        /// <summary>Packs the registration gave every map — the level after a mapper class's own packs.</summary>
         public List<INamedTypeSymbol> GlobalPacks { get; } = new();
 
         /// <summary>
-        /// Packs REFERENCED packages shared with every registration in this project — the furthest
-        /// level before the built-in table, so that anything this project wrote itself still wins.
-        /// Only a registered mapper has them, exactly as only a registered mapper has
-        /// <see cref="GlobalPacks"/>.
+        /// Packs REFERENCED packages shared with this project — the furthest level before the
+        /// built-in table, so that anything this project wrote itself still wins.
         /// </summary>
         public List<INamedTypeSymbol> ReferencedPacks { get; } = new();
 
@@ -123,69 +118,8 @@ public sealed partial class ShiftMapperGenerator
     }
 
     /// <summary>
-    /// Builds the set for a mapper declared in THIS compilation: its parts, what they include and
-    /// add, and what the registration says about it.
-    /// </summary>
-    private static DeclarationSet BuildDeclarationSet(
-        Compilation compilation,
-        INamedTypeSymbol classSymbol,
-        INamedTypeSymbol baseClass,
-        RegistrationModel registrations,
-        CancellationToken cancellationToken)
-    {
-        var set = new DeclarationSet(classSymbol, new DeclarationScope(classSymbol, PartsOf(classSymbol, cancellationToken), isPack: false));
-
-        INamedTypeSymbol? packBase = compilation.GetTypeByMetadataName(PackBaseMetadataName);
-
-        var visited = new HashSet<string>(StringComparer.Ordinal) { set.Own.Name };
-
-        // The mapper's own parts, then what the registration adds to it — the same order the
-        // runtime applies them in.
-        CollectComposition(compilation, set, set.Own, baseClass, packBase, visited, cancellationToken);
-
-        bool isRegistered = false;
-
-        foreach (RegisteredMapper registered in registrations.Mappers)
-        {
-            if (registered.Mapper != set.Own.Name)
-                continue;
-
-            isRegistered = true;
-
-            foreach (INamedTypeSymbol included in registered.IncludeTypes)
-                Include(compilation, set, included, baseClass, packBase, visited, cancellationToken);
-
-            foreach (INamedTypeSymbol pack in registered.PackTypes)
-                AddPack(set, pack, set.OwnPacks, cancellationToken);
-
-            // The packs of the CALL this mapper was registered in. Per call rather than across the
-            // compilation, because that is what the runtime applies: a second AddShiftMapper call
-            // in the same project is a second registration with its own packs.
-            foreach (INamedTypeSymbol pack in registered.CallPacks)
-                AddPack(set, pack, set.GlobalPacks, cancellationToken);
-        }
-
-        // What referenced packages shared: an AddConversions appended to every call, so every
-        // registered mapper gets it — and only a registered one, like a call's own packs. A pack
-        // this project also named itself is already at a nearer level and is not listed twice.
-        if (isRegistered)
-        {
-            foreach (ReferencedPack shared in registrations.ReferencedPacks)
-            {
-                if (set.OwnPacks.Concat(set.GlobalPacks).Any(nearer => SymbolEqualityComparer.Default.Equals(nearer, shared.Pack)))
-                    continue;
-
-                AddPack(set, shared.Pack, set.ReferencedPacks, cancellationToken);
-            }
-        }
-
-        return set;
-    }
-
-    /// <summary>
-    /// Reads one scope's constructor for <c>IncludeMapper</c> and <c>AddConversions</c> calls and
-    /// follows them: an included mapper becomes a scope of its own and is read the same way, a pack
-    /// is recorded against the scope that added it.
+    /// Reads one scope's constructor for <c>AddConversions</c> calls and records each pack against
+    /// the scope that added it — the second-nearest level for that scope's maps.
     /// </summary>
     private static void CollectComposition(
         Compilation compilation,
@@ -202,18 +136,10 @@ public sealed partial class ShiftMapperGenerator
 
             foreach (InvocationExpressionSyntax invocation in OwnInvocations(part))
             {
-                if (CompositionCall(model, invocation, baseClass, cancellationToken) is not { } call)
+                if (CompositionCall(model, invocation, baseClass, cancellationToken) is not { } pack)
                     continue;
 
-                if (call.IsInclude)
-                {
-                    Include(compilation, set, call.Target, baseClass, packBase, visited, cancellationToken);
-                    continue;
-                }
-
-                List<INamedTypeSymbol> level = scope == set.Own ? set.OwnPacks : scope.Packs;
-
-                AddPack(set, call.Target, level, cancellationToken);
+                AddPack(set, pack, scope.Packs, cancellationToken);
             }
         }
     }
@@ -279,8 +205,8 @@ public sealed partial class ShiftMapperGenerator
         return parts.ToImmutable();
     }
 
-    /// <summary>An <c>IncludeMapper&lt;T&gt;()</c> or <c>AddConversions&lt;T&gt;()</c> bound to the base class, or null.</summary>
-    private static (INamedTypeSymbol Target, bool IsInclude)? CompositionCall(
+    /// <summary>An <c>AddConversions&lt;T&gt;()</c> bound to the base class, with its pack, or null.</summary>
+    private static INamedTypeSymbol? CompositionCall(
         SemanticModel model,
         InvocationExpressionSyntax invocation,
         INamedTypeSymbol baseClass,
@@ -296,18 +222,13 @@ public sealed partial class ShiftMapperGenerator
         if (name is null || name.TypeArgumentList.Arguments.Count != 1)
             return null;
 
-        bool isInclude = name.Identifier.ValueText == "IncludeMapper";
-
-        if (!isInclude && name.Identifier.ValueText != "AddConversions")
+        if (name.Identifier.ValueText != "AddConversions")
             return null;
 
         if (!IsDeclaredOn(model, invocation, baseClass, cancellationToken))
             return null;
 
-        if (model.GetSymbolInfo(name.TypeArgumentList.Arguments[0], cancellationToken).Symbol is not INamedTypeSymbol target)
-            return null;
-
-        return (target, isInclude);
+        return model.GetSymbolInfo(name.TypeArgumentList.Arguments[0], cancellationToken).Symbol as INamedTypeSymbol;
     }
 
     /// <summary>
@@ -381,25 +302,13 @@ public sealed partial class ShiftMapperGenerator
         }
 
         /// <summary>
-        /// The scope names at each level, nearest first: the declaring scope; its packs; the
-        /// mapper being generated and its packs, when the declaring scope is another mapper; the
-        /// registration's global packs; the packs referenced packages shared.
+        /// The scope names at each level, nearest first: the declaring mapper class; the packs it
+        /// added itself; the registration's packs; the packs referenced packages shared.
         /// </summary>
         internal static IEnumerable<IReadOnlyList<string>> Levels(DeclarationSet set, DeclarationScope declaring)
         {
             yield return new[] { declaring.Name };
-
-            if (declaring == set.Own)
-            {
-                yield return set.OwnPacks.Select(FullName).ToList();
-            }
-            else
-            {
-                yield return declaring.Packs.Select(FullName).ToList();
-                yield return new[] { set.Own.Name };
-                yield return set.OwnPacks.Select(FullName).ToList();
-            }
-
+            yield return declaring.Packs.Select(FullName).ToList();
             yield return set.GlobalPacks.Select(FullName).ToList();
             yield return set.ReferencedPacks.Select(FullName).ToList();
         }

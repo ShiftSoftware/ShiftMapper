@@ -26,10 +26,10 @@ namespace ShiftMapper;
 //
 // WHAT TRAVELS HERE AND WHAT DOES NOT. These carry the SHAPE — which pairs, which members, which
 // kind of customization, which options. The EXPRESSIONS (a MapFrom tree, a ConstructUsing factory,
-// a hook) never appear: they arrive at run time, because IncludeMapper / AddShiftMapper constructs
-// the declaring type and its constructor registers them, exactly as it does for a mapper in your
-// own project. That split is what lets the whole thing work without copying a line of anybody's
-// code.
+// a hook) never appear: they arrive at run time, because the generated mapper constructs the
+// declaring type on first use and its constructor registers them, exactly as it does for a mapper
+// class in your own project. That split is what lets the whole thing work without copying a line
+// of anybody's code.
 // ---------------------------------------------------------------------------------------------
 
 /// <summary>
@@ -96,9 +96,10 @@ public sealed class ShiftMapperDeclaredPackAttribute : Attribute
 }
 
 /// <summary>
-/// One <c>IncludeMapper&lt;T&gt;()</c> or <c>AddConversions&lt;T&gt;()</c> a mapper's constructor
-/// makes — so a consumer that includes the mapper follows it to what it composes, even when that
-/// lives in a third assembly.
+/// What a mapper COMPOSES: one <c>AddConversions&lt;T&gt;()</c> a mapper class's constructor makes —
+/// so a consumer follows it to the pack, even when that lives in a third assembly — and, on the
+/// GENERATED mapper, every mapper class and pack the generator folded into it, which is the list
+/// the runtime builds on first use.
 /// </summary>
 [AttributeUsage(AttributeTargets.Assembly, AllowMultiple = true, Inherited = false)]
 public sealed class ShiftMapperDeclaredCompositionAttribute : Attribute
@@ -138,24 +139,34 @@ public sealed class ShiftMapperDeclaredSharedPackAttribute : Attribute
 }
 
 /// <summary>
-/// Names the ADAPTER the generator wrote in this assembly for a mapper registered from a referenced
-/// package — the subclass that re-bakes the package's maps with this project's conversions.
-/// <c>AddShiftMapper</c> reads it to hand out the adapter where the package type was asked for.
+/// Says that a registration in this assembly SHARED a mapper class — <c>o.ShareMapper&lt;T&gt;()</c>
+/// — with every project that references it: the generator compiling such a project takes the
+/// class into its generated mapper without the project naming it, under every discovery mode but
+/// <see cref="MapperDiscovery.Registered"/>, and says so (SM0043). The mapper analogue of
+/// <see cref="ShiftMapperDeclaredSharedPackAttribute"/>.
 /// </summary>
 [AttributeUsage(AttributeTargets.Assembly, AllowMultiple = true, Inherited = false)]
-public sealed class ShiftMapperAdapterAttribute : Attribute
+public sealed class ShiftMapperDeclaredSharedMapperAttribute : Attribute
 {
-    public ShiftMapperAdapterAttribute(Type mapper, Type adapter)
-    {
-        Mapper = mapper;
-        Adapter = adapter;
-    }
+    public ShiftMapperDeclaredSharedMapperAttribute(Type mapper) => Mapper = mapper;
 
-    /// <summary>The package mapper as registered.</summary>
+    /// <summary>The mapper class every referencing project's generated mapper takes.</summary>
     public Type Mapper { get; }
+}
 
-    /// <summary>The generated subclass to construct in its place.</summary>
-    public Type Adapter { get; }
+/// <summary>
+/// Names the GENERATED MAPPER of this assembly — the one class the generator wrote every map it
+/// could see into: every mapper declared in the assembly, and every mapper declared by the
+/// packages it references. <c>AddShiftMapper</c> reads it to know what to register, and
+/// <see cref="Mapper"/> reads it to know what to build; nobody names the type by hand.
+/// </summary>
+[AttributeUsage(AttributeTargets.Assembly, AllowMultiple = false, Inherited = false)]
+public sealed class ShiftMapperGeneratedAttribute : Attribute
+{
+    public ShiftMapperGeneratedAttribute(Type generated) => Generated = generated;
+
+    /// <summary>The generated class: derives from <see cref="ShiftMapperBase"/>, implements <see cref="IShiftMapper"/>, parameterless.</summary>
+    public Type Generated { get; }
 }
 
 /// <summary>
@@ -179,10 +190,8 @@ public enum DeclaredOption
 /// One <c>CreateMap&lt;TSource, TDestination&gt;()</c> declared by a mapper, with everything about
 /// it that is not an expression.
 ///
-/// <para><b>Keyed by the DECLARING MAPPER</b>, and that is deliberate: a declaration applies to a
-/// consumer only when that consumer includes or registers the mapper. Referencing a package does not
-/// silently change how your maps behave — you ask for it, with the same one line you would use for a
-/// mapper in your own project.</para>
+/// <para><b>Keyed by the DECLARING MAPPER</b>, so the consuming generator knows whose rules and
+/// defaults the map takes, and whose file a diagnostic about it belongs to.</para>
 /// </summary>
 [AttributeUsage(AttributeTargets.Assembly, AllowMultiple = true, Inherited = false)]
 public sealed class ShiftMapperDeclaredMapAttribute : Attribute

@@ -30,7 +30,7 @@ public static class HomeEndpoints
                 "GET  /api/stocks      (INSTANCE form: mapper.Map<StockDto>(stock))",
                 "GET  /api/stocks/{id} (INSTANCE form, updates an existing DTO)",
                 "GET  /api/stocks/hooks  (BEFOREMAP and AFTERMAP, and the order they run in)",
-                "GET  /api/catalog           (INCLUDE + INCLUDEBASE: a 3-level TPH table; maps live in CatalogMapper)",
+                "GET  /api/catalog           (INCLUDE + INCLUDEBASE: a 3-level TPH table; maps written in CatalogMapper)",
                 "GET  /api/catalog/projected (the SM0024 refusal, and what to write instead)",
                 "GET  /api/catalog/physical  (OfType + PROJECTION; ?sql=true shows the inherited UPPER())",
                 "GET  /api/catalog/bundles   (the same, one level deeper: inherited TWO pairs up)",

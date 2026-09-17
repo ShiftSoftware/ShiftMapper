@@ -111,6 +111,11 @@ public sealed partial class ShiftMapperAnalyzer
     /// <summary>The types that might be the mapper: the receiver, and every argument.</summary>
     private static System.Collections.Generic.IEnumerable<ITypeSymbol?> Candidates(IInvocationOperation invocation)
     {
+        // The extension class the call bound to carries the same marks as the generated mapper —
+        // and is the only candidate when the receiver is ShiftMapper.Mapper, which is compiled in
+        // the runtime and knows no pair.
+        yield return invocation.TargetMethod.ContainingType;
+
         yield return invocation.Instance?.Type;
 
         foreach (IArgumentOperation argument in invocation.Arguments)

@@ -1,4 +1,5 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using ShiftMapper;
 using ShiftMapper.Sample.Data;
 using ShiftMapper.Sample.Dtos;
 using ShiftMapper.Sample.Mapping;
@@ -32,7 +33,7 @@ public static class ConversionEndpoints
         // That is only possible because the query form is an expression TREE that gets INLINED
         // into the projection, not a delegate the projection calls. A delegate is opaque to EF and
         // would have meant loading every invoice and formatting in C#.
-        app.MapGet("/api/invoices/stamps", (AppDbContext db, AppMapper mapper, bool sql = false) =>
+        app.MapGet("/api/invoices/stamps", (AppDbContext db, Mapper mapper, bool sql = false) =>
         {
             IQueryable<InvoiceStampDto> query = db.Invoices
                 .AsNoTracking()
@@ -62,7 +63,7 @@ public static class ConversionEndpoints
         // THAT WARNING IS THE POINT OF THE WHOLE STEP. A runtime-only conversion table converts
         // just as well and cannot tell you which of your list endpoints has quietly stopped being
         // one query. This one is a build warning, on a line you can click.
-        app.MapGet("/api/products/fingerprints", (AppDbContext db, AppMapper mapper, bool project = false) =>
+        app.MapGet("/api/products/fingerprints", (AppDbContext db, Mapper mapper, bool project = false) =>
         {
             if (!project)
             {

@@ -102,7 +102,7 @@ public class EmittedCostTests
             """);
 
         run.Compiles()
-           .Emits("public virtual global::Destination MapToDestination(global::Source source)")
+           .Emits("public global::Destination MapToDestination(global::Source source)")
            .Emits("return new global::Destination")
            .Emits("if (typeof(TDestination) == typeof(global::Destination))")
            .Emits("return (TDestination)(object)MapToDestination(source);")
@@ -131,7 +131,7 @@ public class EmittedCostTests
             }
             """);
 
-        run.Compiles().Emits("public virtual global::Destination MapToDestination(global::Source source)");
+        run.Compiles().Emits("public global::Destination MapToDestination(global::Source source)");
     }
 
     /// <summary>
@@ -154,7 +154,7 @@ public class EmittedCostTests
         run.Compiles();
 
         int start = run.Generated.IndexOf(
-            "public virtual global::Destination MapToDestination(global::Source source)",
+            "public global::Destination MapToDestination(global::Source source)",
             StringComparison.Ordinal);
 
         Assert.True(start >= 0, "no direct method was emitted");

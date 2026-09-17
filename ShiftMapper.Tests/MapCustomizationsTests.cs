@@ -9,15 +9,30 @@ namespace ShiftMapper.Tests;
 /// <c>protected</c> on <see cref="ShiftMapperBase"/> because the generated half of a mapper is
 /// the only thing that should normally touch it.
 /// </summary>
-public partial class CustomizationProbe : ShiftMapperBase
+/// <summary>Destinations of the probes' own, so their pairs clash with nothing TestMapper declares.</summary>
+public class ProbeBrandDto
+{
+    public string Name { get; set; } = string.Empty;
+
+    public string Country { get; set; } = string.Empty;
+}
+
+public class ProbeStockDto
+{
+    public string Name { get; set; } = string.Empty;
+
+    public string Code { get; set; } = string.Empty;
+}
+
+public class CustomizationProbe : ShiftMapperBase
 {
     public CustomizationProbe()
     {
-        CreateMap<Brand, BrandDto>()
+        CreateMap<Brand, ProbeBrandDto>()
             .ForMember(d => d.Country, opt => opt.MapFrom(s => s.Country + " (" + s.ISOCode + ")"));
 
         // Registered and then withdrawn, which is what "last call wins" means at runtime.
-        CreateMap<Stock, StockDto>()
+        CreateMap<Stock, ProbeStockDto>()
             .ForMember(d => d.Code, opt => opt.MapFrom(s => s.Code.ToUpperInvariant()))
             .ForMember(d => d.Code, opt => opt.Ignore());
     }
@@ -38,12 +53,12 @@ public class MapCustomizationsTests
     {
         MapCustomizations store = Store;
 
-        Assert.True(store.Has(typeof(Brand), typeof(BrandDto), "Country"));
+        Assert.True(store.Has(typeof(Brand), typeof(ProbeBrandDto), "Country"));
 
         // Not for a member nobody customized, and not for some other pair of types that happens
         // to have a member of the same name.
-        Assert.False(store.Has(typeof(Brand), typeof(BrandDto), "Name"));
-        Assert.False(store.Has(typeof(Stock), typeof(StockDto), "Country"));
+        Assert.False(store.Has(typeof(Brand), typeof(ProbeBrandDto), "Name"));
+        Assert.False(store.Has(typeof(Stock), typeof(ProbeStockDto), "Country"));
     }
 
     /// <summary>
@@ -54,7 +69,7 @@ public class MapCustomizationsTests
     [Fact]
     public void An_Ignore_after_a_MapFrom_withdraws_the_expression()
     {
-        Assert.False(Store.Has(typeof(Stock), typeof(StockDto), "Code"));
+        Assert.False(Store.Has(typeof(Stock), typeof(ProbeStockDto), "Code"));
     }
 
     [Fact]
@@ -62,8 +77,8 @@ public class MapCustomizationsTests
     {
         MapCustomizations store = Store;
 
-        Func<Brand, string> first = store.Value<Brand, BrandDto, string>("Country");
-        Func<Brand, string> second = store.Value<Brand, BrandDto, string>("Country");
+        Func<Brand, string> first = store.Value<Brand, ProbeBrandDto, string>("Country");
+        Func<Brand, string> second = store.Value<Brand, ProbeBrandDto, string>("Country");
 
         Assert.Same(first, second);
         Assert.Equal("Iraq (IQ)", first(new Brand { Country = "Iraq", ISOCode = "IQ" }));
@@ -78,9 +93,9 @@ public class MapCustomizationsTests
     public void Asking_for_a_customization_nobody_registered_says_to_rebuild()
     {
         InvalidOperationException error = Assert.Throws<InvalidOperationException>(
-            () => Store.Value<Brand, BrandDto, string>("Name"));
+            () => Store.Value<Brand, ProbeBrandDto, string>("Name"));
 
-        Assert.Contains("BrandDto.Name", error.Message);
+        Assert.Contains("ProbeBrandDto.Name", error.Message);
         Assert.Contains("Rebuild", error.Message);
     }
 
@@ -96,10 +111,10 @@ public class MapCustomizationsTests
     [Fact]
     public void Compose_inlines_the_customization_into_the_member_initializer()
     {
-        Expression<Func<Brand, BrandDto>> conventions =
-            source => new BrandDto { Name = source.Name };
+        Expression<Func<Brand, ProbeBrandDto>> conventions =
+            source => new ProbeBrandDto { Name = source.Name };
 
-        Expression<Func<Brand, BrandDto>> composed =
+        Expression<Func<Brand, ProbeBrandDto>> composed =
             Store.Compose(conventions);
 
         var init = Assert.IsType<MemberInitExpression>(composed.Body);
@@ -109,7 +124,7 @@ public class MapCustomizationsTests
         // Compiling proves the parameter swap worked: the customization was written against its
         // own parameter object, and an expression referring to a parameter its lambda does not
         // declare cannot be compiled at all.
-        BrandDto mapped = composed.Compile()(new Brand { Name = "Acme", Country = "Iraq", ISOCode = "IQ" });
+        ProbeBrandDto mapped = composed.Compile()(new Brand { Name = "Acme", Country = "Iraq", ISOCode = "IQ" });
 
         Assert.Equal("Acme", mapped.Name);
         Assert.Equal("Iraq (IQ)", mapped.Country);
@@ -123,10 +138,10 @@ public class MapCustomizationsTests
     [Fact]
     public void Compose_replaces_a_convention_for_a_customized_property()
     {
-        Expression<Func<Brand, BrandDto>> conventions =
-            source => new BrandDto { Name = source.Name, Country = source.Country };
+        Expression<Func<Brand, ProbeBrandDto>> conventions =
+            source => new ProbeBrandDto { Name = source.Name, Country = source.Country };
 
-        Expression<Func<Brand, BrandDto>> composed = Store.Compose(conventions);
+        Expression<Func<Brand, ProbeBrandDto>> composed = Store.Compose(conventions);
 
         var init = (MemberInitExpression)composed.Body;
 
@@ -138,8 +153,8 @@ public class MapCustomizationsTests
     [Fact]
     public void Compose_returns_the_conventions_unchanged_when_there_is_nothing_to_merge()
     {
-        Expression<Func<Stock, StockDto>> conventions =
-            source => new StockDto { Name = source.Name };
+        Expression<Func<Stock, ProbeStockDto>> conventions =
+            source => new ProbeStockDto { Name = source.Name };
 
         Assert.Same(conventions, Store.Compose(conventions));
     }
@@ -147,10 +162,10 @@ public class MapCustomizationsTests
     [Fact]
     public void Compose_rejects_a_projection_that_is_not_an_object_initializer()
     {
-        // A METHOD CALL. A bare `new BrandDto()` is accepted — see the test below — because a
+        // A METHOD CALL. A bare `new ProbeBrandDto()` is accepted — see the test below — because a
         // destination built entirely through its constructor has nothing left to initialise, and
         // that is exactly what a record projection looks like.
-        Expression<Func<Brand, BrandDto>> notAnInitializer = source => Make(source);
+        Expression<Func<Brand, ProbeBrandDto>> notAnInitializer = source => Make(source);
 
         InvalidOperationException error = Assert.Throws<InvalidOperationException>(
             () => Store.Compose(notAnInitializer, new MapCustomizations.NestedBinding(
@@ -159,7 +174,7 @@ public class MapCustomizationsTests
         Assert.Contains("is not an object initializer", error.Message);
     }
 
-    private static BrandDto Make(Brand brand) => new() { Name = brand.Name };
+    private static ProbeBrandDto Make(Brand brand) => new() { Name = brand.Name };
 
     /// <summary>
     /// A bare <c>new</c> IS an object initializer as far as this is concerned — one with no
@@ -169,13 +184,13 @@ public class MapCustomizationsTests
     [Fact]
     public void Compose_accepts_a_projection_that_is_a_bare_construction()
     {
-        Expression<Func<Brand, BrandDto>> construction = source => new BrandDto();
+        Expression<Func<Brand, ProbeBrandDto>> construction = source => new ProbeBrandDto();
 
         // The probe's own MapFrom for Country is the customization being merged in, and where it
         // has to land is a member initializer this method builds from nothing.
-        Expression<Func<Brand, BrandDto>> composed = Store.Compose(construction);
+        Expression<Func<Brand, ProbeBrandDto>> composed = Store.Compose(construction);
 
-        BrandDto dto = composed.Compile()(new Brand { Country = "Iraq", ISOCode = "IQ" });
+        ProbeBrandDto dto = composed.Compile()(new Brand { Country = "Iraq", ISOCode = "IQ" });
 
         Assert.Equal("Iraq (IQ)", dto.Country);
     }

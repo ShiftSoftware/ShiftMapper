@@ -604,22 +604,23 @@ internal static class DiagnosticDescriptors
                      "the closed CreateMap calls out instead.");
 
     /// <summary>
-    /// SM0027 — one type pair declared in an included mapper AND in the mapper that includes it.
+    /// SM0027 — one type pair declared by a mapper class in THIS project AND by a referenced
+    /// package's.
     ///
     /// A warning rather than an error because there IS a defined answer, and both halves of the
-    /// library give the same one: the including mapper's declaration wins, in the generated code
-    /// and in the runtime store alike. What it cannot be is silent — the losing declaration reads
-    /// exactly like the winning one.
+    /// library give the same one: this project's declaration wins, in the generated code and in
+    /// the runtime store alike — overriding a package's map is a thing to do on purpose. What it
+    /// cannot be is silent.
     /// </summary>
     public static readonly DiagnosticDescriptor IncludedMapDeclaredTwice = new(
         id: "SM0027",
-        title: "A map is declared both in an included mapper and in the mapper that includes it",
+        title: "A map is declared both in this project and by a referenced package",
         messageFormat: "ShiftMapper: {0}",
         category: Category,
         defaultSeverity: DiagnosticSeverity.Warning,
         isEnabledByDefault: true,
-        description: "The including mapper's declaration is the one that runs. Delete whichever " +
-                     "of the two you did not mean to keep.");
+        description: "This project's declaration is the one that runs. Delete it if you did not " +
+                     "mean to override the package's map.");
 
     /// <summary>
     /// SM0028 — a mapper or pack from a referenced assembly that carries no declaration metadata.
@@ -822,7 +823,7 @@ internal static class DiagnosticDescriptors
                      "surrounding code silently ignored.");
 
 
-    /// <summary>SM0005 — the whole mapper produced nothing.</summary>
+    /// <summary>SM0005 — a mapper class the generated mapper cannot include, so nothing it declares is generated.</summary>
     public static readonly DiagnosticDescriptor MapperSkipped = new(
         id: "SM0005",
         title: "No mapping code was generated for this mapper",
@@ -831,71 +832,11 @@ internal static class DiagnosticDescriptors
         defaultSeverity: DiagnosticSeverity.Warning,
         isEnabledByDefault: true,
         description: "The class derives from ShiftMapperBase, so it was clearly meant to be a mapper, " +
-                     "but the generator cannot add code to it in its current shape.");
+                     "but the generated mapper cannot construct it.");
 
 
-    /// <summary>
-    /// Every rule, in id order — what <see cref="ShiftMapperAnalyzer.SupportedDiagnostics"/>
-    /// hands back.
-    ///
-    /// A rule missing from this list is a rule the compiler will refuse to let the analyzer
-    /// report, so this is the one place that has to stay in step with the fields below — and
-    /// with AnalyzerReleases.Unshipped.md, which the release-tracking analyzers check for us.
-    /// </summary>
-    /// <summary>
-    /// SM0039 — a mapper from a referenced assembly that this project cannot adapt.
-    ///
-    /// A mapper registered from another project is handed out through a generated SUBCLASS with
-    /// this project's packs baked in. A sealed mapper has no virtual members to override — C#
-    /// refuses them — so there is nothing to generate, and registering the package's own class
-    /// would quietly ignore every pack written here.
-    /// </summary>
-    public static readonly DiagnosticDescriptor MapperCannotBeAdapted = new(
-        id: "SM0039",
-        title: "A sealed mapper from a referenced assembly cannot be registered here",
-        messageFormat: "ShiftMapper: {0}",
-        category: Category,
-        defaultSeverity: DiagnosticSeverity.Error,
-        isEnabledByDefault: true,
-        description: "Unseal the mapper in the package, or include it in a mapper of this project " +
-                     "with IncludeMapper instead of registering it directly.");
 
-    /// <summary>
-    /// SM0040 — two registered mappers each declare their OWN map for one pair, or one mapper is
-    /// registered twice in a call.
-    ///
-    /// AN ERROR: a library going through IShiftMapper would be handed one of two different
-    /// mappings, chosen by registration order — the silent default this library refuses. One
-    /// declaration reached through inclusion by several mappers is not this: whichever answers
-    /// runs the same map, and nothing is reported.
-    /// </summary>
-    public static readonly DiagnosticDescriptor RegistrationAmbiguous = new(
-        id: "SM0040",
-        title: "Two registered mappers declare their own map for the same pair",
-        messageFormat: "ShiftMapper: {0}",
-        category: Category,
-        defaultSeverity: DiagnosticSeverity.Error,
-        isEnabledByDefault: true,
-        description: "Declare the pair in one mapper and have the other include it, register only " +
-                     "one of the two, or register each mapper once.");
 
-    /// <summary>
-    /// SM0041 — one mapper registered in two calls that compose it differently.
-    ///
-    /// A mapper is generated ONCE per project, with the union of everything any call composes into
-    /// it, and the runtime applies that same union whichever call resolves it. So a call that
-    /// leaves an include or a pack out still gets it — which is consistent, and worth knowing.
-    /// </summary>
-    public static readonly DiagnosticDescriptor RegistrationsDiffer = new(
-        id: "SM0041",
-        title: "A mapper is registered with different includes or packs in two calls",
-        messageFormat: "ShiftMapper: {0}",
-        category: Category,
-        defaultSeverity: DiagnosticSeverity.Warning,
-        isEnabledByDefault: true,
-        description: "What the generator bakes into a mapper is the union of every registration " +
-                     "in the project, and every call applies that union. Register the mapper the " +
-                     "same way everywhere, or move the composition into its constructor.");
 
     /// <summary>
     /// SM0042 — one pair declared twice, with nothing to choose between the two: two included
@@ -924,7 +865,7 @@ internal static class DiagnosticDescriptors
     /// </summary>
     public static readonly DiagnosticDescriptor SharedPackApplied = new(
         id: "SM0043",
-        title: "A referenced package shared a pack with every mapper this call registers",
+        title: "A referenced package shared a pack or a mapper class with this project",
         messageFormat: "ShiftMapper: {0}",
         category: Category,
         defaultSeverity: DiagnosticSeverity.Info,
@@ -943,13 +884,33 @@ internal static class DiagnosticDescriptors
     /// </summary>
     public static readonly DiagnosticDescriptor SharedPackNotPublic = new(
         id: "SM0044",
-        title: "A shared pack must be public",
+        title: "A shared pack or mapper class must be public",
         messageFormat: "ShiftMapper: {0}",
         category: Category,
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true,
         description: "Make the pack public, or add it with AddConversions for this project's " +
                      "mappers alone.");
+
+
+    /// <summary>
+    /// SM0046 — a registration line that changes nothing: an <c>AddMapper</c> under
+    /// <c>MapperDiscovery.All</c>, or a <c>Discovery</c> set differently in two calls.
+    ///
+    /// <para>A warning: nothing is wrong with the generated mapper, but the line says the developer
+    /// expected something to happen, and the something is a discovery mode away.</para>
+    /// </summary>
+    public static readonly DiagnosticDescriptor RegistrationHasNoEffect = new(
+        id: "SM0046",
+        title: "This registration line has no effect",
+        messageFormat: "ShiftMapper: {0}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "AddMapper decides which mapper classes are generated only under " +
+                     "MapperDiscovery.LocalAndRegistered or MapperDiscovery.Registered; under All, the " +
+                     "default, every mapper class the project can see is generated already. The " +
+                     "discovery mode is one setting for the whole project.");
 
     public static readonly ImmutableArray<DiagnosticDescriptor> All = ImmutableArray.Create(
         NoSourceProperty,
@@ -989,11 +950,9 @@ internal static class DiagnosticDescriptors
         NestedMapIsNotProjectable,
         ProjectToIsNotSupported,
         MemberConventionIsEmpty,
-        MapperCannotBeAdapted,
-        RegistrationAmbiguous,
-        RegistrationsDiffer,
         MapDeclaredTwice,
         SharedPackApplied,
-        SharedPackNotPublic);
+        SharedPackNotPublic,
+        RegistrationHasNoEffect);
 }
 

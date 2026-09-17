@@ -74,7 +74,7 @@ public class ConstructorTests
     public void The_two_backends_agree_about_a_record()
     {
         using TestDbContext context = _fixture.CreateContext();
-        TestMapper mapper = _fixture.Mapper;
+        Mapper mapper = _fixture.Mapper;
 
         List<Brand> entities = context.Brands.OrderBy(brand => brand.Id).ToList();
         List<BrandRecordDto> projected = mapper
@@ -229,8 +229,8 @@ public class ConstructorTests
     {
         var catalog = new Catalog { Labels = new Dictionary<string, string> { ["a"] = "Alpha" } };
 
-        var first = new TestMapper(new Numbering("A/"));
-        var second = new TestMapper(new Numbering("B/"));
+        var first = Mappers.With(new Numbering("A/"));
+        var second = Mappers.With(new Numbering("B/"));
 
         Assert.Equal("A/1", first.Map<CatalogSummaryDto>(catalog).Label);
         Assert.Equal("B/1", second.Map<CatalogSummaryDto>(catalog).Label);

@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -18,92 +17,64 @@ namespace Microsoft.Extensions.DependencyInjection;
 /// one place the generator reads OUTSIDE a mapper class.
 ///
 /// <code>
+/// builder.Services.AddShiftMapper();                          // the application: one line
+///
 /// builder.Services.AddShiftMapper(o =&gt;
 /// {
-///     o.AddMapper&lt;AppMapper&gt;(m =&gt; m.IncludeMapper&lt;CatalogMapper&gt;());
-///     o.AddMapper&lt;PlatformMapper&gt;();               // from a referenced package
-///     o.AddConversions&lt;PlatformConversions&gt;();     // every mapper in this call
+///     o.AddConversions&lt;ReportingConversions&gt;();            // a pack of rules for every map
+///     o.Lifetime = ServiceLifetime.Scoped;                    // the default
 /// });
-///
-/// builder.Services.AddShiftMapper&lt;AppMapper&gt;();     // the short form, one mapper
 /// </code>
 ///
-/// <para><b>THE LAMBDA IS READ AT COMPILE TIME.</b> The generator finds these calls and bakes what
-/// they say into the mappers, exactly as if <c>IncludeMapper</c> and <c>AddConversions</c> had been
-/// written in the constructors. That only works when the call is an inline lambda of plain
-/// statements in the same project as the mappers it configures; anything else is reported
-/// (SM0035) rather than half-applied.</para>
+/// <para><b>WHAT IT REGISTERS</b> is the GENERATED MAPPER of the calling assembly — the class the
+/// generator wrote holding every map that assembly can see: the mapper classes declared in it,
+/// and those declared by every package it references — and <see cref="Mapper"/>, the one object
+/// application code injects, together with <see cref="IShiftMapper"/> for library code. Nothing is
+/// named: the assembly's metadata says which class was generated.</para>
 ///
-/// <para><b>A MAPPER FROM ANOTHER ASSEMBLY IS ADAPTED.</b> Its generated methods were compiled in
-/// that assembly and cannot pick up this project's packs, so the generator writes a subclass here
-/// — the adapter — with this project's rules baked in, and records it with
-/// <see cref="ShiftMapperAdapterAttribute"/>. This method hands out the adapter wherever the
-/// package type is asked for. Nothing that injects the mapper can tell.</para>
+/// <para><b>THE LAMBDA IS READ AT COMPILE TIME.</b> The generator finds these calls and bakes the
+/// packs they add into the generated mapper. That only works when the call is an inline lambda of
+/// plain statements; anything else is reported (SM0035) rather than half-applied.</para>
 ///
-/// <para><b>A PACKAGE MAY REGISTER ITSELF.</b> A framework's own <c>AddXxx</c> extension can make
-/// this call for its own mapper and pack — <c>o.ShareConversions&lt;T&gt;()</c> then hands the pack
-/// to every call every referencing project makes, through metadata its generator reads, so the
-/// application registers nothing of the package's. Every call, from whichever assembly, lands in the
-/// one registry kept in the collection. Should the application register the package's mapper too,
-/// its adapter wins in either order: the package's own registration is the fallback, not a
-/// duplicate.</para>
+/// <para><b>A PACKAGE MAY MAKE THIS CALL TOO.</b> A framework's own <c>AddXxx</c> extension can
+/// call it for its own assembly, so that a host with no generator of its own — or one that maps
+/// only through <see cref="IShiftMapper"/> — still has the package's maps at run time;
+/// <c>o.ShareConversions&lt;T&gt;()</c> there hands the pack to every project that references the
+/// package, through metadata their generators read. Every call, from whichever assembly, lands in
+/// the one registry kept in the collection, and <see cref="Mapper"/> is made of all of them, the
+/// application's first: it already carries every package's maps, re-baked with the application's
+/// rules, so the package's own registration is the fallback rather than a second answer.</para>
 ///
-/// <para><b>WHAT ENDS UP IN THE CONTAINER.</b> Every registered mapper under its own type; every
-/// mapper it includes and every pack it adds under theirs (so they may take constructor
-/// dependencies without a separate registration); and <see cref="IShiftMapper"/>, which resolves
-/// to the mapper when there is one and to a <see cref="CompositeShiftMapper"/> over all of them
-/// when there are several. Everything in one call shares one lifetime.</para>
+/// <para>Everything in one call shares one lifetime; <see cref="Mapper"/> takes the shortest of
+/// the lot, so it never outlives a generated mapper it holds.</para>
 /// </summary>
 public static class ShiftMapperServiceCollectionExtensions
 {
     /// <summary>
-    /// The adapters each assembly declared, read once. An assembly with none is an empty map,
-    /// which is what every project that registers only its own mappers gets.
+    /// Registers the calling assembly's generated mapper, and <see cref="Mapper"/> over everything
+    /// registered so far.
     /// </summary>
-    private static readonly ConcurrentDictionary<Assembly, Dictionary<Type, Type>> AdaptersByAssembly = new();
-
-    /// <summary>
-    /// Registers one mapper — the short form of the options overload, with the same result.
-    /// </summary>
-    /// <typeparam name="TMapper">Your class deriving from <see cref="ShiftMapperBase"/>.</typeparam>
     /// <param name="services">The collection being built.</param>
     /// <param name="lifetime">
-    /// Defaults to <see cref="ServiceLifetime.Scoped"/> so the mapper may safely depend on
-    /// scoped services such as a DbContext. Use Singleton if it has no scoped dependencies.
+    /// Defaults to <see cref="ServiceLifetime.Scoped"/> so mapper classes may safely depend on
+    /// scoped services such as a DbContext. Use Singleton if nothing they need is scoped.
     /// </param>
-    /// <exception cref="InvalidOperationException">
-    /// The generator produced no code for <typeparamref name="TMapper"/>, so it has no mapping
-    /// methods and does not implement <see cref="IShiftMapper"/>. Build warning SM0005 says why.
-    /// </exception>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public static IServiceCollection AddShiftMapper<TMapper>(
+    public static IServiceCollection AddShiftMapper(
         this IServiceCollection services,
         ServiceLifetime lifetime = ServiceLifetime.Scoped)
-        where TMapper : ShiftMapperBase
     {
-        // The registering assembly is the CALLER's, which is where the generator will have
-        // written an adapter if TMapper came from a package. NoInlining keeps the caller the
-        // caller.
+        // The registering assembly is the CALLER's, which is where the generator wrote the
+        // generated mapper. NoInlining keeps the caller the caller.
         Assembly registering = Assembly.GetCallingAssembly();
 
-        return Register(
-            services,
-            options =>
-            {
-                options.Lifetime = lifetime;
-                options.AddMapper<TMapper>();
-            },
-            registering);
+        return Register(services, options => options.Lifetime = lifetime, registering);
     }
 
     /// <summary>
-    /// Registers mappers and packs as the options say. See the class summary for what the
-    /// generator does with the lambda and what ends up in the container.
+    /// Registers the calling assembly's generated mapper with what the options say. See the class
+    /// summary for what the generator does with the lambda.
     /// </summary>
-    /// <exception cref="InvalidOperationException">
-    /// A mapper nothing was generated for (SM0005); a mapper from another assembly that this
-    /// project's generator wrote no adapter for; or the same mapper registered twice.
-    /// </exception>
     [MethodImpl(MethodImplOptions.NoInlining)]
     public static IServiceCollection AddShiftMapper(
         this IServiceCollection services,
@@ -113,8 +84,8 @@ public static class ShiftMapperServiceCollectionExtensions
             throw new ArgumentNullException(nameof(configure));
 
         // A lambda compiles into a closure type in the assembly that wrote it — the same
-        // assembly the generator read the lambda in, and therefore the one carrying any adapters.
-        // A delegate that somehow has no declaring type falls back to the caller.
+        // assembly the generator read the lambda in, and therefore the one carrying the generated
+        // mapper. A delegate that somehow has no declaring type falls back to the caller.
         Assembly registering = configure.Method.DeclaringType?.Assembly ?? Assembly.GetCallingAssembly();
 
         return Register(services, configure, registering);
@@ -132,97 +103,25 @@ public static class ShiftMapperServiceCollectionExtensions
         configure(options);
 
         Registry registry = RegistryOf(services);
-        Dictionary<Type, Type> adapters = AdaptersByAssembly.GetOrAdd(registering, ReadAdapters);
 
-        foreach (MapperRegistration registration in options.Mappers)
+        // An assembly nothing was generated for — no map declared in it or in what it references,
+        // or built without the generator — registers nothing of its own. Not an error: a package
+        // that only shares a pack calls this too. The Mapper below still serves every typed
+        // extension method; only the run-time door needs something registered.
+        Type? generated = Mapper.GeneratedIn(registering);
+
+        if (generated is not null && registry.Add(generated, options.Lifetime))
         {
-            Type mapper = registration.Mapper;
-            Type implementation = adapters.TryGetValue(mapper, out Type? adapter) ? adapter : mapper;
-
-            // The generated half is what implements the interface, so a type that does not is a
-            // type nothing was generated for — a mapper that is not partial, or is generic.
-            // Registering it anyway would produce a service whose every Map call throws, so this
-            // stops here and names the diagnostic that already explained it at build time.
-            if (!typeof(IShiftMapper).IsAssignableFrom(implementation))
-            {
-                throw new InvalidOperationException(
-                    $"ShiftMapper: no mapping code was generated for '{mapper.Name}', so it has " +
-                    "no Map methods to register. See build warning SM0005 — the mapper class, and every " +
-                    "type it is nested inside, must be declared partial, and it must not be generic.");
-            }
-
-            // A mapper from ANOTHER assembly only converts the way this project says through its
-            // adapter. No adapter means the generator never saw this call — it is not an inline
-            // lambda, or it is in a project that does not reference the generator — and registering
-            // the package's own class would quietly ignore every pack written here.
-            if (implementation == mapper && mapper.Assembly != registering)
-            {
-                throw new InvalidOperationException(
-                    $"ShiftMapper: '{mapper.Name}' is declared in '{mapper.Assembly.GetName().Name}' but " +
-                    $"is being registered from '{registering.GetName().Name}', and no adapter was " +
-                    "generated for it there. Write the AddShiftMapper call as an inline lambda in a " +
-                    "project that references the ShiftMapper generator, so the adapter can be " +
-                    "generated (see SM0035 and SM0028).");
-            }
-
-            switch (registry.Add(mapper, options.Lifetime, registering))
-            {
-                case Registry.Outcome.Duplicate:
-                    throw new InvalidOperationException(
-                        $"ShiftMapper: '{mapper.Name}' is registered twice. Each mapper is registered " +
-                        "once; put every include and pack it needs on that one registration.");
-
-                // The package's own registration arriving AFTER the application's: the adapter is
-                // already in the container with everything the application composed into it, and
-                // the package has nothing to add.
-                case Registry.Outcome.Yielded:
-                    continue;
-
-                // The application's registration arriving after the package's own: the package's
-                // descriptor goes, and the adapter registered below takes its place — same type,
-                // so nothing that injects the mapper can tell.
-                case Registry.Outcome.Replaced:
-                    services.RemoveAll(mapper);
-                    break;
-            }
-
-            // What the generator BAKED into the mapper: the constructor's includes and packs, and
-            // whatever any AddShiftMapper call in the mapper's project composed into it — read from
-            // the metadata, transitively, whichever assembly each one lives in. The direct ones are
-            // applied to the instance, so the store always matches the generated code whichever
-            // call resolves the mapper; all of them are registered, so they can be injected on
-            // their own and take dependencies.
-            var direct = new List<Type>();
-            var composed = new List<Type>();
-            CollectComposition(mapper, registering, direct, composed, new HashSet<Type>());
-
-            List<Type> includes = registration.Includes
-                .Concat(direct.Where(type => typeof(ShiftMapperBase).IsAssignableFrom(type)))
-                .Distinct()
-                .ToList();
-
-            List<Type> packs = registration.Packs
-                .Concat(options.Packs)
-                .Concat(direct.Where(type => typeof(ShiftMapperConversions).IsAssignableFrom(type)))
-                .Distinct()
-                .ToList();
-
-            foreach (Type include in registration.Includes)
-                CollectComposition(include, registering, new List<Type>(), composed, new HashSet<Type>());
+            // The packs this call added are also baked into the generated mapper at compile time,
+            // when the lambda could be read; applied here as well so the store matches the code
+            // whichever way the call was written. Once each: the runtime deduplicates.
+            IReadOnlyList<Type> packs = options.Packs;
 
             services.Add(new ServiceDescriptor(
-                mapper,
+                generated,
                 serviceProvider =>
                 {
-                    // Builds the mapper (or its adapter) using DI for its constructor parameters.
-                    var built = (ShiftMapperBase)ActivatorUtilities.CreateInstance(serviceProvider, implementation);
-
-                    // What the registration said, in the same order the generator applied it: the
-                    // mapper's own constructor has already run, so anything it declared itself
-                    // still wins. Recorded BEFORE the provider is set, exactly like a constructor
-                    // call would be, and materialised on first use.
-                    foreach (Type included in includes)
-                        built.IncludeMapper(included);
+                    var built = (ShiftMapperBase)ActivatorUtilities.CreateInstance(serviceProvider, generated);
 
                     foreach (Type pack in packs)
                         built.AddConversions(pack);
@@ -233,186 +132,43 @@ public static class ShiftMapperServiceCollectionExtensions
                     return built;
                 },
                 options.Lifetime));
-
-            // The included mappers and packs, so they can take constructor dependencies without
-            // anybody registering them by hand. TryAdd, because one that is ALSO registered as a
-            // mapper in its own right keeps that fuller registration.
-            foreach (Type included in includes.Concat(composed.Where(type => typeof(ShiftMapperBase).IsAssignableFrom(type))))
-                services.TryAdd(new ServiceDescriptor(included, sp => CreateIncluded(sp, included), options.Lifetime));
-
-            foreach (Type pack in packs.Concat(composed.Where(type => typeof(ShiftMapperConversions).IsAssignableFrom(type))))
-                services.TryAdd(new ServiceDescriptor(pack, sp => ActivatorUtilities.CreateInstance(sp, pack), options.Lifetime));
         }
 
-        CheckInterfaceOwnership(registry);
-        RegisterInterface(services, registry);
+        RegisterMapper(services, registry);
 
         return services;
     }
 
     /// <summary>
-    /// Every pair a mapper's generated code can map, tagged with the mapper that DECLARED it — read
-    /// once from the metadata its build emitted.
+    /// <see cref="Mapper"/> and <see cref="IShiftMapper"/>, over every generated mapper registered
+    /// so far — re-registered on every call, because a second call changes the answer. The
+    /// shortest lifetime of the lot: a Mapper living longer than one of its generated mappers
+    /// would capture one scope's instance forever.
     /// </summary>
-    private static readonly ConcurrentDictionary<(Type Mapper, Assembly Registering), IReadOnlyList<(Type Source, Type Destination, Type DeclaredBy)>> DeclaredPairsByType = new();
-
-    /// <summary>
-    /// THE OWNERSHIP RULE for <see cref="IShiftMapper"/>: a pair several registered mappers can map
-    /// is fine when it is ONE declaration reached through inclusion — whichever mapper answers runs
-    /// the same map — and an error when two mappers each wrote their OWN map for it, because the
-    /// interface would then hand a library one of two different mappings, chosen by registration
-    /// order. The build reports the same rule (SM0040) over every registration it can see in a
-    /// project; this catches registrations made from different projects, at startup rather than on
-    /// some later request.
-    ///
-    /// <para>Open generic closures are not in the metadata and are not checked here.</para>
-    /// </summary>
-    private static void CheckInterfaceOwnership(Registry registry)
+    private static void RegisterMapper(IServiceCollection services, Registry registry)
     {
-        var owners = new Dictionary<(Type Source, Type Destination), (Type DeclaredBy, Type Mapper)>();
-
-        foreach (Registry.Entry entry in registry.Mappers)
-        {
-            foreach ((Type source, Type destination, Type declaredBy) in DeclaredPairsOf(entry.Mapper, entry.Registering))
-            {
-                if (!owners.TryGetValue((source, destination), out (Type DeclaredBy, Type Mapper) first))
-                {
-                    owners[(source, destination)] = (declaredBy, entry.Mapper);
-                    continue;
-                }
-
-                if (first.DeclaredBy == declaredBy || first.Mapper == entry.Mapper)
-                    continue;
-
-                throw new InvalidOperationException(
-                    $"ShiftMapper: '{entry.Mapper.Name}' and '{first.Mapper.Name}' each declare their own " +
-                    $"map from '{source.Name}' to '{destination.Name}' and both are registered, so " +
-                    "IShiftMapper cannot choose between them. Declare the pair in one mapper — have one " +
-                    "include the other instead of both writing it — or register only one of them.");
-            }
-        }
-    }
-
-    /// <summary>
-    /// The pairs one registered mapper can map: what it declares itself, and what every mapper it
-    /// composes declares, each tagged with the declaring mapper.
-    /// </summary>
-    private static IReadOnlyList<(Type Source, Type Destination, Type DeclaredBy)> DeclaredPairsOf(Type mapper, Assembly registering)
-    {
-        return DeclaredPairsByType.GetOrAdd((mapper, registering), key =>
-        {
-            var composed = new List<Type>();
-            CollectComposition(key.Mapper, key.Registering, new List<Type>(), composed, new HashSet<Type>());
-
-            var declaringTypes = new List<Type> { key.Mapper };
-            declaringTypes.AddRange(composed.Where(t => typeof(ShiftMapperBase).IsAssignableFrom(t)));
-
-            var pairs = new List<(Type, Type, Type)>();
-
-            foreach (Type declaring in declaringTypes)
-            {
-                foreach (ShiftMapperDeclaredMapAttribute map in declaring.Assembly.GetCustomAttributes<ShiftMapperDeclaredMapAttribute>())
-                {
-                    if (map.DeclaredBy == declaring && !pairs.Contains((map.Source, map.Destination, declaring)))
-                        pairs.Add((map.Source, map.Destination, declaring));
-                }
-            }
-
-            return pairs;
-        });
-    }
-
-    /// <summary>
-    /// Every mapper and pack <paramref name="type"/> composes — in its constructor, or through a
-    /// registration in its own project or in <paramref name="registering"/> — transitively, as
-    /// the generator wrote it down in <see cref="ShiftMapperDeclaredCompositionAttribute"/>.
-    /// <paramref name="direct"/> receives the first level only; <paramref name="composed"/> all
-    /// of them.
-    /// </summary>
-    private static void CollectComposition(
-        Type type,
-        Assembly registering,
-        List<Type> direct,
-        List<Type> composed,
-        HashSet<Type> visited)
-    {
-        if (!visited.Add(type))
-            return;
-
-        IEnumerable<ShiftMapperDeclaredCompositionAttribute> attributes =
-            type.Assembly.GetCustomAttributes<ShiftMapperDeclaredCompositionAttribute>();
-
-        if (registering != type.Assembly)
-            attributes = attributes.Concat(registering.GetCustomAttributes<ShiftMapperDeclaredCompositionAttribute>());
-
-        foreach (ShiftMapperDeclaredCompositionAttribute attribute in attributes)
-        {
-            if (attribute.Mapper != type)
-                continue;
-
-            if (!direct.Contains(attribute.Composed))
-                direct.Add(attribute.Composed);
-
-            if (!composed.Contains(attribute.Composed))
-                composed.Add(attribute.Composed);
-
-            CollectComposition(attribute.Composed, registering, new List<Type>(), composed, visited);
-        }
-    }
-
-    private static object CreateIncluded(IServiceProvider serviceProvider, Type included)
-    {
-        var built = (ShiftMapperBase)ActivatorUtilities.CreateInstance(serviceProvider, included);
-        built.SetServices(serviceProvider);
-
-        return built;
-    }
-
-    /// <summary>
-    /// <see cref="IShiftMapper"/>: the mapper itself when there is one, a composite when there are
-    /// several — re-registered on every call, because a second call changes the answer.
-    /// </summary>
-    private static void RegisterInterface(IServiceCollection services, Registry registry)
-    {
+        services.RemoveAll(typeof(Mapper));
         services.RemoveAll(typeof(IShiftMapper));
 
-        if (registry.Mappers.Count == 0)
-            return;
+        ServiceLifetime lifetime = registry.Entries.Count == 0
+            ? ServiceLifetime.Scoped
+            : registry.Entries.Max(entry => entry.Lifetime);
 
-        if (registry.Mappers.Count == 1)
-        {
-            Registry.Entry single = registry.Mappers[0];
-
-            // Resolved THROUGH the registration above rather than built again, so a scoped mapper
-            // is one object per scope however it is asked for. Same lifetime, or a singleton
-            // library holding IShiftMapper would capture one scope's mapper forever.
-            services.Add(new ServiceDescriptor(
-                typeof(IShiftMapper),
-                serviceProvider => (IShiftMapper)serviceProvider.GetRequiredService(single.Mapper),
-                single.Lifetime));
-
-            return;
-        }
-
-        // The SHORTEST lifetime of the lot, for the same reason: a composite living longer than
-        // one of its mappers would capture it.
-        ServiceLifetime shortest = registry.Mappers.Max(entry => entry.Lifetime);
+        IReadOnlyList<Registry.Entry> entries = registry.Entries.ToList();
 
         services.Add(new ServiceDescriptor(
+            typeof(Mapper),
+            serviceProvider => new Mapper(
+                Mapper.Order(entries.Select(entry => (ShiftMapperBase)serviceProvider.GetRequiredService(entry.Generated)).ToList()),
+                serviceProvider),
+            lifetime));
+
+        // Resolved THROUGH the registration above rather than built again, so the interface and
+        // the class are one object per scope however they are asked for.
+        services.Add(new ServiceDescriptor(
             typeof(IShiftMapper),
-            serviceProvider => new CompositeShiftMapper(
-                registry.Mappers.Select(entry => (IShiftMapper)serviceProvider.GetRequiredService(entry.Mapper))),
-            shortest));
-    }
-
-    private static Dictionary<Type, Type> ReadAdapters(Assembly assembly)
-    {
-        var adapters = new Dictionary<Type, Type>();
-
-        foreach (ShiftMapperAdapterAttribute attribute in assembly.GetCustomAttributes<ShiftMapperAdapterAttribute>())
-            adapters[attribute.Mapper] = attribute.Adapter;
-
-        return adapters;
+            serviceProvider => serviceProvider.GetRequiredService<Mapper>(),
+            lifetime));
     }
 
     /// <summary>
@@ -433,75 +189,34 @@ public static class ShiftMapperServiceCollectionExtensions
         return registry;
     }
 
-    /// <summary>Every mapper registered so far, in order, with how it was registered.</summary>
+    /// <summary>Every generated mapper registered so far, in order. A second registration of the same one changes nothing.</summary>
     private sealed class Registry
     {
-        private readonly List<Entry> _mappers = new();
+        private readonly List<Entry> _entries = new();
 
-        public IReadOnlyList<Entry> Mappers => _mappers;
+        public IReadOnlyList<Entry> Entries => _entries;
 
-        public enum Outcome
+        public bool Add(Type generated, ServiceLifetime lifetime)
         {
-            Added,
+            if (_entries.Any(entry => entry.Generated == generated))
+                return false;
 
-            /// <summary>The mapper was registered by its own assembly; this registration, from another, replaces it.</summary>
-            Replaced,
+            _entries.Add(new Entry(generated, lifetime));
 
-            /// <summary>This registration is the mapper's own assembly's, and another assembly's is already in.</summary>
-            Yielded,
-
-            /// <summary>Neither side is the mapper's own assembly, or both are: two registrations that mean the same thing.</summary>
-            Duplicate,
-        }
-
-        /// <summary>
-        /// THE FALLBACK RULE. A mapper's own assembly registering it is a package registering
-        /// itself; a registration from any other assembly goes through an adapter carrying that
-        /// project's packs, and is the more specific of the two. The adapter wins whichever call
-        /// comes first — a framework's <c>AddXxx</c> may run before or after the application's
-        /// <c>AddShiftMapper</c>, and the container has to come out the same. The entry keeps its
-        /// position, so the order <see cref="CompositeShiftMapper"/> asks in does not depend on it
-        /// either.
-        /// </summary>
-        public Outcome Add(Type mapper, ServiceLifetime lifetime, Assembly registering)
-        {
-            int index = _mappers.FindIndex(entry => entry.Mapper == mapper);
-
-            if (index < 0)
-            {
-                _mappers.Add(new Entry(mapper, lifetime, registering));
-
-                return Outcome.Added;
-            }
-
-            bool existingIsOwn = _mappers[index].Registering == mapper.Assembly;
-            bool incomingIsOwn = registering == mapper.Assembly;
-
-            if (existingIsOwn && !incomingIsOwn)
-            {
-                _mappers[index] = new Entry(mapper, lifetime, registering);
-
-                return Outcome.Replaced;
-            }
-
-            return incomingIsOwn && !existingIsOwn ? Outcome.Yielded : Outcome.Duplicate;
+            return true;
         }
 
         public sealed class Entry
         {
-            public Entry(Type mapper, ServiceLifetime lifetime, Assembly registering)
+            public Entry(Type generated, ServiceLifetime lifetime)
             {
-                Mapper = mapper;
+                Generated = generated;
                 Lifetime = lifetime;
-                Registering = registering;
             }
 
-            public Type Mapper { get; }
+            public Type Generated { get; }
 
             public ServiceLifetime Lifetime { get; }
-
-            /// <summary>The assembly that registered it — where an adapter and its compositions live.</summary>
-            public Assembly Registering { get; }
         }
     }
 }

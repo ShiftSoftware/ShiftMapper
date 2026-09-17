@@ -15,43 +15,39 @@ namespace ShiftMapper.Generator.Tests;
 public class NestedScopeTests
 {
     /// <summary>
-    /// A nested mapper's maps belong to the nested mapper. The container gets its own and no more.
+    /// A mapper class nested inside another mapper class is a mapper class like any other: both
+    /// declare into the ONE generated mapper, and neither is accused of anything.
     /// </summary>
     [Fact]
-    public void A_nested_mapper_keeps_its_maps_to_itself()
+    public void A_nested_mapper_class_declares_into_the_same_generated_mapper()
     {
         GeneratorRun run = GeneratorHarness.Run(
             """
             using ShiftMapper;
 
-            public class Outer { public int Id { get; set; } }
-            public class OuterDto { public int Id { get; set; } }
+            public class Source { public int Id { get; set; } }
+            public class Destination { public int Id { get; set; } }
+            public class Other { public int Id { get; set; } }
+            public class OtherDto { public int Id { get; set; } }
 
-            public class Inner { public int Id { get; set; } }
-            public class InnerDto { public int Id { get; set; } }
-
-            public partial class OuterMapper : ShiftMapperBase
+            public partial class TestMapper : ShiftMapperBase
             {
-                public OuterMapper() => CreateMap<Outer, OuterDto>();
+                public TestMapper() => CreateMap<Other, OtherDto>();
 
-                public partial class InnerMapper : ShiftMapperBase
+                public sealed class Maps : ShiftMapperBase
                 {
-                    public InnerMapper() => CreateMap<Inner, InnerDto>();
+                    public Maps() => CreateMap<Source, Destination>();
                 }
             }
             """);
 
-        run.Compiles();
+        run.Compiles()
+           .Emits("MapToDestination(global::Source source)")
+           .Emits("MapToOtherDto(global::Other source)");
 
-        string outerPart = System.Linq.Enumerable.Single(
-            run.GeneratedFiles,
-            file => file.Contains("class OuterMapper") && !file.Contains("class InnerMapper"));
-
-        // The outer mapper maps what it declared...
-        Assert.Contains("MapToOuterDto", outerPart);
-
-        // ...and NOT what its nested type declared.
-        Assert.DoesNotContain("MapToInnerDto", outerPart);
+        Assert.Single(run.GeneratedFiles);
+        run.None("SM0027");
+        run.None("SM0042");
     }
 
     /// <summary>
@@ -71,7 +67,9 @@ public class NestedScopeTests
 
             public partial class TestMapper : ShiftMapperBase
             {
-                public TestMapper() => IncludeMapper<Maps>();
+                public TestMapper()
+                {
+                }
 
                 public sealed partial class Maps : ShiftMapperBase
                 {

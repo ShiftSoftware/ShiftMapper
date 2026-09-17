@@ -72,7 +72,7 @@ public class MapHookTests
     public void The_two_backends_agree_about_a_converter()
     {
         using TestDbContext context = _fixture.CreateContext();
-        TestMapper mapper = _fixture.Mapper;
+        Mapper mapper = _fixture.Mapper;
 
         List<Brand> entities = context.Brands.OrderBy(brand => brand.Id).ToList();
         List<BrandLabelDto> projected = mapper

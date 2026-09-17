@@ -95,7 +95,7 @@ public class ConversionPack : ShiftMapperConversions
 }
 
 /// <summary>The mapper that adds the pack above.</summary>
-public partial class ConversionMapper : ShiftMapperBase
+public class ConversionMapper : ShiftMapperBase
 {
     public ConversionMapper()
     {

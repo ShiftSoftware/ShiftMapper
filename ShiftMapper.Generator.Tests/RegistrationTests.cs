@@ -8,9 +8,10 @@ namespace ShiftMapper.Generator.Tests;
 /// THE REGISTRATION, read at compile time.
 ///
 /// <c>AddShiftMapper(o =&gt; ...)</c> is the one place outside a mapper class where declarations are
-/// written, and the generator reads it exactly as it reads a constructor: what a mapper is given
-/// there is baked into it, a mapper from a referenced assembly gets an ADAPTER here, and anything
-/// the generator cannot follow is reported rather than half-applied.
+/// written, and the generator reads it exactly as it reads a constructor: a pack added there is
+/// baked into every map of the project's generated mapper, and anything the generator cannot
+/// follow is reported rather than half-applied. Nothing names a mapper: the call registers the
+/// assembly's generated mapper, whatever it holds.
 /// </summary>
 public class RegistrationTests
 {
@@ -35,8 +36,8 @@ public class RegistrationTests
             public string Id { get; set; } = "";
         }
 
-        public class Stock { public string Name { get; set; } = ""; }
-        public class StockDto { public string Name { get; set; } = ""; }
+        public class Stock { public string Name { get; set; } = ""; public Money Fee { get; set; } = new(); }
+        public class StockDto { public string Name { get; set; } = ""; public string Fee { get; set; } = ""; }
         """;
 
     private static GeneratorRun Run(string body) => GeneratorHarness.Run(Types + "\n" + body);
@@ -45,306 +46,149 @@ public class RegistrationTests
     // WHAT THE LAMBDA SAYS IS BAKED.
     // -----------------------------------------------------------------
 
-    /// <summary>An include written at registration reaches the mapper's generated code.</summary>
+    /// <summary>A pack added at registration reaches EVERY map in the project, whichever class declared it.</summary>
     [Fact]
-    public void An_include_written_at_registration_is_baked_into_the_mapper()
-    {
-        GeneratorRun run = Run(
-            """
-            public partial class StockMapper : ShiftMapperBase
-            {
-                public StockMapper() => CreateMap<Stock, StockDto>();
-            }
-
-            public partial class TestMapper : ShiftMapperBase
-            {
-                public TestMapper() => CreateMap<Brand, BrandDto>();
-            }
-
-            public static class Startup
-            {
-                public static void Configure(IServiceCollection services) =>
-                    services.AddShiftMapper(o => o.AddMapper<TestMapper>(m => m.IncludeMapper<StockMapper>()));
-            }
-            """);
-
-        run.Compiles();
-
-        string testMapperFile = run.GeneratedFiles.Single(file => file.Contains("partial class TestMapper"));
-        Assert.Contains("MapToStockDto", testMapperFile);
-    }
-
-    /// <summary>A pack given to one mapper at registration is that mapper's, and no other's.</summary>
-    [Fact]
-    public void A_pack_written_for_one_mapper_at_registration_reaches_only_that_mapper()
+    public void A_pack_added_at_registration_reaches_every_map()
     {
         GeneratorRun run = Run(
             """
             public class Rules : ShiftMapperConversions
             {
-                public Rules() => CreateConversion<Money, string>(m => "R", m => "R");
+                public Rules() => CreateConversion<Money, string>(m => "$" + m.Amount, m => "$" + m.Amount);
             }
 
-            public partial class TestMapper : ShiftMapperBase
+            public class BrandMapper : ShiftMapperBase
             {
-                public TestMapper() => CreateMap<Brand, BrandDto>();
+                public BrandMapper() => CreateMap<Brand, BrandDto>();
             }
 
-            public partial class OtherMapper : ShiftMapperBase
-            {
-                public OtherMapper() => CreateMap<Brand, BrandDto>();
-            }
-
-            public static class Startup
-            {
-                public static void Configure(IServiceCollection services) =>
-                    services.AddShiftMapper(o =>
-                    {
-                        o.AddMapper<TestMapper>(m => m.AddConversions<Rules>());
-                        o.AddMapper<OtherMapper>();
-                    });
-            }
-            """);
-
-        run.Compiles();
-
-        string testMapperFile = run.GeneratedFiles.Single(file => file.Contains("partial class TestMapper"));
-        string otherMapperFile = run.GeneratedFiles.Single(file => file.Contains("partial class OtherMapper"));
-
-        Assert.Contains("typeof(global::Rules)", testMapperFile);
-        Assert.DoesNotContain("typeof(global::Rules)", otherMapperFile);
-    }
-
-    /// <summary>The short form registers one mapper and is read like the long one — a package mapper gets its adapter.</summary>
-    [Fact]
-    public void The_generic_short_form_is_read_as_a_registration()
-    {
-        GeneratorRun run = GeneratorHarness.RunWithPackage(
-            Package.Replace("public class PackageMapper", "public partial class PackageMapper"),
-            """
-            using ShiftMapper;
-            using Microsoft.Extensions.DependencyInjection;
-            using Framework;
-
-            public static class Startup
-            {
-                public static void Configure(IServiceCollection services) =>
-                    services.AddShiftMapper<PackageMapper>();
-            }
-            """);
-
-        run.Compiles()
-           .Emits("public sealed class Framework_PackageMapper_Adapter : global::Framework.PackageMapper");
-    }
-
-    // -----------------------------------------------------------------
-    // WHO OWNS A PAIR IN IShiftMapper.
-    // -----------------------------------------------------------------
-
-    /// <summary>
-    /// SM0040 — two registered mappers each declaring their OWN map for the same pair. An ERROR:
-    /// the interface would hand a library one of two different mappings, chosen by line order.
-    /// </summary>
-    [Fact]
-    public void Two_registered_mappers_each_declaring_a_pair_is_an_error()
-    {
-        GeneratorRun run = Run(
-            """
-            public partial class TestMapper : ShiftMapperBase
-            {
-                public TestMapper() => CreateMap<Brand, BrandDto>();
-            }
-
-            public partial class OtherMapper : ShiftMapperBase
-            {
-                public OtherMapper() => CreateMap<Brand, BrandDto>();
-            }
-
-            public static class Startup
-            {
-                public static void Configure(IServiceCollection services) =>
-                    services.AddShiftMapper(o =>
-                    {
-                        o.AddMapper<TestMapper>();
-                        o.AddMapper<OtherMapper>();
-                    });
-            }
-            """);
-
-        run.Compiles();
-
-        Diagnostic problem = run.Single("SM0040");
-
-        Assert.Equal(DiagnosticSeverity.Error, problem.Severity);
-        Assert.Contains("OtherMapper", problem.GetMessage());
-        Assert.Contains("TestMapper", problem.GetMessage());
-    }
-
-    /// <summary>
-    /// Registered ANYWHERE in the project counts — two calls, two mappers, one pair written twice.
-    /// </summary>
-    [Fact]
-    public void Two_mappers_registered_in_different_calls_each_declaring_a_pair_is_an_error()
-    {
-        GeneratorRun run = Run(
-            """
-            public partial class TestMapper : ShiftMapperBase
-            {
-                public TestMapper() => CreateMap<Brand, BrandDto>();
-            }
-
-            public partial class OtherMapper : ShiftMapperBase
-            {
-                public OtherMapper() => CreateMap<Brand, BrandDto>();
-            }
-
-            public static class Startup
-            {
-                public static void ConfigureApi(IServiceCollection services) => services.AddShiftMapper<TestMapper>();
-
-                public static void ConfigureJobs(IServiceCollection services) => services.AddShiftMapper<OtherMapper>();
-            }
-            """);
-
-        run.Compiles();
-
-        Assert.Equal(DiagnosticSeverity.Error, run.Single("SM0040").Severity);
-    }
-
-    /// <summary>
-    /// THE SAME DECLARATION REACHED TWO WAYS is not a conflict: a mapper and one that includes it,
-    /// both registered so either can be injected. Whichever answers the interface runs that map.
-    /// </summary>
-    [Fact]
-    public void A_mapper_and_one_that_includes_it_may_both_be_registered()
-    {
-        GeneratorRun run = Run(
-            """
-            public partial class StockMapper : ShiftMapperBase
+            public class StockMapper : ShiftMapperBase
             {
                 public StockMapper() => CreateMap<Stock, StockDto>();
             }
 
-            public partial class TestMapper : ShiftMapperBase
+            public static class Startup
             {
-                public TestMapper()
+                public static void Configure(IServiceCollection services) =>
+                    services.AddShiftMapper(o => o.AddConversions<Rules>());
+            }
+            """);
+
+        run.Compiles()
+           .Emits("Price = Customizations.Conversion<global::Money, string>(typeof(global::Rules))(source.Price)")
+           .Emits("Fee = Customizations.Conversion<global::Money, string>(typeof(global::Rules))(source.Fee)")
+           // Recorded as composition, so the runtime applies the pack from this assembly's metadata alone.
+           .Emits("[assembly: global::ShiftMapper.ShiftMapperDeclaredComposition(typeof(global::ShiftMapper.Generated.ShiftMapperSnippet.GeneratedMapper), typeof(global::Rules))]");
+
+        run.None("SM0002");
+    }
+
+    /// <summary>The parameterless form registers, and reads nothing.</summary>
+    [Fact]
+    public void The_short_form_is_a_registration_with_nothing_to_read()
+    {
+        GeneratorRun run = Run(
+            """
+            public class BrandMapper : ShiftMapperBase
+            {
+                public BrandMapper() => CreateMap<Brand, BrandDto>();
+            }
+
+            public static class Startup
+            {
+                public static void Configure(IServiceCollection services) => services.AddShiftMapper();
+            }
+            """);
+
+        run.Compiles();
+        run.None("SM0035");
+
+        // Money -> string has no rule anywhere, so it is SM0002 as it would be without the call.
+        run.Single("SM0002");
+    }
+
+    /// <summary>
+    /// NEAREST WINS. A pack a class added itself sits before the registration's for that class's
+    /// maps, and the registration's answers for the classes that added nothing.
+    /// </summary>
+    [Fact]
+    public void A_classs_own_pack_beats_the_registrations_for_its_maps()
+    {
+        GeneratorRun run = Run(
+            """
+            public class Own : ShiftMapperConversions
+            {
+                public Own() => CreateConversion<Money, string>(m => "own", m => "own");
+            }
+
+            public class Shared : ShiftMapperConversions
+            {
+                public Shared() => CreateConversion<Money, string>(m => "shared", m => "shared");
+            }
+
+            public class BrandMapper : ShiftMapperBase
+            {
+                public BrandMapper()
                 {
-                    IncludeMapper<StockMapper>();
+                    AddConversions<Own>();
                     CreateMap<Brand, BrandDto>();
                 }
             }
 
-            public static class Startup
+            public class StockMapper : ShiftMapperBase
             {
-                public static void Configure(IServiceCollection services) =>
-                    services.AddShiftMapper(o =>
-                    {
-                        o.AddMapper<TestMapper>();
-                        o.AddMapper<StockMapper>();
-                    });
-            }
-            """);
-
-        run.Compiles();
-        run.None("SM0040");
-    }
-
-    /// <summary>Two mappers writing the same pair is fine as long as only one of them is registered.</summary>
-    [Fact]
-    public void An_unregistered_mapper_declaring_the_same_pair_is_not_reported()
-    {
-        GeneratorRun run = Run(
-            """
-            public partial class TestMapper : ShiftMapperBase
-            {
-                public TestMapper() => CreateMap<Brand, BrandDto>();
-            }
-
-            public partial class OtherMapper : ShiftMapperBase
-            {
-                public OtherMapper() => CreateMap<Brand, BrandDto>();
-            }
-
-            public static class Startup
-            {
-                public static void Configure(IServiceCollection services) => services.AddShiftMapper<TestMapper>();
-            }
-            """);
-
-        run.Compiles();
-        run.None("SM0040");
-    }
-
-    /// <summary>A ReverseMap declares the other direction, and it counts.</summary>
-    [Fact]
-    public void A_reverse_map_conflicting_with_another_mappers_map_is_reported()
-    {
-        GeneratorRun run = Run(
-            """
-            public partial class TestMapper : ShiftMapperBase
-            {
-                public TestMapper() => CreateMap<BrandDto, Brand>().ReverseMap();   // declares Brand -> BrandDto too
-            }
-
-            public partial class OtherMapper : ShiftMapperBase
-            {
-                public OtherMapper() => CreateMap<Brand, BrandDto>();
+                public StockMapper() => CreateMap<Stock, StockDto>();
             }
 
             public static class Startup
             {
                 public static void Configure(IServiceCollection services) =>
-                    services.AddShiftMapper(o =>
-                    {
-                        o.AddMapper<TestMapper>();
-                        o.AddMapper<OtherMapper>();
-                    });
-            }
-            """);
-
-        run.Compiles();
-
-        Assert.Contains("'Brand' to 'BrandDto'", run.Single("SM0040").GetMessage());
-    }
-
-    /// <summary>
-    /// SM0041 — one mapper, two calls, different packs. The generated code holds the UNION, and
-    /// its metadata says so, which is what the runtime applies in both calls.
-    /// </summary>
-    [Fact]
-    public void A_mapper_registered_differently_in_two_calls_is_reported_and_gets_the_union()
-    {
-        GeneratorRun run = Run(
-            """
-            public class Rules : ShiftMapperConversions
-            {
-                public Rules() => CreateConversion<Money, string>(m => "R", m => "R");
-            }
-
-            public partial class TestMapper : ShiftMapperBase
-            {
-                public TestMapper() => CreateMap<Brand, BrandDto>();
-            }
-
-            public static class Startup
-            {
-                public static void ConfigureApp(IServiceCollection services) =>
-                    services.AddShiftMapper(o =>
-                    {
-                        o.AddMapper<TestMapper>();
-                        o.AddConversions<Rules>();
-                    });
-
-                public static void ConfigureTests(IServiceCollection services) =>
-                    services.AddShiftMapper<TestMapper>();
+                    services.AddShiftMapper(o => o.AddConversions<Shared>());
             }
             """);
 
         run.Compiles()
-           .Emits("Customizations.Conversion<global::Money, string>(typeof(global::Rules))")
-           .Emits("[assembly: global::ShiftMapper.ShiftMapperDeclaredComposition(typeof(global::TestMapper), typeof(global::Rules))]");
+           .Emits("Price = Customizations.Conversion<global::Money, string>(typeof(global::Own))(source.Price)")
+           .Emits("Fee = Customizations.Conversion<global::Money, string>(typeof(global::Shared))(source.Fee)");
 
-        Assert.Contains("Rules", run.Single("SM0041").GetMessage());
+        // Different distances, so not a conflict.
+        run.None("SM0031");
+    }
+
+    /// <summary>Two calls in one project add up: the generated mapper gets the union of their packs.</summary>
+    [Fact]
+    public void Two_calls_add_up()
+    {
+        GeneratorRun run = Run(
+            """
+            public class Prices : ShiftMapperConversions
+            {
+                public Prices() => CreateConversion<Money, string>(m => "$" + m.Amount, m => "$" + m.Amount);
+            }
+
+            public class Ids : ShiftMapperConversions
+            {
+                public Ids() => CreateConversion<long, string>(id => "#" + id, id => "#" + id);
+            }
+
+            public class BrandMapper : ShiftMapperBase
+            {
+                public BrandMapper() => CreateMap<Brand, BrandDto>();
+            }
+
+            public static class Startup
+            {
+                public static void ConfigureApi(IServiceCollection services) =>
+                    services.AddShiftMapper(o => o.AddConversions<Prices>());
+
+                public static void ConfigureJobs(IServiceCollection services) =>
+                    services.AddShiftMapper(o => o.AddConversions<Ids>());
+            }
+            """);
+
+        run.Compiles()
+           .Emits("Price = Customizations.Conversion<global::Money, string>(typeof(global::Prices))(source.Price)")
+           .Emits("Id = Customizations.Conversion<long, string>(typeof(global::Ids))(source.Id)");
     }
 
     // -----------------------------------------------------------------
@@ -357,16 +201,21 @@ public class RegistrationTests
     {
         GeneratorRun run = Run(
             """
-            public partial class TestMapper : ShiftMapperBase
+            public class Rules : ShiftMapperConversions
             {
-                public TestMapper() => CreateMap<Brand, BrandDto>();
+                public Rules() => CreateConversion<Money, string>(m => "R", m => "R");
+            }
+
+            public class BrandMapper : ShiftMapperBase
+            {
+                public BrandMapper() => CreateMap<Brand, BrandDto>();
             }
 
             public static class Startup
             {
                 public static void Configure(IServiceCollection services) => services.AddShiftMapper(Options);
 
-                private static void Options(ShiftMapperOptions o) => o.AddMapper<TestMapper>();
+                private static void Options(ShiftMapperOptions o) => o.AddConversions<Rules>();
             }
             """);
 
@@ -375,7 +224,7 @@ public class RegistrationTests
         Assert.Contains("inline lambda", run.Single("SM0035").GetMessage());
     }
 
-    /// <summary>SM0035 — a registration behind an <c>if</c>.</summary>
+    /// <summary>SM0035 — a pack behind an <c>if</c>.</summary>
     [Fact]
     public void A_conditional_registration_is_reported()
     {
@@ -386,9 +235,9 @@ public class RegistrationTests
                 public Rules() => CreateConversion<Money, string>(m => "R", m => "R");
             }
 
-            public partial class TestMapper : ShiftMapperBase
+            public class BrandMapper : ShiftMapperBase
             {
-                public TestMapper() => CreateMap<Brand, BrandDto>();
+                public BrandMapper() => CreateMap<Brand, BrandDto>();
             }
 
             public static class Startup
@@ -398,8 +247,6 @@ public class RegistrationTests
                 public static void Configure(IServiceCollection services) =>
                     services.AddShiftMapper(o =>
                     {
-                        o.AddMapper<TestMapper>();
-
                         if (Flag)
                             o.AddConversions<Rules>();
                     });
@@ -414,35 +261,8 @@ public class RegistrationTests
         Assert.Contains("inside an 'if'", problem.GetMessage());
     }
 
-    /// <summary>SM0040 — the same mapper registered twice.</summary>
-    [Fact]
-    public void A_mapper_registered_twice_is_reported()
-    {
-        GeneratorRun run = Run(
-            """
-            public partial class TestMapper : ShiftMapperBase
-            {
-                public TestMapper() => CreateMap<Brand, BrandDto>();
-            }
-
-            public static class Startup
-            {
-                public static void Configure(IServiceCollection services) =>
-                    services.AddShiftMapper(o =>
-                    {
-                        o.AddMapper<TestMapper>();
-                        o.AddMapper<TestMapper>();
-                    });
-            }
-            """);
-
-        run.Compiles();
-
-        Assert.Contains("registered more than once", run.Single("SM0040").GetMessage());
-    }
-
     // -----------------------------------------------------------------
-    // ADAPTERS — a mapper from a referenced assembly.
+    // A MAPPER FROM A REFERENCED ASSEMBLY.
     // -----------------------------------------------------------------
 
     private const string Package =
@@ -467,118 +287,14 @@ public class RegistrationTests
         }
         """;
 
-    private const string SealedPackage =
-        """
-        using ShiftMapper;
-
-        namespace Framework;
-
-        public class FileDto { public string Name { get; set; } = ""; }
-
-        public class FileSummary { public string Name { get; set; } = ""; }
-
-        public sealed partial class PackageMapper : ShiftMapperBase
-        {
-            public PackageMapper() => CreateMap<FileDto, FileSummary>();
-        }
-        """;
-
     /// <summary>
-    /// THE ADAPTER: a package mapper registered directly gets a subclass here, overriding the
-    /// package's virtual members, mirroring its constructor, re-implementing the interface, and
-    /// announced with the assembly attribute the runtime reads.
+    /// A package's map is generated into the application — re-baked with the application's own
+    /// packs — with nothing written to ask for it. The package mapper's MapFrom still arrives, as
+    /// the same lookup the package's own generated mapper uses; its constructor dependency is the
+    /// runtime's business, on first use.
     /// </summary>
     [Fact]
-    public void A_package_mapper_registered_directly_gets_an_adapter()
-    {
-        GeneratorRun run = GeneratorHarness.RunWithPackage(
-            Package.Replace("public class PackageMapper", "public partial class PackageMapper"),
-            """
-            using ShiftMapper;
-            using Microsoft.Extensions.DependencyInjection;
-            using Framework;
-
-            public static class Startup
-            {
-                public static void Configure(IServiceCollection services) =>
-                    services.AddShiftMapper(o => o.AddMapper<PackageMapper>());
-            }
-            """);
-
-        run.Compiles()
-           .Emits("[assembly: global::ShiftMapper.ShiftMapperAdapter(typeof(global::Framework.PackageMapper), typeof(global::ShiftMapper.Generated.Framework_PackageMapper_Adapter))]")
-           .Emits("public sealed class Framework_PackageMapper_Adapter : global::Framework.PackageMapper, global::ShiftMapper.IShiftMapper")
-           .Emits("public Framework_PackageMapper_Adapter(global::Framework.IClock @clock) : base(@clock)")
-           .Emits("protected override global::System.Type DeclaringType => typeof(global::Framework.PackageMapper);")
-           .Emits("public override global::Framework.FileSummary MapToFileSummary(global::Framework.FileDto source)")
-           // The package's MapFrom still arrives — as the same lookup the package's own half uses.
-           .Emits("Customizations.Value<global::Framework.FileDto, global::Framework.FileSummary, string>(\"Name\")")
-           // And no second extension class: the base's dispatch virtually into the overrides.
-           .DoesNotEmit("Framework_PackageMapper_Adapter_ShiftMapperExtensions");
-    }
-
-    /// <summary>
-    /// THE POINT OF THE ADAPTER: this project's pack, given to every mapper, reaches the package
-    /// mapper's maps — which its own compiled code never could.
-    /// </summary>
-    [Fact]
-    public void A_registration_wide_pack_reaches_an_adapted_package_mapper()
-    {
-        GeneratorRun run = GeneratorHarness.RunWithPackage(
-            Package.Replace("public class PackageMapper", "public partial class PackageMapper"),
-            """
-            using ShiftMapper;
-            using Microsoft.Extensions.DependencyInjection;
-            using Framework;
-
-            public class Global : ShiftMapperConversions
-            {
-                public Global() => CreateConversion<long, string>(id => "H" + id, id => "H" + id);
-            }
-
-            public static class Startup
-            {
-                public static void Configure(IServiceCollection services) =>
-                    services.AddShiftMapper(o =>
-                    {
-                        o.AddMapper<PackageMapper>();
-                        o.AddConversions<Global>();
-                    });
-            }
-            """);
-
-        run.Compiles()
-           .Emits("Size = Customizations.Conversion<long, string>(typeof(global::Global))(source.Size)");
-    }
-
-    /// <summary>SM0039 — a sealed package mapper has nothing to override.</summary>
-    [Fact]
-    public void A_sealed_package_mapper_cannot_be_adapted()
-    {
-        GeneratorRun run = GeneratorHarness.RunWithPackage(
-            SealedPackage,
-            """
-            using ShiftMapper;
-            using Microsoft.Extensions.DependencyInjection;
-            using Framework;
-
-            public static class Startup
-            {
-                public static void Configure(IServiceCollection services) =>
-                    services.AddShiftMapper(o => o.AddMapper<PackageMapper>());
-            }
-            """);
-
-        Diagnostic problem = run.Single("SM0039");
-
-        Assert.Equal(DiagnosticSeverity.Error, problem.Severity);
-        Assert.Contains("sealed", problem.GetMessage());
-        run.DoesNotEmit("_Adapter");
-    }
-
-    /// <summary>SM0028 — a package built without the generator carries nothing to adapt.</summary>
-    [Fact]
-    public void A_package_mapper_without_metadata_cannot_be_adapted()
+    public void A_package_mapper_is_generated_into_the_application_with_its_packs()
     {
         GeneratorRun run = GeneratorHarness.RunWithPackage(
             Package,
@@ -587,17 +303,117 @@ public class RegistrationTests
             using Microsoft.Extensions.DependencyInjection;
             using Framework;
 
+            public class Ids : ShiftMapperConversions
+            {
+                public Ids() => CreateConversion<long, string>(id => "#" + id, id => "#" + id);
+            }
+
             public static class Startup
             {
                 public static void Configure(IServiceCollection services) =>
-                    services.AddShiftMapper(o => o.AddMapper<PackageMapper>());
+                    services.AddShiftMapper(o => o.AddConversions<Ids>());
+            }
+            """);
+
+        run.Compiles()
+           .Emits("public global::Framework.FileSummary MapToFileSummary(global::Framework.FileDto source)")
+           .Emits("Customizations.Value<global::Framework.FileDto, global::Framework.FileSummary, string>(\"Name\")")
+           .Emits("Size = Customizations.Conversion<long, string>(typeof(global::Ids))(source.Size)")
+           .Emits("[assembly: global::ShiftMapper.ShiftMapperDeclaredComposition(typeof(global::ShiftMapper.Generated.ShiftMapperSnippet.GeneratedMapper), typeof(global::Framework.PackageMapper))]")
+           // The application's extension methods cover the package's pair too.
+           .Emits("MapToFileSummary(this global::ShiftMapper.Mapper mapper, global::Framework.FileDto source)");
+
+        run.None("SM0028");
+    }
+
+    /// <summary>A pair the application declares itself wins over the package's, and the build says so (SM0027).</summary>
+    [Fact]
+    public void An_applications_own_declaration_wins_over_a_packages()
+    {
+        GeneratorRun run = GeneratorHarness.RunWithPackage(
+            Package,
+            """
+            using ShiftMapper;
+            using Framework;
+
+            public class FileMapper : ShiftMapperBase
+            {
+                public FileMapper() =>
+                    CreateMap<FileDto, FileSummary>()
+                        .ForMember(d => d.Name, opt => opt.MapFrom(s => "app:" + s.Name));
+            }
+            """);
+
+        run.Compiles();
+
+        Diagnostic notice = run.Single("SM0027");
+
+        Assert.Equal(DiagnosticSeverity.Warning, notice.Severity);
+        Assert.Contains("FileMapper", notice.GetMessage());
+        Assert.Contains("PackageMapper", notice.GetMessage());
+        Assert.Equal("CreateMap<FileDto, FileSummary>", run.CodeUnder(notice));
+
+        // ONE map for the pair, and it is the application's.
+        run.DoesNotEmit("typeof(global::Framework.PackageMapper), typeof(global::Framework.FileDto), typeof(global::Framework.FileSummary)");
+        run.None("SM0042");
+    }
+
+    /// <summary>Two PACKAGES each declaring their own map for one pair: nothing nearer settles it (SM0042).</summary>
+    [Fact]
+    public void Two_packages_declaring_one_pair_is_an_error()
+    {
+        string second = Package
+            .Replace("namespace Framework;", "namespace Other;")
+            .Replace("public class FileDto", "public class OtherDto")
+            .Replace("public class FileSummary", "public class OtherSummary")
+            .Replace("PackageMapper", "OtherMapper")
+            .Replace("CreateMap<FileDto, FileSummary>()", "CreateMap<Framework.FileDto, Framework.FileSummary>()")
+            .Replace("using System;", "using System;\n        using Framework;");
+
+        // The second package REFERENCES the first, so it can name the first's types — which the
+        // harness models by compiling the first as a reference of the second.
+        GeneratorRun run = GeneratorHarness.RunWithPackages(
+            new[] { Package, second },
+            """
+            using ShiftMapper;
+            """,
+            chained: true);
+
+        Diagnostic problem = run.Single("SM0042");
+
+        Assert.Equal(DiagnosticSeverity.Error, problem.Severity);
+        Assert.Contains("PackageMapper", problem.GetMessage());
+        Assert.Contains("OtherMapper", problem.GetMessage());
+    }
+
+    /// <summary>
+    /// A package built WITHOUT the generator announces no mapper, so there is nothing to generate
+    /// and nothing to report about it — until something in this project asks for one of its
+    /// packs, which is SM0028.
+    /// </summary>
+    [Fact]
+    public void A_package_built_without_the_generator_declares_nothing()
+    {
+        GeneratorRun run = GeneratorHarness.RunWithPackage(
+            Package,
+            """
+            using ShiftMapper;
+            using Framework;
+
+            public class Brand { public string Name { get; set; } = ""; }
+            public class BrandDto { public string Name { get; set; } = ""; }
+
+            public class BrandMapper : ShiftMapperBase
+            {
+                public BrandMapper() => CreateMap<Brand, BrandDto>();
             }
             """,
             runGeneratorOnPackage: false);
 
-        Diagnostic problem = run.Single("SM0028");
+        run.Compiles()
+           .Emits("MapToBrandDto(global::Brand source)")
+           .DoesNotEmit("MapToFileSummary");
 
-        Assert.Equal(DiagnosticSeverity.Error, problem.Severity);
-        Assert.Contains("PackageMapper", problem.GetMessage());
+        run.None("SM0028");
     }
 }

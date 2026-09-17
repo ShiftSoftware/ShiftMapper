@@ -3,6 +3,7 @@ using AutoMapper;
 using AutoMapper.QueryableExtensions;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Configs;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace ShiftMapper.Benchmarks;
 
@@ -10,10 +11,10 @@ namespace ShiftMapper.Benchmarks;
 /// SHIFTMAPPER AGAINST AUTOMAPPER AND MAPPERLY, on four shapes: one object, a nested graph, a
 /// large collection, and building a projection.
 ///
-/// <para>Every mapper is asked the same question: the four maps in <see cref="SharedOnlyMapper"/>,
-/// declared for each library in <see cref="Competitors"/>. Every mapper is warm, every
-/// configuration is built once and shared, and nothing captures a service — so each is on the
-/// fastest path it has. Where one needs a different spelling to say the same thing, it gets it.</para>
+/// <para>Every mapper is asked the same question: the four maps in <see cref="BenchmarkMapper"/>,
+/// declared for each library in <see cref="Competitors"/>. Every mapper is warm and every
+/// configuration is built once and shared, so each is on the fastest path it has. Where one
+/// needs a different spelling to say the same thing, it gets it.</para>
 ///
 /// <para><b>What the three are.</b> AutoMapper reads its configuration at RUN time and compiles
 /// expression trees on first use — a runtime mapper. Mapperly and ShiftMapper are both SOURCE
@@ -28,7 +29,8 @@ namespace ShiftMapper.Benchmarks;
 [GroupBenchmarksBy(BenchmarkLogicalGroupRule.ByCategory)]
 public class ComparisonBenchmarks
 {
-    private readonly SharedOnlyMapper _shift = new();
+    private readonly ServiceProvider _provider = Container.Build();
+    private Mapper _shift = null!;
     private readonly IMapper _auto = Competitors.AutoMapperInstance;
     private readonly MapperlyMapper _mapperly = new();
 
@@ -40,6 +42,8 @@ public class ComparisonBenchmarks
     [GlobalSetup]
     public void Setup()
     {
+        _shift = _provider.CreateScope().ServiceProvider.GetRequiredService<Mapper>();
+
         _brand = Sample.Brand();
         _invoice = Sample.Invoice();
         _brands = Sample.Brands(10_000);

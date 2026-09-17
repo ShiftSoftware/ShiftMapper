@@ -1,4 +1,5 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using ShiftMapper;
 using ShiftMapper.Sample.Data;
 using ShiftMapper.Sample.Entities;
 using ShiftMapper.Sample.Dtos;
@@ -34,7 +35,7 @@ public static class ProductListEndpoints
         // Done as an AfterMap - which is how this is usually done - it would work in memory and
         // disappear from this query entirely, so the list would need a second hand-written path.
         // Removing that split is what member-shaped conventions are for.
-        app.MapGet("/api/products/list", (AppDbContext db, AppMapper mapper, bool sql = false) =>
+        app.MapGet("/api/products/list", (AppDbContext db, Mapper mapper, bool sql = false) =>
         {
             IQueryable<ProductListDto> query = db.Products
                 .AsNoTracking()
@@ -70,7 +71,7 @@ public static class ProductListEndpoints
         // key; the related row is the database's business.
         //
         // Nothing is saved: the response is the mapped entity, so the ids it carries are the point.
-        app.MapPost("/api/products/preview", (ProductRequest request, AppMapper mapper) =>
+        app.MapPost("/api/products/preview", (ProductRequest request, Mapper mapper) =>
         {
             Product product = mapper.Map<Product>(request);
 

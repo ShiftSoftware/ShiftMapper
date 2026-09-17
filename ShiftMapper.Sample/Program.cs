@@ -44,16 +44,27 @@ builder.Services.AddSingleton<IInvoiceNumbering, InvoiceNumbering>();
 // package has to reach that generator — which is what the shared-pack metadata is for.
 builder.Services.AddContosoPlatform();
 
-// THE REGISTRATION — and the generator reads this lambda as well as running it: anything written
-// in it is baked into the mappers at compile time, exactly as if it had been written in their
-// constructors. AppMapper is the mapper the endpoints inject. What it INCLUDES (CatalogMapper,
-// InvoiceLabelMapper) and the pack it ADDS are registered along with it, so InvoiceLabelMapper's
-// IInvoiceNumbering dependency is injected the first time anything is mapped without a
+// THE REGISTRATION — one line, naming nothing. It registers this assembly's GENERATED mapper:
+// the class the generator wrote holding every map in AppMapper, CatalogMapper and
+// InvoiceLabelMapper, and every map Contoso.Platform declares, all reached through the one
+// `Mapper` the endpoints inject. The mapper classes themselves are built the first time anything
+// is mapped, with their dependencies injected — InvoiceLabelMapper's IInvoiceNumbering needs no
 // registration of its own.
 //
-// Two calls, two mappers, one registry: IShiftMapper resolves to a composite that asks each one
-// which pairs it maps. The order of the two calls does not matter.
-builder.Services.AddShiftMapper(o => o.AddMapper<AppMapper>());
+// Two calls, two generated mappers, one registry: this one answers first, since it carries the
+// package's maps too; the package's own is the fallback. The order of the two calls does not
+// matter.
+//
+// WHICH CLASSES ARE TAKEN is a choice, made here and read at compile time. The default, All,
+// takes every mapper class in this project and every one Contoso.Platform declares. A project
+// that wants a say over packages writes
+//
+//     builder.Services.AddShiftMapper(o =>
+//     {
+//         o.Discovery = MapperDiscovery.LocalAndRegistered;   // or Registered: name local classes too
+//         o.AddMapper<PlatformMapper>();
+//     });
+builder.Services.AddShiftMapper();
 
 builder.Services.AddOpenApi();
 

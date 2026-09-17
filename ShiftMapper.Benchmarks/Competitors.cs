@@ -7,7 +7,7 @@ namespace ShiftMapper.Benchmarks;
 /// THE SAME FOUR MAPS, written for AutoMapper and for Mapperly.
 ///
 /// <para>A comparison is only worth reading if every mapper is asked the same question, so the
-/// configurations below declare exactly what <see cref="SharedOnlyMapper"/> declares: four pairs,
+/// configurations below declare exactly what <see cref="BenchmarkMapper"/> declares: four pairs,
 /// an <c>int</c> to <c>string</c> conversion, a case-insensitive member match (<c>ISOCode</c> to
 /// <c>IsoCode</c>), a <c>List</c> to <c>IReadOnlyList</c> copy, and three computed members
 /// (<c>LineTotal</c>, <c>Total</c>, and a prefixed <c>Number</c>). Nothing is captured from a

@@ -14,6 +14,10 @@
     <!-- For the code-fix harness: applying a fix needs a Workspace, which csc never loads. -->
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="4.14.0" />
 
+    <!-- The container itself, for the tests that LOAD a generated root and register it the way an
+         application does — the abstractions the runtime references are not enough to build one. -->
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.11" />
+
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.0">

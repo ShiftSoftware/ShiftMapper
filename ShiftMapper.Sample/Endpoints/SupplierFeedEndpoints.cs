@@ -1,4 +1,5 @@
 using ShiftMapper.Sample.Dtos;
+using ShiftMapper;
 using ShiftMapper.Sample.Mapping;
 
 namespace ShiftMapper.Sample.Endpoints;
@@ -37,7 +38,7 @@ public static class SupplierFeedEndpoints
         //   notes   the KEYS converted:    1 -> "1"  (this is the pair the build reports as
         //           SM0008, because converting keys is what can collapse two entries into one)
         //   extras  absent in, {} out:     the null-collection policy, on a dictionary
-        group.MapPost("/preview", (SupplierFeed feed, AppMapper mapper) =>
+        group.MapPost("/preview", (SupplierFeed feed, Mapper mapper) =>
         {
             // One call. Every dictionary on the DTO is a NEW dictionary — the DTO owns its own
             // data rather than a second reference to the request object's, which is the same
@@ -62,7 +63,7 @@ public static class SupplierFeedEndpoints
         //
         // The collection overloads again, on a type that has nothing to do with the database:
         // they are generated for every declared map, not only for entities.
-        group.MapPost("/preview-many", (List<SupplierFeed> feeds, AppMapper mapper) =>
+        group.MapPost("/preview-many", (List<SupplierFeed> feeds, Mapper mapper) =>
             Results.Ok(mapper.Map<List<SupplierFeedDto>>(feeds)))
         .WithName("PreviewSupplierFeeds");
     }

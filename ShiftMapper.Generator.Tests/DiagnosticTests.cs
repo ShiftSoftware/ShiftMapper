@@ -183,41 +183,18 @@ public class DiagnosticTests
         // still perfectly possible, and is still emitted.
         run.Compiles()
            .DoesNotEmit("new global::Destination")
-           .Emits("public virtual global::Destination Map(global::Source source, global::Destination destination)");
+           .Emits("public global::Destination Map(global::Source source, global::Destination destination)");
     }
 
     // -----------------------------------------------------------------
-    // SM0005 — the whole mapper produced nothing. Three ways in.
+    // SM0005 — a mapper class the generated mapper cannot include. Nothing is generated ONTO a
+    // mapper class any more, so partial is not required of it; what still cannot be included is a
+    // generic one.
     // -----------------------------------------------------------------
 
+    /// <summary>A mapper class need not be partial, nor nested in partial types: nothing is written into it.</summary>
     [Fact]
-    public void Sm0005_reports_a_mapper_that_is_not_partial_at_the_class_declaration()
-    {
-        GeneratorRun run = GeneratorHarness.Run(
-            """
-            using ShiftMapper;
-
-            public class Source { public int Id { get; set; } }
-            public class Destination { public int Id { get; set; } }
-
-            public class TestMapper : ShiftMapperBase
-            {
-                public TestMapper() => CreateMap<Source, Destination>();
-            }
-            """);
-
-        Diagnostic diagnostic = run.Single("SM0005");
-
-        Assert.Equal(DiagnosticSeverity.Warning, diagnostic.Severity);
-        Assert.StartsWith("public class TestMapper : ShiftMapperBase", run.CodeUnder(diagnostic));
-        Assert.Contains("it is not declared partial", diagnostic.GetMessage());
-
-        // Nothing was generated, so nothing was said about the map inside it either.
-        Assert.Empty(run.GeneratedFiles);
-    }
-
-    [Fact]
-    public void Sm0005_reports_a_mapper_nested_in_a_type_that_is_not_partial()
+    public void A_mapper_class_that_is_not_partial_is_fine()
     {
         GeneratorRun run = GeneratorHarness.Run(
             """
@@ -228,19 +205,15 @@ public class DiagnosticTests
 
             public class Outer
             {
-                public partial class TestMapper : ShiftMapperBase
+                public class TestMapper : ShiftMapperBase
                 {
                     public TestMapper() => CreateMap<Source, Destination>();
                 }
             }
             """);
 
-        Diagnostic diagnostic = run.Single("SM0005");
-
-        Assert.Equal(DiagnosticSeverity.Warning, diagnostic.Severity);
-        Assert.StartsWith("public partial class TestMapper : ShiftMapperBase", run.CodeUnder(diagnostic));
-        Assert.Contains("a type it is nested inside is not declared partial", diagnostic.GetMessage());
-        Assert.Empty(run.GeneratedFiles);
+        run.Compiles().Emits("MapToDestination(global::Source source)");
+        run.None("SM0005");
     }
 
     [Fact]
@@ -253,7 +226,7 @@ public class DiagnosticTests
             public class Source { public int Id { get; set; } }
             public class Destination { public int Id { get; set; } }
 
-            public partial class TestMapper<T> : ShiftMapperBase
+            public class TestMapper<T> : ShiftMapperBase
             {
                 public TestMapper() => CreateMap<Source, Destination>();
             }
@@ -262,43 +235,11 @@ public class DiagnosticTests
         Diagnostic diagnostic = run.Single("SM0005");
 
         Assert.Equal(DiagnosticSeverity.Warning, diagnostic.Severity);
-        Assert.StartsWith("public partial class TestMapper<T> : ShiftMapperBase", run.CodeUnder(diagnostic));
+        Assert.StartsWith("public class TestMapper<T> : ShiftMapperBase", run.CodeUnder(diagnostic));
         Assert.Contains("generic mapper classes are not supported", diagnostic.GetMessage());
         Assert.Empty(run.GeneratedFiles);
     }
 
-    /// <summary>
-    /// A SUB-PATH OF THE NESTING RULE: the OUTERMOST container is the one that is not partial, two
-    /// levels up. The check has to walk the whole chain of containers, not just the immediate one
-    /// — and a test that nests only one deep cannot tell the difference.
-    /// </summary>
-    [Fact]
-    public void Sm0005_reports_a_mapper_whose_outermost_container_is_not_partial()
-    {
-        GeneratorRun run = GeneratorHarness.Run(
-            """
-            using ShiftMapper;
-
-            public class Source { public int Id { get; set; } }
-            public class Destination { public int Id { get; set; } }
-
-            public class Outermost
-            {
-                public partial class Middle
-                {
-                    public partial class TestMapper : ShiftMapperBase
-                    {
-                        public TestMapper() => CreateMap<Source, Destination>();
-                    }
-                }
-            }
-            """);
-
-        Diagnostic diagnostic = run.Single("SM0005");
-
-        Assert.Contains("a type it is nested inside is not declared partial", diagnostic.GetMessage());
-        Assert.Empty(run.GeneratedFiles);
-    }
 
     /// <summary>
     /// AND THE GENERIC CONTAINER. A mapper inside <c>Outer&lt;T&gt;</c> is as unsupported as a generic

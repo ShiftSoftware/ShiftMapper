@@ -1,11 +1,12 @@
 namespace ShiftMapper.Tests.Model;
 
 // ---------------------------------------------------------------------------------------------
-// INCLUDED MAPPERS — maps declared in a mapper of their own, included by another.
+// OTHER MAPPER CLASSES — maps declared in classes of their own, which the generated mapper folds
+// in without anyone naming them.
 //
 // The types below are their own small family on purpose. Reusing an existing pair would have made
-// a passing test ambiguous: it could not tell "the included mapper was read" from "the mapper
-// declared it anyway".
+// a passing test ambiguous: it could not tell "the other class was read" from "TestMapper declared
+// it anyway".
 // ---------------------------------------------------------------------------------------------
 
 public class Gadget
@@ -45,15 +46,15 @@ public class DoodadDto
 }
 
 /// <summary>
-/// An ordinary mapper meant to be included: no dependencies, one map, one <c>MapFrom</c>.
+/// An ordinary mapper class: no dependencies, one map, one <c>MapFrom</c>.
 ///
 /// The <c>MapFrom</c> is what makes this worth a RUNTIME test rather than only a generator one.
 /// The generator emits a lookup — <c>Customizations.Value&lt;Gadget, GadgetDto, string&gt;("Code")</c>
 /// — and the tree it looks for is registered by RUNNING this constructor. Only running it can show
-/// that the included mapper was actually built and its registrations folded into the including
-/// mapper's store.
+/// that the class was actually built and its registrations folded into the generated mapper's
+/// store.
 /// </summary>
-public partial class GadgetMapper : ShiftMapperBase
+public class GadgetMapper : ShiftMapperBase
 {
     public GadgetMapper() =>
         CreateMap<Gadget, GadgetDto>()
@@ -65,7 +66,7 @@ public partial class GadgetMapper : ShiftMapperBase
 /// generator has to cross to find the base configuration and the runtime has to cross through the
 /// lineage in the merged store.
 /// </summary>
-public partial class PremiumGadgetMapper : ShiftMapperBase
+public class PremiumGadgetMapper : ShiftMapperBase
 {
     public PremiumGadgetMapper() =>
         CreateMap<PremiumGadget, PremiumGadgetDto>().IncludeBase<Gadget, GadgetDto>();
@@ -78,7 +79,7 @@ public partial class PremiumGadgetMapper : ShiftMapperBase
 /// <c>Services</c> is not assigned until afterwards — so included mappers are materialised on
 /// first use instead. This is the class that proves it.
 /// </summary>
-public partial class NumberedMapper : ShiftMapperBase
+public class NumberedMapper : ShiftMapperBase
 {
     public NumberedMapper(IInvoiceNumbering numbering) =>
         CreateMap<Doodad, DoodadDto>()
@@ -96,59 +97,7 @@ public class TrinketDto
 }
 
 /// <summary>Included at REGISTRATION rather than in a constructor — see RegistrationOptionsTests.</summary>
-public partial class TrinketMapper : ShiftMapperBase
+public class TrinketMapper : ShiftMapperBase
 {
     public TrinketMapper() => CreateMap<Trinket, TrinketDto>();
-}
-
-/// <summary>
-/// A mapper whose constructor composes nothing; what it maps is decided by its registration.
-/// Its own, so the include written there changes nothing else in the suite — a mapper is
-/// generated once per project with everything any registration composes into it.
-/// </summary>
-public partial class RegistrationMapper : ShiftMapperBase
-{
-}
-
-/// <summary>
-/// One half of a CYCLE: two mappers that include each other. The generator maps the union of what
-/// they declare; the runtime has to build each once rather than alternating forever.
-/// </summary>
-public partial class LeftMapper : ShiftMapperBase
-{
-    public LeftMapper()
-    {
-        CreateMap<Gadget, GadgetDto>();
-        IncludeMapper<RightMapper>();
-    }
-}
-
-/// <inheritdoc cref="LeftMapper"/>
-public partial class RightMapper : ShiftMapperBase
-{
-    public RightMapper()
-    {
-        CreateMap<Doodad, DoodadDto>()
-            .ForMember(d => d.Label, opt => opt.MapFrom(s => s.Name));
-
-        IncludeMapper<LeftMapper>();
-    }
-}
-
-/// <summary>
-/// Two mappers that each declare their OWN map for the same pair — the case IShiftMapper refuses
-/// to choose between. Registered together only inside the ownership tests, which silence the
-/// build's own SM0040 to show the runtime half of the rule.
-/// </summary>
-public partial class PublicTrinketMapper : ShiftMapperBase
-{
-    public PublicTrinketMapper() => CreateMap<Trinket, TrinketDto>();
-}
-
-/// <inheritdoc cref="PublicTrinketMapper"/>
-public partial class AdminTrinketMapper : ShiftMapperBase
-{
-    public AdminTrinketMapper() =>
-        CreateMap<Trinket, TrinketDto>()
-            .ForMember(d => d.Name, opt => opt.MapFrom(s => "admin:" + s.Name));
 }

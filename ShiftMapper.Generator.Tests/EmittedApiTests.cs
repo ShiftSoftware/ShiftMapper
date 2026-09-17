@@ -30,10 +30,10 @@ public class EmittedApiTests
             """);
 
         run.Compiles()
-           .Emits("public virtual TDestination Map<TDestination>(global::Source source)")
-           .Emits("public virtual global::Destination Map(global::Source source, global::Destination destination)")
+           .Emits("public TDestination Map<TDestination>(global::Source source)")
+           .Emits("public global::Destination Map(global::Source source, global::Destination destination)")
            .Emits("ShiftMapperProjection_Source_To_Destination")
-           .Emits("public virtual global::System.Linq.IQueryable<TDestination> ProjectTo<TDestination>(global::System.Linq.IQueryable<global::Source> source)");
+           .Emits("public global::System.Linq.IQueryable<TDestination> ProjectTo<TDestination>(global::System.Linq.IQueryable<global::Source> source)");
     }
 
     /// <summary>
@@ -54,11 +54,11 @@ public class EmittedApiTests
             """);
 
         run.Compiles()
-           .Emits("global using ShiftMapper.Generated;")
+           .Emits("global using ShiftMapper.Generated.ShiftMapperSnippet;")
            .Emits("namespace ShiftMapper.Generated")
-           .Emits("public static class TestMapper_ShiftMapperExtensions")
-           .Emits("public static TDestination Map<TDestination>(this global::Source source, global::TestMapper mapper)")
-           .Emits("return mapper.Map<TDestination>(source);");
+           .Emits("internal static class MapperExtensions")
+           .Emits("public static TDestination Map<TDestination>(this global::Source source, global::ShiftMapper.Mapper mapper)")
+           .Emits("Root(mapper).Map<TDestination>(source);");
     }
 
     [Fact]
@@ -129,7 +129,7 @@ public class EmittedApiTests
         // out loud that grouping by source type is the intended shape.
         Assert.Equal(
             1,
-            Occurrences(run.Generated, "public virtual TDestination Map<TDestination>(global::Source source)"));
+            Occurrences(run.Generated, "public TDestination Map<TDestination>(global::Source source)"));
     }
 
     /// <summary>
@@ -176,16 +176,16 @@ public class EmittedApiTests
             """);
 
         run.Compiles()
-           .Emits("public virtual TDestination Map<TDestination>(global::Source source)")
+           .Emits("public TDestination Map<TDestination>(global::Source source)")
            .DoesNotEmit("global::Destination destination)");
     }
 
     /// <summary>
-    /// The generated part has to reproduce the namespace AND the nesting, or it would declare a
-    /// brand new top-level type rather than extending the developer's one.
+    /// A mapper class nested inside another type is read like any other: its maps land in the
+    /// generated mapper, which lives in a namespace of its own whatever the class's nesting.
     /// </summary>
     [Fact]
-    public void A_nested_mapper_is_reopened_at_the_right_depth()
+    public void A_nested_mapper_class_is_read_like_any_other()
     {
         GeneratorRun run = GeneratorHarness.Run(
             """
@@ -206,12 +206,11 @@ public class EmittedApiTests
             """);
 
         run.Compiles()
-           .Emits("namespace App.Mapping")
-           .Emits("partial class Outer")
-           .Emits("partial class TestMapper")
-           // The extension class name is derived from the FULL name, so a nested mapper and a
-           // top-level one of the same name cannot collide.
-           .Emits("class App_Mapping_Outer_TestMapper_ShiftMapperExtensions");
+           .Emits("namespace ShiftMapper.Generated.ShiftMapperSnippet")
+           .Emits("internal sealed class GeneratedMapper")
+           .Emits("MapToDestination(global::App.Mapping.Source source)")
+           .Emits("typeof(global::App.Mapping.Outer.TestMapper)")
+           .DoesNotEmit("partial class Outer");
     }
 
     /// <summary>An extension more accessible than the mapper it runs through is CS0051.</summary>
@@ -231,7 +230,7 @@ public class EmittedApiTests
             }
             """);
 
-        run.Compiles().Emits("internal static class TestMapper_ShiftMapperExtensions");
+        run.Compiles().Emits("internal static class MapperExtensions");
     }
 
     /// <summary>
@@ -264,8 +263,8 @@ public class EmittedApiTests
 
         Assert.Single(run.GeneratedFiles);
         run.Compiles()
-           .Emits("public virtual TDestination Map<TDestination>(global::First source)")
-           .Emits("public virtual TDestination Map<TDestination>(global::Second source)");
+           .Emits("public TDestination Map<TDestination>(global::First source)")
+           .Emits("public TDestination Map<TDestination>(global::Second source)");
     }
 
     /// <summary>
@@ -320,7 +319,7 @@ public class EmittedApiTests
 
         Assert.Equal(
             1,
-            Occurrences(run.Generated, "public virtual global::Destination Map(global::Source source, global::Destination destination)"));
+            Occurrences(run.Generated, "public global::Destination Map(global::Source source, global::Destination destination)"));
     }
 
     private static int Occurrences(string text, string value)

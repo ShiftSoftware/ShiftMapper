@@ -9,15 +9,33 @@ namespace ShiftMapper.Tests;
 /// A mapper whose customization CLOSES OVER its constructor argument, which is the case that
 /// decides where a compiled delegate may be kept.
 /// </summary>
-public partial class CapturingProbe : ShiftMapperBase
+/// <summary>Destinations of these probes' own: one pair per probe, so none clashes with another.</summary>
+public class CapturedBrandDto
+{
+    public string Name { get; set; } = string.Empty;
+}
+
+public class CapturedLocalBrandDto
+{
+    public string Name { get; set; } = string.Empty;
+}
+
+public class CapturingProbe : ShiftMapperBase
 {
     private readonly string _prefix;
+
+    // Every mapper class in the project is built by the generated mapper on first use, so a probe
+    // needs a constructor the container can satisfy as well as the one the tests drive.
+    public CapturingProbe()
+        : this(string.Empty)
+    {
+    }
 
     public CapturingProbe(string prefix)
     {
         _prefix = prefix;
 
-        CreateMap<Brand, BrandDto>()
+        CreateMap<Brand, CapturedBrandDto>()
             .ForMember(d => d.Name, opt => opt.MapFrom(s => _prefix + s.Name));
     }
 
@@ -29,13 +47,18 @@ public partial class CapturingProbe : ShiftMapperBase
 /// into a closure object, which reaches the store as a reference constant exactly as a captured
 /// field does — so it is refused for sharing on the same terms.
 /// </summary>
-public partial class CapturedLocalProbe : ShiftMapperBase
+public class CapturedLocalProbe : ShiftMapperBase
 {
+    public CapturedLocalProbe()
+        : this(string.Empty)
+    {
+    }
+
     public CapturedLocalProbe(string suffix)
     {
         string local = suffix.ToUpperInvariant();
 
-        CreateMap<Brand, BrandDto>()
+        CreateMap<Brand, CapturedLocalBrandDto>()
             .ForMember(d => d.Name, opt => opt.MapFrom(s => s.Name + local));
     }
 
@@ -63,8 +86,8 @@ public class CachingTests
     [Fact]
     public void A_customization_that_captures_nothing_is_compiled_once_per_process()
     {
-        Func<Brand, string> first = new CustomizationProbe().Store.Value<Brand, BrandDto, string>("Country");
-        Func<Brand, string> second = new CustomizationProbe().Store.Value<Brand, BrandDto, string>("Country");
+        Func<Brand, string> first = new CustomizationProbe().Store.Value<Brand, ProbeBrandDto, string>("Country");
+        Func<Brand, string> second = new CustomizationProbe().Store.Value<Brand, ProbeBrandDto, string>("Country");
 
         Assert.Same(first, second);
     }
@@ -81,8 +104,8 @@ public class CachingTests
     [Fact]
     public void A_customization_that_captures_the_mapper_is_compiled_per_instance()
     {
-        Func<Brand, string> first = new CapturingProbe("A/").Store.Value<Brand, BrandDto, string>("Name");
-        Func<Brand, string> second = new CapturingProbe("B/").Store.Value<Brand, BrandDto, string>("Name");
+        Func<Brand, string> first = new CapturingProbe("A/").Store.Value<Brand, CapturedBrandDto, string>("Name");
+        Func<Brand, string> second = new CapturingProbe("B/").Store.Value<Brand, CapturedBrandDto, string>("Name");
 
         Assert.NotSame(first, second);
 
@@ -98,8 +121,8 @@ public class CachingTests
     [Fact]
     public void A_customization_that_captures_a_local_is_compiled_per_instance()
     {
-        Func<Brand, string> first = new CapturedLocalProbe("a").Store.Value<Brand, BrandDto, string>("Name");
-        Func<Brand, string> second = new CapturedLocalProbe("b").Store.Value<Brand, BrandDto, string>("Name");
+        Func<Brand, string> first = new CapturedLocalProbe("a").Store.Value<Brand, CapturedLocalBrandDto, string>("Name");
+        Func<Brand, string> second = new CapturedLocalProbe("b").Store.Value<Brand, CapturedLocalBrandDto, string>("Name");
 
         Assert.NotSame(first, second);
         Assert.Equal("AcmeA", first(new Brand { Name = "Acme" }));
@@ -115,12 +138,12 @@ public class CachingTests
     {
         var services = new ServiceCollection();
         services.AddScoped<IInvoiceNumbering>(_ => new PrefixNumbering("A/"));
-        services.AddShiftMapper<TestMapper>();
+        services.AddShiftMapper();
 
         using ServiceProvider provider = services.BuildServiceProvider();
 
         using IServiceScope scope = provider.CreateScope();
-        TestMapper mapper = scope.ServiceProvider.GetRequiredService<TestMapper>();
+        Mapper mapper = scope.ServiceProvider.GetRequiredService<Mapper>();
 
         Assert.Equal("A/0001", mapper.Map<InvoiceDto>(new Invoice { Number = "0001" }).Number);
 
@@ -128,14 +151,14 @@ public class CachingTests
         // delegate were shared this would still say "A/".
         var other = new ServiceCollection();
         other.AddScoped<IInvoiceNumbering>(_ => new PrefixNumbering("B/"));
-        other.AddShiftMapper<TestMapper>();
+        other.AddShiftMapper();
 
         using ServiceProvider otherProvider = other.BuildServiceProvider();
         using IServiceScope otherScope = otherProvider.CreateScope();
 
         Assert.Equal(
             "B/0001",
-            otherScope.ServiceProvider.GetRequiredService<TestMapper>()
+            otherScope.ServiceProvider.GetRequiredService<Mapper>()
                 .Map<InvoiceDto>(new Invoice { Number = "0001" }).Number);
     }
 
@@ -146,8 +169,8 @@ public class CachingTests
     [Fact]
     public void Two_mapper_classes_do_not_share_each_others_customizations()
     {
-        Func<Brand, string> probe = new CustomizationProbe().Store.Value<Brand, BrandDto, string>("Country");
-        Func<Brand, string> capturing = new CapturingProbe("A/").Store.Value<Brand, BrandDto, string>("Name");
+        Func<Brand, string> probe = new CustomizationProbe().Store.Value<Brand, ProbeBrandDto, string>("Country");
+        Func<Brand, string> capturing = new CapturingProbe("A/").Store.Value<Brand, CapturedBrandDto, string>("Name");
 
         Assert.NotSame(probe, capturing);
         Assert.Equal("Iraq (IQ)", probe(new Brand { Country = "Iraq", ISOCode = "IQ" }));
@@ -165,7 +188,7 @@ public class CachingTests
     [Fact]
     public void The_projection_is_built_once_per_mapper()
     {
-        var mapper = new TestMapper(new InvoiceNumbering());
+        var mapper = Mappers.Fresh();
         IQueryable<Brand> source = new List<Brand>().AsQueryable();
 
         Assert.Same(
@@ -180,7 +203,7 @@ public class CachingTests
     [Fact]
     public void A_nested_projection_is_built_once_per_mapper()
     {
-        var mapper = new TestMapper(new InvoiceNumbering());
+        var mapper = Mappers.Fresh();
         IQueryable<Invoice> source = new List<Invoice>().AsQueryable();
 
         Assert.Same(
@@ -199,8 +222,8 @@ public class CachingTests
         IQueryable<Invoice> source = new List<Invoice>().AsQueryable();
 
         Assert.NotSame(
-            ProjectionOf(new TestMapper(new PrefixNumbering("A/")).ProjectTo<InvoiceDto>(source)),
-            ProjectionOf(new TestMapper(new PrefixNumbering("B/")).ProjectTo<InvoiceDto>(source)));
+            ProjectionOf(Mappers.With(new PrefixNumbering("A/")).ProjectTo<InvoiceDto>(source)),
+            ProjectionOf(Mappers.With(new PrefixNumbering("B/")).ProjectTo<InvoiceDto>(source)));
     }
 
     /// <summary>
@@ -222,7 +245,7 @@ public class CachingTests
     [Fact]
     public void The_direct_method_and_the_dispatcher_agree()
     {
-        var mapper = new TestMapper(new InvoiceNumbering());
+        var mapper = Mappers.Fresh();
         var brand = new Brand { Id = 1, Name = "Acme", ISOCode = "IQ", FoundedYear = 1994 };
 
         BdCompare(mapper.Map<BrandDto>(brand), mapper.MapToBrandDto(brand));
@@ -243,7 +266,7 @@ public class CachingTests
     [Fact]
     public void A_struct_destination_can_be_mapped_without_the_dispatcher()
     {
-        var mapper = new TestMapper(new InvoiceNumbering());
+        var mapper = Mappers.Fresh();
         var brand = new Brand { Id = 1, FoundedYear = 1994 };
 
         BrandKeyDto direct = mapper.MapToBrandKeyDto(brand);
@@ -256,7 +279,7 @@ public class CachingTests
     [Fact]
     public void A_direct_method_rejects_null_like_every_other_entry_point()
     {
-        var mapper = new TestMapper(new InvoiceNumbering());
+        var mapper = Mappers.Fresh();
 
         Assert.Throws<ArgumentNullException>(() => mapper.MapToBrandDto(null!));
     }

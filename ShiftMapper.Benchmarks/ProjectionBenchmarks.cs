@@ -1,5 +1,6 @@
 using System.Linq.Expressions;
 using BenchmarkDotNet.Attributes;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace ShiftMapper.Benchmarks;
 
@@ -16,8 +17,9 @@ namespace ShiftMapper.Benchmarks;
 [MemoryDiagnoser]
 public class ProjectionBenchmarks
 {
-    private readonly BenchmarkMapper _mapper = new(new Numbering());
-    private readonly INumbering _numbering = new Numbering();
+    private readonly ServiceProvider _provider = Container.Build();
+    private IServiceScope _scope = null!;
+    private Mapper _mapper = null!;
 
     private IQueryable<Invoice> _invoices = null!;
     private IQueryable<Brand> _brands = null!;
@@ -25,6 +27,9 @@ public class ProjectionBenchmarks
     [GlobalSetup]
     public void Setup()
     {
+        _scope = _provider.CreateScope();
+        _mapper = _scope.ServiceProvider.GetRequiredService<Mapper>();
+
         _invoices = new List<Invoice> { Sample.Invoice() }.AsQueryable();
         _brands = Sample.Brands(1).AsQueryable();
 
@@ -50,13 +55,29 @@ public class ProjectionBenchmarks
     /// used to be the cost of each ProjectTo call.
     /// </summary>
     [Benchmark]
-    public Expression OnANewMapper() =>
-        new BenchmarkMapper(_numbering).ProjectTo<InvoiceDto>(_invoices).Expression;
+    public Expression OnANewMapper()
+    {
+        using IServiceScope scope = _provider.CreateScope();
+
+        return scope.ServiceProvider.GetRequiredService<Mapper>().ProjectTo<InvoiceDto>(_invoices).Expression;
+    }
 
     /// <summary>
-    /// Constructing the mapper and nothing else, so the one above can be read honestly: the
+    /// Resolving the mapper and nothing else, so the one above can be read honestly: the
     /// composition is the difference between the two, rather than the whole of it.
     /// </summary>
     [Benchmark]
-    public object ConstructMapperOnly() => new BenchmarkMapper(_numbering);
+    public object ResolveMapperOnly()
+    {
+        using IServiceScope scope = _provider.CreateScope();
+
+        return scope.ServiceProvider.GetRequiredService<Mapper>();
+    }
+
+    [GlobalCleanup]
+    public void Cleanup()
+    {
+        _scope.Dispose();
+        _provider.Dispose();
+    }
 }

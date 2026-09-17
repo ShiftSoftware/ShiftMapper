@@ -10,13 +10,13 @@ registration, and the build output.
 
 ---
 
-## 1. The mapper class, and why it must be `partial`
+## 1. The mapper class, and the class you inject
 
 ```csharp
 using Microsoft.Extensions.Logging;
 using ShiftMapper;
 
-public partial class AppMapper : ShiftMapperBase
+public class AppMapper : ShiftMapperBase
 {
     private readonly ILogger<AppMapper> _logger;
 
@@ -30,41 +30,35 @@ public partial class AppMapper : ShiftMapperBase
 ```
 
 That is the whole hand-written half. `ShiftMapperBase` gives you the declaration API
-(`CreateMap`, `IncludeMapper`, `AddConversions`, `CreateConversion`, `CreateMemberConvention`, `ConfigureDefaults`)
-plus the `Services` provider, and no `Map` method. The mapping methods arrive in a **second part of the
-same class**, written by the generator, which is the whole reason `partial` is not optional:
+(`CreateMap`, `AddConversions`, `CreateConversion`, `CreateMemberConvention`, `ConfigureDefaults`)
+plus the `Services` provider, and no `Map` method. **Nothing is generated onto this class** — it
+need not be `partial`, and nothing injects it. The mapping methods arrive in ONE generated class
+per assembly, holding every map from every mapper class in the project and every mapper class the
+referenced packages declare:
 
 ```csharp
-// ShiftMapper.Sample/Generated/.../ShiftMapper_Sample_Mapping_AppMapper.ShiftMapper.g.cs
-partial class AppMapper : global::ShiftMapper.IShiftMapper
+// ShiftMapper.Sample/Generated/.../ShiftMapper.Generated.g.cs
+namespace ShiftMapper.Generated.ShiftMapper_Sample
 {
-    public global::ShiftMapper.Sample.Dtos.BrandDto MapToBrandDto(/* ... */)
+    internal sealed class GeneratedMapper : global::ShiftMapper.ShiftMapperBase, global::ShiftMapper.IShiftMapper
+    {
+        public global::ShiftMapper.Sample.Dtos.BrandDto MapToBrandDto(/* ... */)
 ```
 
-Two consequences worth knowing up front. The generated part is what adds `IShiftMapper`, so your
-own part never names the interface. And because the methods are **instance** methods on your
-class, anything you injected into the constructor is available to a `MapFrom` or a
-`ConstructUsing` without ceremony.
+and you reach it through **`Mapper`**, the one class in the runtime package: inject it, call
+`mapper.Map<BrandDto>(brand)`. Every typed method on it is an extension method the generator wrote
+into your project, forwarding to your assembly's generated mapper.
 
-### When the generator cannot add a part
+Two consequences worth knowing up front. The generated mapper builds each mapper class from the
+container the first time anything is mapped, so anything you injected into a constructor is
+available to a `MapFrom` or a `ConstructUsing` without ceremony. And because every mapper class in
+the project is read, splitting maps over files is only that — see §1a below.
 
-Three shapes make a second part impossible, and each is reported as **SM0005** naming the
-reason in those words:
+### When a class cannot be included
 
-| The class is… | SM0005 says |
-|---|---|
-| not `partial` | `it is not declared partial, so no code can be added to it` |
-| nested inside a type that is not `partial` | `a type it is nested inside is not declared partial` |
-| generic | `generic mapper classes are not supported` |
-
-SM0005 is a warning, not an error, because the class still compiles — it is simply a mapper with
-no maps. The failure would otherwise surface as a missing method at some unrelated call site, so
-`AddShiftMapper` checks for it too and throws rather than registering a service whose every call
-would fail:
-
-> ShiftMapper: no mapping code was generated for 'AppMapper', so it has no Map methods to
-> register. See build warning SM0005 — the mapper class, and every type it is nested inside, must
-> be declared partial, and it must not be generic.
+A generic mapper class cannot be constructed by the generated mapper — there are no type arguments
+to construct it with — and is reported as **SM0005**, a warning: the class still compiles, it is
+simply a mapper with no maps.
 
 ### Where declarations may be written
 
@@ -90,6 +84,15 @@ something its own source does not say. See
 [Where a declaration may be written](../README.md#where-a-declaration-may-be-written).
 
 ---
+
+### 1a. When the constructor outgrows one file
+
+Write the rest of the declarations in other classes deriving from `ShiftMapperBase`. Nothing names
+them: the generator reads every one in the project into the generated mapper. Each map keeps its
+own class's `ConfigureDefaults` and conversions, and is reported in its own file; a pair declared
+in two classes is an error (SM0042). The
+[README](../README.md#several-mapper-classes-one-mapper) has the rules; the sample's `AppMapper`,
+`CatalogMapper` and `InvoiceLabelMapper` are the shape.
 
 ## 2. One `CreateMap`, and what it generates
 
@@ -218,36 +221,31 @@ alternative rather than quietly returning rows a hook never touched.
 ## 4. Registering it
 
 ```csharp
-builder.Services.AddShiftMapper<AppMapper>();                             // Scoped
-builder.Services.AddShiftMapper<AppMapper>(ServiceLifetime.Singleton);    // if it has no scoped deps
+builder.Services.AddShiftMapper();                                        // Scoped; nothing to name
+builder.Services.AddShiftMapper(ServiceLifetime.Singleton);               // if no mapper class has scoped deps
 
 builder.Services.AddShiftMapper(o =>                                      // the long form
 {
-    o.AddMapper<AppMapper>(m => m.IncludeMapper<ReportingMapper>());      // composed here rather than in the constructor
-    o.AddMapper<PlatformMapper>();                                        // a mapper from a referenced package
-    o.AddConversions<PlatformConversions>();                              // a pack of rules for every mapper above
-    // — or neither package line: a package that registers itself and shares its pack (see the README)
+    o.AddConversions<PlatformConversions>();                              // a pack of rules for every map
+    // — or not even that: a package that registers itself and shares its pack (see the README)
+    o.Discovery = MapperDiscovery.All;                                    // the default: every class in sight;
+    //   LocalAndRegistered or Registered to name classes with o.AddMapper<T>() instead
     o.Lifetime = ServiceLifetime.Scoped;                                  // the default
 });
 ```
 
 One call, hand-written library code
-(`ShiftMapper/ShiftMapperServiceCollectionExtensions.cs`), and it does five things: resolves each
-mapper's own constructor dependencies through `ActivatorUtilities`, fills in
-`ShiftMapperBase.Services`, registers each mapper under **its own type** (the only way to reach the
-strongly typed methods), registers **everything a mapper includes and every pack it adds** under
-their own types so they can be injected on their own and take dependencies, and registers
-**`IShiftMapper`** for libraries that cannot name your class — the mapper itself when there is one,
-a composite that dispatches by pair when there are several (two registered mappers each declaring
-their own map for one pair is a build error, SM0040). Scoped is the default so a mapper may
-safely depend on a `DbContext`.
+(`ShiftMapper/ShiftMapperServiceCollectionExtensions.cs`), and it does three things: registers the
+calling assembly's **generated mapper**, read from the assembly's own metadata so nothing is named;
+registers **`Mapper`**, the one object application code injects, made of every generated mapper
+any call registered — this assembly's first; and registers **`IShiftMapper`** for libraries that
+cannot name your types, resolving to the same object. Mapper classes are not registered: the
+generated mapper builds them from the provider on first use, with their dependencies injected.
+Scoped is the default so a mapper class may safely depend on a `DbContext`.
 
-**The generator reads the lambda.** Anything composed in it — an include, a pack for one mapper, a
-pack for every mapper — is baked into the mapper at compile time exactly as if it had been written
-in the constructor, which is why the lambda must be inline, its statements plain, and in the same
-project as the mappers it configures (**SM0035** otherwise). A mapper from a referenced package
-registered here gets an **adapter**: a generated subclass with your packs baked in, handed out
-wherever the package type is asked for.
+**The generator reads the lambda.** A pack added in it is baked into every map of the generated
+mapper at compile time, exactly as if it had been written in every constructor, which is why the
+lambda must be inline and its statements plain (**SM0035** otherwise).
 
 ### Services timing — the one piece of ordering to know
 
@@ -256,34 +254,32 @@ exist before anything can be set on it. So:
 
 - **Do not touch `Services` from the mapper's constructor.** Inject what you need there instead.
   Reading it before it is assigned throws an `InvalidOperationException` saying no service provider has been set on the mapper — the same message a mapper constructed by hand instead of through `AddShiftMapper` gets.
-- **Included mappers and packs are materialised on first use, not in the constructor.**
-  `IncludeMapper<T>()` and `AddConversions<T>()` record the type; it is constructed the first time
-  anything is actually mapped, by which point DI is in place. That is what allows an included
-  mapper to take dependencies at all.
+- **Mapper classes and packs are materialised on first use, not at startup.** The generated
+  mapper's metadata lists them; each is constructed the first time anything is actually mapped, by
+  which point DI is in place. That is what allows a mapper class to take dependencies at all.
 
-An included mapper with a dependency needs no registration of its own — `AddShiftMapper` reads what
-a mapper includes and registers it, and even an unregistered one is built with its dependencies
-injected. This is the sample's `Program.cs`, and `ShiftMapper.Sample/Mapping/InvoiceLabelMapper.cs`
-documents it in full:
+A mapper class with a dependency needs no registration of its own — it is built from the provider
+with its dependencies injected. This is the sample's `Program.cs`, and
+`ShiftMapper.Sample/Mapping/InvoiceLabelMapper.cs` documents it in full:
 
 ```csharp
 builder.Services.AddSingleton<IInvoiceNumbering, InvoiceNumbering>();
-builder.Services.AddShiftMapper(o => o.AddMapper<AppMapper>());   // InvoiceLabelMapper comes along
+builder.Services.AddShiftMapper();                                   // InvoiceLabelMapper is built on first map
 ```
 
-The edge worth knowing: **an include that takes dependencies makes the whole mapper DI-only.**
-Everything a mapper includes is built together on first use, so one that cannot be built fails the
-mapper's first map, including maps unrelated to it. Skipping it instead would leave its `MapFrom`
-members quietly unfilled, which is the divergence the library exists to prevent. If you construct
-mappers by hand in tests, keep what they include parameterless.
+The edge worth knowing: **one class that takes dependencies makes the whole assembly's mapper
+DI-only.** Every class is built together on first use, so one that cannot be built fails the first
+map, including maps unrelated to it. Skipping it instead would leave its `MapFrom` members quietly
+unfilled, which is the divergence the library exists to prevent. `Mapper.Create(assembly)` in a
+test works only when every mapper class is parameterless.
 
 ---
 
 ## 5. Reading the build output
 
 Every ShiftMapper message is `SM####`, from a real `DiagnosticAnalyzer` — so the IDE shows them
-live, `.editorconfig` tunes them per folder, and CI sees the same list. Forty-one rules in use today (SM0029 is retired);
-nine stop the build. The
+live, `.editorconfig` tunes them per folder, and CI sees the same list. Forty-one rules in use today (SM0029,
+SM0039–SM0041 and SM0045 are retired); eight stop the build. The
 [summary table in the README](../README.md#diagnostics) lists all of them, and
 [diagnostics.md](diagnostics.md) goes through them one at a time.
 

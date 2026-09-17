@@ -42,7 +42,7 @@ public class ProjectToCallSiteTests
 
             public static class Queries
             {
-                public static IQueryable<Destination> Run(IQueryable<Source> source, TestMapper mapper) =>
+                public static IQueryable<Destination> Run(IQueryable<Source> source, Mapper mapper) =>
                     source.ProjectTo<Destination>(mapper);
             }
             """);
@@ -69,7 +69,7 @@ public class ProjectToCallSiteTests
 
             public static class Queries
             {
-                public static IQueryable<Destination> Run(IQueryable<Source> source, TestMapper mapper) =>
+                public static IQueryable<Destination> Run(IQueryable<Source> source, Mapper mapper) =>
                     mapper.ProjectTo<Destination>(source);
             }
             """);
@@ -126,7 +126,7 @@ public class ProjectToCallSiteTests
 
             public static class Queries
             {
-                public static IQueryable<Destination> Run(IQueryable<Source> source, TestMapper mapper) =>
+                public static IQueryable<Destination> Run(IQueryable<Source> source, Mapper mapper) =>
                     source.ProjectTo<Destination>(mapper);
             }
             """);
@@ -146,7 +146,7 @@ public class ProjectToCallSiteTests
 
             public static class Queries
             {
-                public static Destination Run(Source source, TestMapper mapper) =>
+                public static Destination Run(Source source, Mapper mapper) =>
                     mapper.Map<Destination>(source);
             }
             """);
@@ -184,7 +184,7 @@ public class ProjectToCallSiteTests
 
             public static class Queries
             {
-                public static IQueryable<Destination> Run(IQueryable<Source> source, PackageMapper mapper) =>
+                public static IQueryable<Destination> Run(IQueryable<Source> source, Mapper mapper) =>
                     mapper.ProjectTo<Destination>(source);
             }
             """);

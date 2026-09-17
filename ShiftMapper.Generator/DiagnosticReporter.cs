@@ -36,6 +36,13 @@ internal sealed class DiagnosticReporter
         _report(Diagnostic.Create(descriptor, location?.ToLocation(_treesByPath), messageArguments));
 
     /// <summary>
+    /// A reporter that resolves locations against the SAME trees as this one and hands what it
+    /// builds to <paramref name="report"/> instead — for a caller that wants to look at each
+    /// diagnostic (to deduplicate, say) before it reaches the compilation.
+    /// </summary>
+    public DiagnosticReporter Through(Action<Diagnostic> report) => new(report, _treesByPath);
+
+    /// <summary>
     /// The same, with PROPERTIES attached — the structured half of a diagnostic.
     ///
     /// <para>A message is prose meant for a person; a code fix needs a FACT. Re-parsing the member

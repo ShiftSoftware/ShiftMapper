@@ -68,12 +68,9 @@ internal enum MapperSkipReason
     /// <summary>Not skipped.</summary>
     None,
 
-    /// <summary>The class is not declared partial, so we cannot add a second part to it.</summary>
-    NotPartial,
-
-    /// <summary>A type it is nested inside is not partial.</summary>
-    ContainerNotPartial,
-
-    /// <summary>Generic mappers are not supported by the extension-method shape.</summary>
+    /// <summary>An open generic mapper class: the generated mapper has no type arguments to construct it with.</summary>
     Generic,
+
+    /// <summary>Discovery is Registered, and no <c>AddMapper</c> names this class.</summary>
+    NotRegistered,
 }

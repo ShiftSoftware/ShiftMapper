@@ -95,7 +95,8 @@ public static class GeneratorHarness
             updated.GetDiagnostics()
                 .Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)
                 .ToImmutableArray(),
-            metadata.Select(generated => generated.ToString()).ToImmutableArray());
+            metadata.Select(generated => generated.ToString()).ToImmutableArray(),
+            updated);
     }
 
     /// <summary>
@@ -150,10 +151,15 @@ public static class GeneratorHarness
     /// <para>Each gets a distinct assembly name, so a message naming the culprits can be asserted
     /// on.</para>
     /// </summary>
+    /// <param name="chained">
+    /// Whether each package references the ones before it — a second package building on the
+    /// first's types — rather than each standing alone.
+    /// </param>
     public static GeneratorRun RunWithPackages(
         IReadOnlyList<string> packageSources,
         string applicationSource,
-        bool runGeneratorOnPackage = true)
+        bool runGeneratorOnPackage = true,
+        bool chained = false)
     {
         var compiled = ImmutableArray.CreateBuilder<MetadataReference>();
 
@@ -162,7 +168,8 @@ public static class GeneratorHarness
             compiled.Add(CompilePackage(
                 packageSources[index],
                 index == 0 ? "ShiftMapperPackage" : $"ShiftMapperPackage{index + 1}",
-                runGeneratorOnPackage));
+                runGeneratorOnPackage,
+                chained ? compiled.ToImmutable() : ImmutableArray<MetadataReference>.Empty));
         }
 
         return Run(applicationSource, extraReferences: compiled.ToImmutable());
@@ -172,7 +179,8 @@ public static class GeneratorHarness
     private static MetadataReference CompilePackage(
         string packageSource,
         string assemblyName,
-        bool runGeneratorOnPackage)
+        bool runGeneratorOnPackage,
+        ImmutableArray<MetadataReference> extraReferences = default)
     {
         var package = CSharpCompilation.Create(
             assemblyName: assemblyName,
@@ -181,7 +189,7 @@ public static class GeneratorHarness
                 CSharpSyntaxTree.ParseText(
                     SourceText.From(packageSource, Encoding.UTF8), ParseOptions, path: "Package.cs"),
             },
-            references: References,
+            references: extraReferences.IsDefaultOrEmpty ? References : References.AddRange(extraReferences),
             options: new CSharpCompilationOptions(
                 OutputKind.DynamicallyLinkedLibrary,
                 nullableContextOptions: NullableContextOptions.Enable));

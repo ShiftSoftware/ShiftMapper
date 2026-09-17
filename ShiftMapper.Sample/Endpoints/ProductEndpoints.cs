@@ -1,4 +1,5 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using ShiftMapper;
 using ShiftMapper.Sample.Data;
 using ShiftMapper.Sample.Dtos;
 using ShiftMapper.Sample.Mapping;
@@ -17,7 +18,7 @@ public static class ProductEndpoints
         // works the joins out from the map itself, because the whole nested graph reaches it
         // as one expression — so the database returns exactly the columns the DTO uses, in one
         // query, and nothing is loaded to be thrown away afterwards.
-        group.MapGet("/", (AppDbContext db, AppMapper mapper, bool sql = false) =>
+        group.MapGet("/", (AppDbContext db, Mapper mapper, bool sql = false) =>
         {
             IQueryable<ProductDto> query = db.Products
                 .AsNoTracking()
@@ -39,7 +40,7 @@ public static class ProductEndpoints
         //
         // Add ?sql=true and compare it with /api/products: the same joins, the same columns. The
         // shape of the DTO changed and the query did not, which is the whole claim.
-        group.MapGet("/summary", (AppDbContext db, AppMapper mapper, bool sql = false) =>
+        group.MapGet("/summary", (AppDbContext db, Mapper mapper, bool sql = false) =>
         {
             IQueryable<ProductSummaryDto> query = db.Products
                 .AsNoTracking()

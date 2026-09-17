@@ -74,7 +74,7 @@ public class CollectionApiTests
     [Fact]
     public void The_direct_collection_methods_do_the_same_work()
     {
-        TestMapper mapper = _fixture.Mapper;
+        Mapper mapper = _fixture.Mapper;
         Brand[] brands = Brands();
 
         Assert.Equal(2, mapper.MapToBrandDtoList(brands).Count);

@@ -91,24 +91,19 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     /// </summary>
     private const string MapperInterfaceType = "global::ShiftMapper.IShiftMapper";
 
+    /// <summary>The same interface as a metadata name, for looking its symbol up — the mark of a mapper that was generated for.</summary>
+    private const string MapperInterfaceMetadataName = "ShiftMapper.IShiftMapper";
+
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
-        // Build a pipeline: for every syntax node in the project, run `predicate`
-        // (a cheap syntax-only check). Only for nodes that pass do we run `transform`
-        // (the expensive part that needs type information).
-        IncrementalValuesProvider<MapperClassModel> declarations = context.SyntaxProvider
-            .CreateSyntaxProvider(
-                predicate: static (node, _) => IsCandidateClass(node),
-                transform: static (ctx, ct) => BuildMapperClass(
-                    ctx.SemanticModel, (ClassDeclarationSyntax)ctx.Node, ct))
-            .Where(static model => model is not null)
-            .Select(static (model, _) => model!);
+        // THE GENERATED MAPPER: one class per assembly, holding every map the assembly can see.
+        // It depends on the whole compilation — every mapper class in it, and every reference —
+        // so it is built from the compilation rather than per class. See
+        // ShiftMapperGenerator.Mapper.cs.
+        IncrementalValueProvider<MapperClassModel?> generated = context.CompilationProvider
+            .Select(static (compilation, ct) => ReadGenerated(compilation, ct));
 
-        // A partial class can be spread over several files, so one TYPE may arrive here as
-        // several declarations. Collect them and merge by type before emitting, or two
-        // declarations would fight over the same generated file name — which makes Roslyn
-        // drop the generator's entire output, not just that one file.
-        context.RegisterSourceOutput(declarations.Collect(), static (spc, models) => EmitAll(spc, models));
+        context.RegisterSourceOutput(generated, static (spc, model) => EmitGenerated(spc, model));
 
         // THE SECOND OUTPUT, and the one that makes a package able to declare anything. It runs on
         // the DECLARING assembly and writes what its mappers and packs declare into metadata,
@@ -124,9 +119,10 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
 
         context.RegisterSourceOutput(declared.Collect(), static (spc, models) => EmitDeclarations(spc, models));
 
-        // THE THIRD OUTPUT: adapters for mappers registered from REFERENCED assemblies. Driven by
-        // the AddShiftMapper calls, so a project that registers only its own mappers never pays
-        // for it — the compilation is only consulted once such a call exists.
+        // THE THIRD OUTPUT: what this project's registrations SHARE with every project that
+        // references it — o.ShareConversions<T>() — written into the assembly as metadata, the way
+        // a mapper's declarations are. Driven by the registration calls, and a string, so an
+        // unchanged registration re-emits nothing.
         IncrementalValueProvider<bool> registers = context.SyntaxProvider
             .CreateSyntaxProvider(
                 predicate: static (node, _) => IsRegistrationCandidate(node),
@@ -134,18 +130,6 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             .Collect()
             .Select(static (calls, _) => calls.Length > 0);
 
-        IncrementalValueProvider<ImmutableArray<MapperClassModel>> adapters = registers
-            .Combine(context.CompilationProvider)
-            .Select(static (pair, ct) => pair.Left
-                ? BuildAdapters(pair.Right, ct)
-                : ImmutableArray<MapperClassModel>.Empty);
-
-        context.RegisterSourceOutput(adapters, static (spc, models) => EmitAdapters(spc, models));
-
-        // THE FOURTH OUTPUT: what this project's registrations SHARE with every project that
-        // references it — o.ShareConversions<T>() — written into the assembly as metadata, the way
-        // a mapper's declarations are. Driven by the same calls, and a string, so an unchanged
-        // registration re-emits nothing.
         IncrementalValueProvider<string> shared = registers
             .Combine(context.CompilationProvider)
             .Select(static (pair, ct) => pair.Left ? SharedPackDeclarations(pair.Right, ct) : string.Empty);
@@ -172,15 +156,12 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     // ---------------------------------------------------------------------
 
     /// <summary>
-    /// Turns one mapper class declaration into a <see cref="MapperClassModel"/>. Here we DO
-    /// have type information (the "semantic model"), so we can confirm the base class and
-    /// resolve what `Brand` and `BrandDto` really are.
-    /// Returns null when the class is not a usable ShiftMapper mapper, and it is skipped.
+    /// What ONE mapper class has to say for itself — the analyzer's per-class read. Its maps are
+    /// not here: they are built into the generated mapper with every other class's, and reported
+    /// from there. What IS its own is where each declaration is written (SM0035), which is a fact
+    /// about this file, and whether it can be included at all (SM0005).
     ///
-    /// Takes a plain <see cref="SemanticModel"/> rather than the generator's own context
-    /// because <see cref="ShiftMapperAnalyzer"/> runs the very same analysis from a symbol
-    /// action, and reading the maps twice from two pieces of code is how a diagnostic ends up
-    /// describing something the generated file does not do.
+    /// Returns null when the class is not a mapper.
     /// </summary>
     internal static MapperClassModel? BuildMapperClass(
         SemanticModel semanticModel,
@@ -190,46 +171,37 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         if (semanticModel.GetDeclaredSymbol(classDeclaration, cancellationToken) is not INamedTypeSymbol classSymbol)
             return null;
 
-        Compilation compilation = semanticModel.Compilation;
-
-        INamedTypeSymbol? baseClass = compilation.GetTypeByMetadataName(BaseClassMetadataName);
+        INamedTypeSymbol? baseClass = semanticModel.Compilation.GetTypeByMetadataName(BaseClassMetadataName);
 
         if (baseClass is null || !DerivesFrom(classSymbol, baseClass))
             return null;
 
-        // From here on the class is clearly MEANT to be a mapper, so anything we cannot
-        // handle is reported (SM0005) rather than dropped without a word.
         MapperSkipReason skipReason = GetSkipReason(classSymbol);
-        if (skipReason != MapperSkipReason.None)
+
+        // Under Registered discovery a local class nothing named generates nothing, and that is
+        // said here (SM0005) rather than discovered as a missing method somewhere else.
+        if (skipReason == MapperSkipReason.None)
         {
-            return new MapperClassModel(
-                namespaceName: null,
-                containingTypes: ImmutableArray<string>.Empty,
-                className: classSymbol.Name,
-                fullyQualifiedName: classSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
-                isPublic: false,
-                maps: ImmutableArray<MapModel>.Empty,
-                skipReason: skipReason,
-                location: LocationInfo.CreateFrom(classDeclaration.Identifier.Parent ?? classDeclaration));
+            RegistrationModel registrations = ReadRegistrations(semanticModel.Compilation, cancellationToken);
+
+            if (registrations.Discovery == Discovery.Registered
+                && !classSymbol.IsAbstract
+                && !registrations.Registered.Any(entry => SymbolEqualityComparer.Default.Equals(entry.Mapper, classSymbol)))
+            {
+                skipReason = MapperSkipReason.NotRegistered;
+            }
         }
 
-        RegistrationModel registrations = ReadRegistrations(compilation, cancellationToken);
-
-        DeclarationSet set = BuildDeclarationSet(compilation, classSymbol, baseClass, registrations, cancellationToken);
-
-        // WHICH INCLUDES THIS PART CONTRIBUTES. Another part of the same mapper arrives as its own
-        // model with its own IncludeMapper calls, and reading them here as well would declare every
-        // included map once per part. What the REGISTRATION includes belongs to the first part.
-        bool isPrimaryPart = classSymbol.DeclaringSyntaxReferences.Length == 0
-            || classSymbol.DeclaringSyntaxReferences[0].GetSyntax(cancellationToken) == classDeclaration;
-
-        return BuildMapperCore(
-            compilation,
-            set,
-            classDeclaration,
-            isPrimaryPart,
-            LocationInfo.CreateFrom(classDeclaration.Identifier.Parent ?? classDeclaration),
-            cancellationToken);
+        return new MapperClassModel(
+            namespaceName: null,
+            containingTypes: ImmutableArray<string>.Empty,
+            className: classSymbol.Name,
+            fullyQualifiedName: classSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+            isPublic: false,
+            maps: ImmutableArray<MapModel>.Empty,
+            skipReason: skipReason,
+            location: LocationInfo.CreateFrom(classDeclaration.Identifier.Parent ?? classDeclaration),
+            declarationProblems: CollectUnbakeableDeclarations(semanticModel, classDeclaration, baseClass, cancellationToken));
     }
 
     /// <summary>What one mapper's <c>ConfigureDefaults</c> set — read from source or metadata.</summary>
@@ -472,7 +444,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         // OPEN GENERIC MAPS, closed last — after every explicit map has been added, so an
         // explicit CreateMap<Wrapper<Brand>, WrapperDto<BrandDto>> always wins over the one this
         // would have generated for the same pair.
-        var openProblems = ImmutableArray.CreateBuilder<string>();
+        var openProblems = ImmutableArray.CreateBuilder<PositionedProblem>();
 
         List<(INamedTypeSymbol Source, INamedTypeSymbol Destination)>? allPairs = null;
 
@@ -486,9 +458,10 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             // combinatorial one nobody asked for, so it is refused rather than guessed at.
             if (openSource.TypeParameters.Length != 1 || openDestination.TypeParameters.Length != 1)
             {
-                openProblems.Add(
+                openProblems.Add(new PositionedProblem(
                     $"'{openSource.Name}' to '{openDestination.Name}' was not closed because open " +
-                    "generic maps need exactly one type parameter on each side");
+                    "generic maps need exactly one type parameter on each side",
+                    openLocation ?? location));
 
                 continue;
             }
@@ -535,31 +508,6 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             }
         }
 
-        // Containing types, outermost first, so the emitted part can reproduce the nesting.
-        var containers = new List<string>();
-        for (INamedTypeSymbol? container = classSymbol.ContainingType; container is not null; container = container.ContainingType)
-            containers.Insert(0, container.Name);
-
-        // What the registration composed into THIS mapper, for the metadata the runtime reads —
-        // including what referenced packages shared with every registration, which the set already
-        // holds for a registered mapper. Recorded here so the runtime applies the shared pack from
-        // the composition alone, without opening a reference of its own.
-        var registrationComposition = new List<string>();
-
-        foreach (RegisteredMapper registered in ReadRegistrations(compilation, cancellationToken).Mappers)
-        {
-            if (registered.Mapper != set.Own.Name)
-                continue;
-
-            foreach (INamedTypeSymbol composed in registered.IncludeTypes.Concat(registered.PackTypes).Concat(registered.CallPacks).Concat(set.ReferencedPacks))
-            {
-                string name = FullName(composed);
-
-                if (!registrationComposition.Contains(name))
-                    registrationComposition.Add(name);
-            }
-        }
-
         // Every chain's query registrations, once each.
         var queryRegistrations = new List<string>();
 
@@ -573,10 +521,8 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         }
 
         return new MapperClassModel(
-            namespaceName: classSymbol.ContainingNamespace.IsGlobalNamespace
-                ? null
-                : classSymbol.ContainingNamespace.ToDisplayString(),
-            containingTypes: containers.ToImmutableArray(),
+            namespaceName: null,
+            containingTypes: ImmutableArray<string>.Empty,
             className: classSymbol.Name,
             fullyQualifiedName: classSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
             isPublic: IsEffectivelyPublic(classSymbol),
@@ -585,13 +531,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             openGenericProblems: openProblems.ToImmutable(),
             profileProblems: includeProblems.ToImmutable(),
             declaredProblems: declaredProblems.ToImmutableArray(),
-            queryRegistrations: queryRegistrations.ToImmutableArray(),
-            declarationProblems: ownPart is null
-                ? ImmutableArray<PositionedProblem>.Empty
-                : CollectUnbakeableDeclarations(
-                    compilation.GetSemanticModel(ownPart.SyntaxTree), ownPart, baseClass, cancellationToken),
-            isSealed: classSymbol.IsSealed,
-            registrationComposition: registrationComposition.ToImmutableArray());
+            queryRegistrations: queryRegistrations.ToImmutableArray());
     }
 
     /// <summary>
@@ -606,37 +546,46 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         {
             DeclarationScope scope = set.Included[i];
 
-            if (!scope.IsMetadata || !recovered.Composed.TryGetValue(scope.Name, out List<INamedTypeSymbol> composed))
-                continue;
-
-            foreach (INamedTypeSymbol type in composed)
-            {
-                string name = FullName(type);
-
-                if (recovered.Packs.Contains(name) || set.Packs.ContainsKey(name))
-                {
-                    AddPack(set, type, scope.Packs, cancellationToken);
-                    continue;
-                }
-
-                if (set.MapScopes.Any(existing => existing.Name == name))
-                    continue;
-
-                var included = new DeclarationScope(type, PartsOf(type, cancellationToken), isPack: false);
-                set.Included.Add(included);
-
-                // A composed type declared in THIS compilation was not followed by the reader; its
-                // rules are read from source below, its maps by the part that reaches it.
-                if (!included.IsMetadata)
-                    set.Metadata.Remove(type);
-            }
+            if (scope.IsMetadata)
+                ApplyComposition(set, scope, scope.Packs, recovered, cancellationToken);
         }
     }
 
-    /// <summary>
-    /// The included scopes ONE PART of the mapper reads maps from: what its own IncludeMapper calls
-    /// reach, transitively, plus — for the first part — what the registration includes.
-    /// </summary>
+    /// <summary>What one metadata scope composes, folded in: packs to <paramref name="packLevel"/>, mappers as scopes of their own.</summary>
+    private static void ApplyComposition(
+        DeclarationSet set,
+        DeclarationScope scope,
+        List<INamedTypeSymbol> packLevel,
+        DeclaredMappers.Recovered recovered,
+        CancellationToken cancellationToken)
+    {
+        if (!recovered.Composed.TryGetValue(scope.Name, out List<INamedTypeSymbol> composed))
+            return;
+
+        foreach (INamedTypeSymbol type in composed)
+        {
+            string name = FullName(type);
+
+            if (recovered.Packs.Contains(name) || set.Packs.ContainsKey(name))
+            {
+                AddPack(set, type, packLevel, cancellationToken);
+                continue;
+            }
+
+            if (set.MapScopes.Any(existing => existing.Name == name))
+                continue;
+
+            var included = new DeclarationScope(type, PartsOf(type, cancellationToken), isPack: false);
+            set.Included.Add(included);
+
+            // A composed type declared in THIS compilation was not followed by the reader; its
+            // rules are read from source below, its maps by the part that reaches it.
+            if (!included.IsMetadata)
+                set.Metadata.Remove(type);
+        }
+    }
+
+    /// <summary>The scopes maps are read from: every mapper class in the set, local and packaged, in discovery order.</summary>
     private static List<DeclarationScope> ScopesForPart(
         Compilation compilation,
         DeclarationSet set,
@@ -646,72 +595,14 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         DeclaredMappers.Recovered recovered,
         CancellationToken cancellationToken)
     {
-        // An adapter has one part's worth of everything.
-        if (ownPart is null)
-            return set.Included.ToList();
+        _ = compilation;
+        _ = ownPart;
+        _ = isPrimaryPart;
+        _ = baseClass;
+        _ = recovered;
+        _ = cancellationToken;
 
-        var roots = new List<string>();
-
-        SemanticModel model = compilation.GetSemanticModel(ownPart.SyntaxTree);
-
-        foreach (InvocationExpressionSyntax invocation in OwnInvocations(ownPart))
-        {
-            if (CompositionCall(model, invocation, baseClass, cancellationToken) is { IsInclude: true } call)
-                roots.Add(FullName(call.Target));
-        }
-
-        if (isPrimaryPart)
-        {
-            foreach (RegisteredMapper registered in ReadRegistrations(compilation, cancellationToken).Mappers)
-            {
-                if (registered.Mapper == set.Own.Name)
-                    roots.AddRange(registered.IncludeTypes.Select(FullName));
-            }
-        }
-
-        // Transitive closure over what each reached scope includes in turn.
-        var reached = new List<DeclarationScope>();
-        var visited = new HashSet<string>(StringComparer.Ordinal) { set.Own.Name };
-        var pending = new Queue<string>(roots);
-
-        while (pending.Count > 0)
-        {
-            string name = pending.Dequeue();
-
-            if (!visited.Add(name))
-                continue;
-
-            DeclarationScope? scope = set.Included.FirstOrDefault(candidate => candidate.Name == name);
-
-            if (scope is null)
-                continue;
-
-            reached.Add(scope);
-
-            if (scope.IsMetadata)
-            {
-                if (recovered.Composed.TryGetValue(scope.Name, out List<INamedTypeSymbol> composed))
-                {
-                    foreach (INamedTypeSymbol type in composed)
-                        pending.Enqueue(FullName(type));
-                }
-
-                continue;
-            }
-
-            foreach (ClassDeclarationSyntax part in scope.Parts)
-            {
-                SemanticModel partModel = compilation.GetSemanticModel(part.SyntaxTree);
-
-                foreach (InvocationExpressionSyntax invocation in OwnInvocations(part))
-                {
-                    if (CompositionCall(partModel, invocation, baseClass, cancellationToken) is { IsInclude: true } call)
-                        pending.Enqueue(FullName(call.Target));
-                }
-            }
-        }
-
-        return reached;
+        return set.Included.ToList();
     }
 
     /// <summary>Every <c>CreateMap&lt;A, B&gt;()</c> written in one scope's source, built with that scope's rules.</summary>
@@ -1330,14 +1221,11 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     /// </summary>
     private static MapperSkipReason GetSkipReason(INamedTypeSymbol classSymbol)
     {
+        // Nothing is generated ONTO a mapper class any more, so partial is not required of it. What
+        // still cannot be included is a generic one: the generated mapper constructs each class it
+        // includes, and an open generic type has no type arguments to construct it with.
         if (classSymbol.IsGenericType || classSymbol.ContainingType is { IsGenericType: true })
             return MapperSkipReason.Generic;
-
-        if (!IsPartial(classSymbol))
-            return MapperSkipReason.NotPartial;
-
-        if (!AllContainersArePartial(classSymbol))
-            return MapperSkipReason.ContainerNotPartial;
 
         return MapperSkipReason.None;
     }
@@ -4195,13 +4083,6 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         return true;
     }
 
-    /// <summary>
-    /// The inheritance modifier for a generated instance member: <c>virtual</c> so an adapter can
-    /// override it, <c>override</c> in the adapter, nothing on a sealed mapper.
-    /// </summary>
-    private static string Modifier(MapperClassModel model) =>
-        model.AdapterOf is not null ? " override" : model.IsSealed ? string.Empty : " virtual";
-
     /// <summary>The C# keyword for a member that must not out-accessible the given types.</summary>
     private static string AccessibilityOf(params bool[] allPublic)
     {
@@ -4219,48 +4100,30 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     // ---------------------------------------------------------------------
 
     /// <summary>
-    /// Merges the declarations belonging to each mapper type and emits one file per type.
+    /// Emits the generated mapper — merged, resolved, and written as one file.
     ///
     /// NOTHING IS REPORTED FROM HERE. Every SM#### message is raised by
     /// <see cref="ShiftMapperAnalyzer"/> instead, because a diagnostic a source generator
     /// reports is treated by the compiler like one of its own CS ones: it honours NoWarn and
     /// WarningsAsErrors and ignores .editorconfig entirely, so a team cannot turn a rule down
     /// in one folder and up in another. This half only writes code; the analyzer half runs the
-    /// same analysis (<see cref="BuildMapperClass"/>, <see cref="MergeAndResolve"/>) and does
-    /// the talking.
+    /// same analysis and does the talking.
     /// </summary>
-    private static void EmitAll(SourceProductionContext context, ImmutableArray<MapperClassModel> declarations)
+    private static void EmitGenerated(SourceProductionContext context, MapperClassModel? model)
     {
-        foreach (IGrouping<string, MapperClassModel> parts in declarations.GroupBy(m => m.FullyQualifiedName, StringComparer.Ordinal))
-        {
-            MapperClassModel first = parts.First();
+        if (model is null)
+            return;
 
-            // The class is a mapper we cannot add a part to. The analyzer says so as SM0005;
-            // here there is simply nothing to write.
-            if (first.SkipReason != MapperSkipReason.None)
-                continue;
-
-            ImmutableArray<MapModel> maps = MergeAndResolve(parts, report: null);
-
-            Emit(context, new MapperClassModel(
-                first.NamespaceName,
-                first.ContainingTypes,
-                first.ClassName,
-                first.FullyQualifiedName,
-                first.IsPublic,
-                maps,
-                // CARRIED THROUGH THE MERGE. Anything the merged model does not copy is silently
-                // lost — which is exactly how the query registrations went missing the first
-                // time, and how a map's projection refusals went missing before that. The
-                // registrations are the same for every part, since they come from the referenced
-                // assemblies rather than from any one file.
-                queryRegistrations: first.QueryRegistrations,
-                isSealed: first.IsSealed,
-                adapterOf: first.AdapterOf,
-                mirroredConstructors: first.MirroredConstructors,
-                baseSourceTypes: first.BaseSourceTypes,
-                registrationComposition: first.RegistrationComposition));
-        }
+        Emit(context, new MapperClassModel(
+            model.NamespaceName,
+            model.ContainingTypes,
+            model.ClassName,
+            model.FullyQualifiedName,
+            model.IsPublic,
+            MergeAndResolve(new[] { model }, report: null),
+            queryRegistrations: model.QueryRegistrations,
+            composition: model.Composition,
+            localMappers: model.LocalMappers));
     }
 
     /// <summary>
@@ -4281,19 +4144,20 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         DiagnosticReporter? report)
     {
         List<MapperClassModel> partList = parts.ToList();
-        string mapper = partList.Count > 0 ? partList[0].FullyQualifiedName : string.Empty;
+
+        // The mappers declared in THIS project — nearer than a package's.
+        var local = new HashSet<string>(partList.SelectMany(part => part.LocalMappers), StringComparer.Ordinal);
 
         // Key -> the declaration that survives, in first-seen order. WHICH one survives:
         //
-        //   * the mapper's own declaration beats an included mapper's (SM0027, a warning: the
-        //     mapper is the composition root, and nearer);
+        //   * a declaration in THIS PROJECT beats a referenced package's (SM0027, a warning: the
+        //     project is nearer, and overriding a package's map is a thing to do on purpose);
         //   * an explicit declaration beats an open generic closure, silently — that is what
         //     closures are for;
-        //   * the same included declaration arriving twice (two parts including one mapper, or a
-        //     diamond) collapses, silently — it is one CreateMap;
+        //   * the same declaration arriving twice collapses, silently — it is one CreateMap;
         //   * anything else is TWO declarations of one pair with nothing to choose between them —
-        //     two included mappers, or two CreateMap calls in this mapper — and that is SM0042, an
-        //     error. The first is kept so the generated file still compiles.
+        //     two mapper classes of this project, two packages, or two CreateMap calls in one
+        //     class — and that is SM0042, an error. The first is kept so the file still compiles.
         var survivors = new Dictionary<string, MapModel>(StringComparer.Ordinal);
         var order = new List<string>();
 
@@ -4317,32 +4181,33 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                     continue;
                 }
 
-                bool existingOwn = existing.DeclaredBy == mapper;
-                bool incomingOwn = map.DeclaredBy == mapper;
+                bool existingLocal = local.Contains(existing.DeclaredBy);
+                bool incomingLocal = local.Contains(map.DeclaredBy);
 
-                if (!existingOwn && existing.DeclaredBy == map.DeclaredBy)
+                // The same package declaration reached twice — through two references — is one.
+                if (!existingLocal && !incomingLocal && existing.DeclaredBy == map.DeclaredBy)
                     continue;
 
-                if (existingOwn && !incomingOwn)
-                {
-                    report?.Report(
-                        DiagnosticDescriptors.IncludedMapDeclaredTwice,
-                        map.Location,
-                        $"'{map.SourceName}' to '{map.DestinationName}' is declared in " +
-                        $"'{ShortName(map.DeclaredBy)}' and again in '{ShortName(mapper)}'; the one in " +
-                        $"'{ShortName(mapper)}' is the one that runs");
-
-                    continue;
-                }
-
-                if (!existingOwn && incomingOwn)
+                if (existingLocal && !incomingLocal)
                 {
                     report?.Report(
                         DiagnosticDescriptors.IncludedMapDeclaredTwice,
                         existing.Location,
                         $"'{map.SourceName}' to '{map.DestinationName}' is declared in " +
-                        $"'{ShortName(existing.DeclaredBy)}' and again in '{ShortName(mapper)}'; the one in " +
-                        $"'{ShortName(mapper)}' is the one that runs");
+                        $"'{ShortName(existing.DeclaredBy)}' and again by the referenced package's " +
+                        $"'{ShortName(map.DeclaredBy)}'; the one in '{ShortName(existing.DeclaredBy)}' is the one that runs");
+
+                    continue;
+                }
+
+                if (!existingLocal && incomingLocal)
+                {
+                    report?.Report(
+                        DiagnosticDescriptors.IncludedMapDeclaredTwice,
+                        map.Location,
+                        $"'{map.SourceName}' to '{map.DestinationName}' is declared in " +
+                        $"'{ShortName(map.DeclaredBy)}' and again by the referenced package's " +
+                        $"'{ShortName(existing.DeclaredBy)}'; the one in '{ShortName(map.DeclaredBy)}' is the one that runs");
 
                     survivors[map.Key] = map;
                     continue;
@@ -4350,15 +4215,14 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
 
                 report?.Report(
                     DiagnosticDescriptors.MapDeclaredTwice,
-                    map.Location,
-                    existingOwn
+                    map.Location ?? existing.Location,
+                    existing.DeclaredBy == map.DeclaredBy
                         ? $"'{map.SourceName}' to '{map.DestinationName}' is declared twice in " +
-                          $"'{ShortName(mapper)}'. Delete one of the two; there is no merging of two " +
+                          $"'{ShortName(map.DeclaredBy)}'. Delete one of the two; there is no merging of two " +
                           "declarations for one pair"
                         : $"'{map.SourceName}' to '{map.DestinationName}' is declared in both " +
-                          $"'{ShortName(existing.DeclaredBy)}' and '{ShortName(map.DeclaredBy)}', which " +
-                          $"'{ShortName(mapper)}' includes, and nothing says which one it should use. " +
-                          "Declare the pair in one of them, or in '" + ShortName(mapper) + "' itself");
+                          $"'{ShortName(existing.DeclaredBy)}' and '{ShortName(map.DeclaredBy)}', and nothing " +
+                          "says which one should run. Declare the pair in one of them");
             }
         }
 
@@ -4731,104 +4595,43 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         sb.AppendLine();
         sb.AppendLine("// A global using applies to EVERY file in this project, so the Map extension");
         sb.AppendLine("// methods below are in scope everywhere without you writing a using directive.");
-        sb.AppendLine($"global using {GeneratedNamespace};");
+        sb.AppendLine($"global using {model.NamespaceName};");
         sb.AppendLine();
 
-        if (model.AdapterOf is { } adapterOf)
-        {
-            sb.AppendLine("// The runtime reads this to hand out the adapter where the base type is asked for.");
-            sb.AppendLine($"[assembly: global::ShiftMapper.ShiftMapperAdapter(typeof({adapterOf}), typeof({model.FullyQualifiedName}))]");
-            sb.AppendLine();
-        }
+        // The runtime reads this to know which class to register and build: nobody names it.
+        sb.AppendLine($"[assembly: global::ShiftMapper.ShiftMapperGenerated(typeof({model.FullyQualifiedName}))]");
 
-        if (!model.RegistrationComposition.IsEmpty)
-        {
-            // What AddShiftMapper composed into this mapper is baked into the code below, once for
-            // the whole project. Written down so the runtime applies the same set whichever call
-            // resolves the mapper — the two halves cannot disagree.
-            string composer = model.AdapterOf ?? model.FullyQualifiedName;
+        // What the generated mapper composes — every mapper class, local and packaged, and every
+        // pack the registration gave them. The runtime reads this to build each on first use, so
+        // the MapFrom trees and hooks their constructors register are where the code below looks;
+        // a consuming project's generator follows it to what this assembly saw.
+        foreach (string composed in model.Composition)
+            sb.AppendLine($"[assembly: global::ShiftMapper.ShiftMapperDeclaredComposition(typeof({model.FullyQualifiedName}), typeof({composed}))]");
 
-            foreach (string composed in model.RegistrationComposition)
-                sb.AppendLine($"[assembly: global::ShiftMapper.ShiftMapperDeclaredComposition(typeof({composer}), typeof({composed}))]");
+        sb.AppendLine();
 
-            sb.AppendLine();
-        }
+        // ---- part 1: the generated mapper ----
+        sb.AppendLine($"namespace {model.NamespaceName}");
+        sb.AppendLine("{");
 
-        // ---- part 1: the other half of the developer's own class ----
-        int depth = 0;
-        if (model.NamespaceName is not null)
-        {
-            sb.AppendLine($"namespace {model.NamespaceName}");
-            sb.AppendLine("{");
-            depth = 1;
-        }
+        const string indent = "    ";
 
-        // Reproduce any nesting, or we would declare a new top-level type by mistake.
-        foreach (string container in model.ContainingTypes)
-        {
-            sb.AppendLine($"{Indent(depth)}partial class {container}");
-            sb.AppendLine($"{Indent(depth)}{{");
-            depth++;
-        }
+        sb.AppendLine($"{indent}/// <summary>");
+        sb.AppendLine($"{indent}/// Every map this assembly can see, generated. Reached through ShiftMapper.Mapper and the");
+        sb.AppendLine($"{indent}/// extension methods below; the mapper classes that declared these maps are built on first");
+        sb.AppendLine($"{indent}/// use, so what their constructors register is available to the methods here.");
+        sb.AppendLine($"{indent}/// </summary>");
+        AppendProjectionMetadata(sb, indent, model);
 
-        string indent = Indent(depth);
+        sb.AppendLine($"{indent}internal sealed class {model.ClassName} : global::ShiftMapper.ShiftMapperBase, {MapperInterfaceType}");
+        sb.AppendLine($"{indent}{{");
 
-        if (model.AdapterOf is { } adapted)
-        {
-            // AN ADAPTER: a whole class rather than half of one. Sealed, deriving from the package
-            // mapper, re-implementing the interface so the runtime doors dispatch to the maps
-            // re-baked here, and announced to AddShiftMapper through the assembly attribute.
-            sb.AppendLine($"{indent}/// <summary>");
-            sb.AppendLine($"{indent}/// The adapter for {adapted}, registered from a referenced assembly: the same maps,");
-            sb.AppendLine($"{indent}/// re-baked with this project's packs. AddShiftMapper hands this out wherever the base");
-            sb.AppendLine($"{indent}/// type is asked for.");
-            sb.AppendLine($"{indent}/// </summary>");
-            AppendProjectionMetadata(sb, indent, model);
-
-            sb.AppendLine($"{indent}{AccessibilityOf(model.IsPublic)} sealed class {model.ClassName} : {adapted}, {MapperInterfaceType}");
-            sb.AppendLine($"{indent}{{");
-
-            foreach (string constructor in model.MirroredConstructors)
-            {
-                sb.AppendLine($"{indent}    /// <summary>Mirrors the base constructor, so the same dependencies are injected.</summary>");
-                sb.AppendLine($"{indent}    public {model.ClassName}{constructor}");
-                sb.AppendLine($"{indent}    {{");
-                sb.AppendLine($"{indent}    }}");
-                sb.AppendLine();
-            }
-
-            sb.AppendLine($"{indent}    /// <summary>The base's constructor declares under the base's name, so its conversions are looked up there.</summary>");
-            sb.AppendLine($"{indent}    protected override global::System.Type DeclaringType => typeof({adapted});");
-            sb.AppendLine();
-        }
-        else
-        {
-            sb.AppendLine($"{indent}/// <summary>");
-            sb.AppendLine($"{indent}/// The generated half of this mapper. These are INSTANCE methods, so anything you");
-            sb.AppendLine($"{indent}/// injected into the constructor is available to them.");
-            sb.AppendLine($"{indent}/// </summary>");
-            // No accessibility modifier: the part you wrote already decides that, and repeating
-            // it here would clash if you ever mark your class internal.
-            //
-            // The INTERFACE is added here rather than by the developer. A base list may name a base
-            // CLASS in only one part, but any part may add interfaces, so this is the one thing the
-            // generated half can contribute to the type's shape without the hand-written half
-            // repeating it.
-            AppendProjectionMetadata(sb, indent, model);
-
-            sb.AppendLine($"{indent}partial class {model.ClassName} : {MapperInterfaceType}");
-            sb.AppendLine($"{indent}{{");
-        }
+        // No inheritance modifier: nothing derives from the generated mapper.
+        string modifier = string.Empty;
 
         // Worked out for the whole mapper before anything is written, because a NESTED property
         // calls the direct method of a map in a DIFFERENT source group.
         Dictionary<string, string> directNames = DirectMapNames(model.Maps);
-
-        // VIRTUAL, so a project that registers this mapper from a referenced package can generate
-        // a subclass — the adapter — that re-bakes the maps with its own rules and is handed out
-        // wherever this type is asked for. A sealed mapper cannot have them (CS0549) and so cannot
-        // be adapted; an adapter's own members override.
-        string modifier = Modifier(model);
 
         // The customization delegate caches, all of them, before any method that uses one. They
         // are per map rather than per source group, and a map with no MapFrom writes none.
@@ -4933,84 +4736,23 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
 
         sb.AppendLine($"{indent}}}");
 
-        for (int i = 0; i < model.ContainingTypes.Length; i++)
-        {
-            depth--;
-            sb.AppendLine($"{Indent(depth)}}}");
-        }
-
-        if (model.NamespaceName is not null)
-            sb.AppendLine("}");
-
-        // An adapter gets NO extension class. Its callers hold the BASE type, whose own extension
-        // methods dispatch virtually into the overrides here; a second set taking the base type
-        // would be ambiguous with them.
-        if (model.AdapterOf is not null)
-        {
-            context.AddSource($"{model.SafeIdentifier}.ShiftMapper.g.cs", SourceText.From(sb.ToString(), Encoding.UTF8));
-            return;
-        }
-
-        // ---- part 2: the extension methods that forward to an instance ----
+        // ---- part 2: the extension methods on ShiftMapper.Mapper ----
         sb.AppendLine();
-        sb.AppendLine($"namespace {GeneratedNamespace}");
-        sb.AppendLine("{");
-        sb.AppendLine($"    /// <summary>Map extension methods that run through a {model.ClassName} instance.</summary>");
-        // Never more accessible than the mapper itself, or the compiler reports CS0051.
-        sb.AppendLine($"    {AccessibilityOf(model.IsPublic)} static class {model.SafeIdentifier}_ShiftMapperExtensions");
-        sb.AppendLine("    {");
+        sb.AppendLine($"{indent}/// <summary>");
+        sb.AppendLine($"{indent}/// The typed Map methods, on ShiftMapper.Mapper — the one object to inject. Each forwards to");
+        sb.AppendLine($"{indent}/// this assembly's generated mapper. Both spellings are here: the mapper first, and the");
+        sb.AppendLine($"{indent}/// source first.");
+        sb.AppendLine($"{indent}/// </summary>");
+        AppendProjectionMetadata(sb, indent, model);
+        sb.AppendLine($"{indent}internal static class {ExtensionsClassName}");
+        sb.AppendLine($"{indent}{{");
 
-        bool wroteExtension = false;
-        foreach (IGrouping<string, MapModel> sourceGroup in bySource)
-        {
-            List<MapModel> destinations = sourceGroup
-                .OrderBy(m => m.DestinationType, StringComparer.Ordinal)
-                .ToList();
+        AppendExtensions(sb, indent, model, bySource, directNames);
 
-            List<MapModel> creatableHere = destinations.Where(m => m.CanConstructDestination).ToList();
-
-            if (creatableHere.Count > 0)
-            {
-                if (wroteExtension)
-                    sb.AppendLine();
-
-                AppendCreateExtension(sb, model, sourceGroup.Key, destinations[0]);
-
-                sb.AppendLine();
-                AppendCollectionExtension(sb, model, sourceGroup.Key, destinations[0]);
-
-                if (creatableHere.Any(m => !m.IsSourceValueType && !m.IsDestinationValueType))
-                {
-                    sb.AppendLine();
-                    AppendOrNullExtension(sb, model, sourceGroup.Key, destinations[0]);
-                }
-
-                wroteExtension = true;
-            }
-
-            foreach (MapModel map in destinations.Where(m => m.CanUpdate))
-            {
-                if (wroteExtension)
-                    sb.AppendLine();
-
-                AppendUpdateExtension(sb, model, map);
-                wroteExtension = true;
-            }
-
-            if (destinations.Any(m => m.CanConstructDestination))
-            {
-                if (wroteExtension)
-                    sb.AppendLine();
-
-                AppendProjectExtension(sb, model, sourceGroup.Key, destinations[0]);
-                wroteExtension = true;
-            }
-        }
-
-        sb.AppendLine("    }");
+        sb.AppendLine($"{indent}}}");
         sb.AppendLine("}");
 
-        context.AddSource($"{model.SafeIdentifier}.ShiftMapper.g.cs", SourceText.From(sb.ToString(), Encoding.UTF8));
+        context.AddSource("ShiftMapper.Generated.g.cs", SourceText.From(sb.ToString(), Encoding.UTF8));
     }
 
     private static string Indent(int depth) => new string(' ', depth * 4);
@@ -6667,73 +6409,6 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         sb.AppendLine($"{indent}        throw new global::System.InvalidOperationException(");
         sb.AppendLine($"{indent}            $\"ShiftMapper: no map registered from '{source}' to '{destination}'. \" +");
         sb.AppendLine($"{indent}            \"Add CreateMap<Source, Destination>() in your mapper's constructor.\");");
-    }
-
-    /// <summary>Writes <c>db.Brands.ProjectTo&lt;BrandDto&gt;(mapper)</c>, forwarding to the instance.</summary>
-    private static void AppendProjectExtension(StringBuilder sb, MapperClassModel model, string sourceType, MapModel firstMap)
-    {
-        sb.AppendLine($"        /// <summary>Projects this query of {firstMap.SourceName} into <typeparamref name=\"TDestination\"/>, in the database.</summary>");
-        sb.AppendLine($"        {AccessibilityOf(model.IsPublic, firstMap.IsSourcePublic)} static global::System.Linq.IQueryable<TDestination> ProjectTo<TDestination>(this global::System.Linq.IQueryable<{sourceType}> source, {model.FullyQualifiedName} mapper)");
-        sb.AppendLine("        {");
-        sb.AppendLine("            if (mapper is null)");
-        sb.AppendLine("                throw new global::System.ArgumentNullException(nameof(mapper));");
-        sb.AppendLine();
-        sb.AppendLine("            return mapper.ProjectTo<TDestination>(source);");
-        sb.AppendLine("        }");
-    }
-
-    /// <summary>Writes <c>brand.Map&lt;BrandDto&gt;(mapper)</c>, forwarding to the instance.</summary>
-    private static void AppendCreateExtension(StringBuilder sb, MapperClassModel model, string sourceType, MapModel firstMap)
-    {
-        sb.AppendLine($"        /// <summary>Creates a new <typeparamref name=\"TDestination\"/> from this {firstMap.SourceName}.</summary>");
-        sb.AppendLine($"        {AccessibilityOf(model.IsPublic, firstMap.IsSourcePublic)} static TDestination Map<TDestination>(this {sourceType} source, {model.FullyQualifiedName} mapper)");
-        sb.AppendLine("        {");
-        sb.AppendLine("            if (mapper is null)");
-        sb.AppendLine("                throw new global::System.ArgumentNullException(nameof(mapper));");
-        sb.AppendLine();
-        sb.AppendLine("            return mapper.Map<TDestination>(source);");
-        sb.AppendLine("        }");
-    }
-
-    /// <summary>Writes <c>brands.Map&lt;List&lt;BrandDto&gt;&gt;(mapper)</c>, forwarding to the instance.</summary>
-    private static void AppendCollectionExtension(StringBuilder sb, MapperClassModel model, string sourceType, MapModel firstMap)
-    {
-        sb.AppendLine($"        /// <summary>Creates a new <typeparamref name=\"TDestination\"/> collection from this sequence of {firstMap.SourceName}.</summary>");
-        sb.AppendLine($"        {AccessibilityOf(model.IsPublic, firstMap.IsSourcePublic)} static TDestination Map<TDestination>(this global::System.Collections.Generic.IEnumerable<{sourceType}>? source, {model.FullyQualifiedName} mapper)");
-        sb.AppendLine("        {");
-        sb.AppendLine("            if (mapper is null)");
-        sb.AppendLine("                throw new global::System.ArgumentNullException(nameof(mapper));");
-        sb.AppendLine();
-        sb.AppendLine("            return mapper.Map<TDestination>(source);");
-        sb.AppendLine("        }");
-    }
-
-    /// <summary>Writes <c>brand.MapOrNull&lt;BrandDto&gt;(mapper)</c>, forwarding to the instance.</summary>
-    private static void AppendOrNullExtension(StringBuilder sb, MapperClassModel model, string sourceType, MapModel firstMap)
-    {
-        sb.AppendLine($"        /// <summary>Creates a new <typeparamref name=\"TDestination\"/> from this {firstMap.SourceName}, or null when it is null.</summary>");
-        sb.AppendLine($"        {AccessibilityOf(model.IsPublic, firstMap.IsSourcePublic)} static TDestination? MapOrNull<TDestination>(this {sourceType}? source, {model.FullyQualifiedName} mapper)");
-        sb.AppendLine("            where TDestination : class");
-        sb.AppendLine("        {");
-        sb.AppendLine("            if (mapper is null)");
-        sb.AppendLine("                throw new global::System.ArgumentNullException(nameof(mapper));");
-        sb.AppendLine();
-        sb.AppendLine("            return mapper.MapOrNull<TDestination>(source);");
-        sb.AppendLine("        }");
-    }
-
-    /// <summary>Writes <c>brand.Map(dto, mapper)</c>, forwarding to the instance.</summary>
-    private static void AppendUpdateExtension(StringBuilder sb, MapperClassModel model, MapModel map)
-    {
-        sb.AppendLine($"        /// <summary>Copies this {map.SourceName} onto an existing <paramref name=\"destination\"/> and returns it.{OriginNote(map)}</summary>");
-        AppendRemarks(sb, "        ", map);
-        sb.AppendLine($"        {AccessibilityOf(model.IsPublic, map.IsSourcePublic, map.IsDestinationPublic)} static {map.DestinationType} Map(this {map.SourceType} source, {map.DestinationType} destination, {model.FullyQualifiedName} mapper)");
-        sb.AppendLine("        {");
-        sb.AppendLine("            if (mapper is null)");
-        sb.AppendLine("                throw new global::System.ArgumentNullException(nameof(mapper));");
-        sb.AppendLine();
-        sb.AppendLine("            return mapper.Map(source, destination);");
-        sb.AppendLine("        }");
     }
 
     /// <summary>

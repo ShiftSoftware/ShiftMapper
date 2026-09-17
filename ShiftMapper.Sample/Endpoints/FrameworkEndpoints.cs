@@ -1,4 +1,5 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using ShiftMapper;
 using Contoso.Platform;
 using ShiftMapper.Sample.Data;
 using ShiftMapper.Sample.Dtos;
@@ -39,7 +40,7 @@ public static class FrameworkEndpoints
         // attribute, into SQL Server. And long -> string already converts, so this is the
         // declared-beats-built-in rule too: without it the framework's ids would be ignored in
         // silence. Nobody said anything about lists; the rule is written for a PAIR.
-        app.MapGet("/api/brands/hashed", (AppDbContext db, AppMapper mapper, bool sql = false) =>
+        app.MapGet("/api/brands/hashed", (AppDbContext db, Mapper mapper, bool sql = false) =>
         {
             IQueryable<BrandHashDto> query = db.Brands
                 .AsNoTracking()
@@ -71,7 +72,7 @@ public static class FrameworkEndpoints
         // WITHOUT it you get the memory form doing what only C# can: brand 1's Files column is real
         // JSON, and this parses it into two files with names and urls. Compare that with /hashed
         // above — the difference between `memory` and `query` is the reason both exist.
-        app.MapGet("/api/brands/files", (AppDbContext db, AppMapper mapper, bool project = false) =>
+        app.MapGet("/api/brands/files", (AppDbContext db, Mapper mapper, bool project = false) =>
         {
             if (project)
             {
@@ -102,15 +103,15 @@ public static class FrameworkEndpoints
 
         // GET /api/framework/files
         //
-        // THE PACKAGE'S OWN MAPPER, INJECTED. PlatformMapper is a class compiled inside
-        // Contoso.Platform and registered by the package itself, in AddContosoPlatform() — so what
-        // arrives here is the package's own class, mapping by the package's own rules:
-        // FileSummary.Size is a long in the package, and its own build baked the hash id in ("H42")
-        // because that same registration gave the mapper the pack. Had Program.cs registered
-        // PlatformMapper itself instead, this would be the ADAPTER this project's generator writes
-        // — a subclass with this project's packs baked in on top — and it would win over the
-        // package's registration in either order. The type name printed says which it was.
-        app.MapGet("/api/framework/files", (PlatformMapper platform) =>
+        // THE PACKAGE'S OWN MAP, THROUGH THIS PROJECT'S MAPPER. FileDto -> FileSummary is declared
+        // by PlatformMapper, a class compiled inside Contoso.Platform; nothing in this project
+        // names it, and mapper.MapToFileSummaryList is a typed method here all the same, because
+        // this project's generator read the package's metadata and generated the map into THIS
+        // assembly's generated mapper — with this project's rules on top of the package's own:
+        // FileSummary.Size is a long in the package, and the hash id ("H42") comes from the pack
+        // the package shared. The package registered its own generated mapper too, in
+        // AddContosoPlatform(); `registered` lists both, this assembly's first.
+        app.MapGet("/api/framework/files", (Mapper mapper) =>
         {
             var files = new List<FileDto>
             {
@@ -120,8 +121,8 @@ public static class FrameworkEndpoints
 
             return Results.Ok(new
             {
-                resolved = platform.GetType().Name,
-                summaries = platform.MapToFileSummaryList(files),
+                registered = mapper.Registered.Select(generated => generated.GetType().Assembly.GetName().Name),
+                summaries = mapper.MapToFileSummaryList(files),
             });
         })
         .WithName("GetFrameworkFiles")

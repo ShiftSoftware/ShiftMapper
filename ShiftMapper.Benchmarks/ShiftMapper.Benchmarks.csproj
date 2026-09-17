@@ -13,6 +13,8 @@
 
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />
+    <!-- The container: the mapper is resolved the way an application resolves it. -->
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.11" />
 
     <!--
       THE TWO THE PLAN NAMES. AutoMapper is pinned to 14.0.0, the last MIT release: 15.0 moved

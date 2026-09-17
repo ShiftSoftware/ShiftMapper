@@ -7,35 +7,38 @@ using ShiftMapper.Sample.Services;
 namespace ShiftMapper.Sample.Mapping;
 
 /// <summary>
-/// The mapper for this application — and the only half of it written by hand.
+/// The application's main mapper class — a place to write maps, and nothing more.
 ///
 /// Three things make this shape useful:
 ///
 /// 1. Maps are declared in the CONSTRUCTOR, the same way an AutoMapper Profile does it.
 ///    Those CreateMap calls never run; the source generator reads them at compile time.
 ///
-/// 2. It is an ORDINARY DI SERVICE. The constructor takes an ILogger purely to prove the
-///    point: anything you can inject anywhere, you can inject here.
+/// 2. It is built by DI, the first time anything is mapped. The constructor takes an ILogger
+///    purely to prove the point: anything you can inject anywhere, you can inject here.
 ///
 /// 3. <see cref="ShiftMapperBase.Services"/> is filled in for you by AddShiftMapper, so a
 ///    custom mapping can resolve a service it only discovers it needs while mapping.
 ///
-/// It is also PARTIAL — the generator writes the other half, the real Map methods.
+/// NOTHING IS GENERATED ONTO THIS CLASS, and nothing injects it. The generator reads it — and
+/// <see cref="CatalogMapper"/>, and <see cref="InvoiceLabelMapper"/>, and the mapper
+/// Contoso.Platform ships — and writes ONE generated class for the whole assembly, reached through
+/// <c>ShiftMapper.Mapper</c>: the endpoints inject <c>Mapper</c>, and every map declared in any of
+/// these files is a typed method on it. Registered in Program.cs with
+/// <c>builder.Services.AddShiftMapper();</c> — no type named, because the assembly's metadata says
+/// which class was generated.
 ///
-/// Registered in Program.cs with <c>builder.Services.AddShiftMapper&lt;AppMapper&gt;();</c>.
-///
-/// There are two ways to call the generated maps, and they do the same work — the
-/// extension methods simply forward to the instance methods. The sample shows both:
-/// BrandEndpoints uses the extension form, StockEndpoints calls the mapper directly.
+/// There are two ways to call the generated maps, and they do the same work. The sample shows
+/// both: BrandEndpoints uses the source-first form, StockEndpoints the mapper-first one.
 /// <code>
-/// var dto = mapper.Map&lt;BrandDto&gt;(brand);   // instance
-/// var dto = brand.Map&lt;BrandDto&gt;(mapper);   // extension
+/// var dto = mapper.Map&lt;BrandDto&gt;(brand);   // mapper first
+/// var dto = brand.Map&lt;BrandDto&gt;(mapper);   // source first
 /// </code>
 ///
 /// Chaining <c>.ReverseMap()</c> onto a CreateMap registers the opposite direction too, so
 /// one line gives you entity-to-DTO and DTO-to-entity. StockEndpoints uses both.
 /// </summary>
-public partial class AppMapper : ShiftMapperBase
+public class AppMapper : ShiftMapperBase
 {
     private readonly ILogger<AppMapper> _logger;
 
@@ -566,15 +569,16 @@ public partial class AppMapper : ShiftMapperBase
         // Read the pair through POST /api/supplier-feeds/preview.
         CreateMap<SupplierFeed, SupplierFeedDto>();
 
-        // INHERITANCE, POLYMORPHISM AND OPEN GENERICS moved to Mapping/CatalogMapper.cs, which is
-        // what INCLUDING a mapper is for: this constructor was six hundred lines long. The maps
-        // are unchanged and still belong to this mapper — /api/catalog does not know the
-        // difference — and CatalogMapper is a mapper in its own right, injectable on its own.
+        // INHERITANCE, POLYMORPHISM AND OPEN GENERICS moved to Mapping/CatalogMapper.cs, and the
+        // one map that needs a service to Mapping/InvoiceLabelMapper.cs: this constructor was six
+        // hundred lines long. NOTHING HERE NAMES EITHER FILE. The generator reads every mapper
+        // class in the project into the one generated mapper, so splitting a constructor over
+        // files is only that. The maps are unchanged; /api/catalog does not know the difference.
         //
-        // Nothing needs registering for these: AddShiftMapper registers what this mapper
-        // includes, and InvoiceLabelMapper's dependency is injected when it is built.
-        IncludeMapper<CatalogMapper>();
-        IncludeMapper<InvoiceLabelMapper>();
+        // Nothing needs registering for them either: InvoiceLabelMapper's dependency is injected
+        // when it is built, the first time anything is mapped. The same goes for the mapper a
+        // REFERENCED package declares — Contoso.Platform's FileDto -> FileSummary is in this
+        // project's generated mapper too, read from the package's metadata.
 
         // A PACK OF TYPE-PAIR CONVERSIONS — the rules in Mapping/ConversionPack.cs apply to every
         // map THIS mapper declares, including the two below, which configure nothing at all. Read
@@ -648,27 +652,16 @@ public partial class AppMapper : ShiftMapperBase
         // own wins over it; writing AddConversions<PlatformConversions>() HERE is allowed and
         // changes only that.
         //
-        // The package's MAPPER is registered by the package itself, in AddContosoPlatform(),
-        // rather than included here — nothing in this mapper nests a FileSummary, so there is
-        // nothing to include it for. Had there been, IncludeMapper<PlatformMapper>() is the one
-        // line, identical to including a mapper from this project. Maps stay opt-in; a shared
-        // pack is the one thing a package applies on your behalf, and the build names it (SM0043).
+        // The package's MAPPER needs no line at all: every mapper class a referenced package
+        // declares is in this project's generated mapper, so mapper.MapToFileSummary(dto) is
+        // there for the asking. The package registers its own generated mapper as well, in
+        // AddContosoPlatform(), as the fallback for a host that has no generator of its own.
     }
 
-    /// <summary>Proof that constructor injection works on this class.</summary>
     // MAPPER-WIDE DEFAULTS. Override this to change a setting for every map at once, instead of
     // repeating it on each CreateMap. It is an OVERRIDE, a member of the class — not something
     // you call from the constructor, where it would compile and do nothing.
     //
     // protected override void ConfigureDefaults(MapOptions options)
     //     => options.Matching = PropertyMatching.CaseSensitive;
-
-    public string InjectedDependency => _logger.GetType().Name;
-
-    /// <summary>
-    /// Proof that AddShiftMapper filled in Services — we resolve something through it that
-    /// was never passed to the constructor. This is the hook custom mappings will use.
-    /// </summary>
-    public bool CanResolveThroughServices =>
-        Services.GetService(typeof(ILoggerFactory)) is not null;
 }

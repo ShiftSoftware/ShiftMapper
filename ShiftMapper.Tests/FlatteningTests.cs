@@ -71,7 +71,7 @@ public class FlatteningTests
     public void The_two_backends_agree_about_a_flattened_member()
     {
         using TestDbContext context = _fixture.CreateContext();
-        TestMapper mapper = _fixture.Mapper;
+        Mapper mapper = _fixture.Mapper;
 
         List<InvoiceLine> entities = context.InvoiceLines
             .Include(line => line.Product).ThenInclude(product => product.Brand)

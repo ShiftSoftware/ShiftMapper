@@ -25,7 +25,7 @@ public class ParityTests
     public void Brand_to_BrandDto()
     {
         using TestDbContext context = _fixture.CreateContext();
-        TestMapper mapper = _fixture.Mapper;
+        Mapper mapper = _fixture.Mapper;
 
         List<Brand> entities = context.Brands.OrderBy(brand => brand.Id).ToList();
         List<BrandDto> projected = mapper
@@ -42,7 +42,7 @@ public class ParityTests
     public void Stock_to_StockDto()
     {
         using TestDbContext context = _fixture.CreateContext();
-        TestMapper mapper = _fixture.Mapper;
+        Mapper mapper = _fixture.Mapper;
 
         List<Stock> entities = context.Stocks.OrderBy(stock => stock.Id).ToList();
         List<StockDto> projected = mapper
@@ -59,7 +59,7 @@ public class ParityTests
     public void Product_to_ProductDto()
     {
         using TestDbContext context = _fixture.CreateContext();
-        TestMapper mapper = _fixture.Mapper;
+        Mapper mapper = _fixture.Mapper;
 
         List<Product> entities = context.Products
             .Include(product => product.Brand)
@@ -81,7 +81,7 @@ public class ParityTests
     public void InvoiceLine_to_InvoiceLineDto()
     {
         using TestDbContext context = _fixture.CreateContext();
-        TestMapper mapper = _fixture.Mapper;
+        Mapper mapper = _fixture.Mapper;
 
         List<InvoiceLine> entities = context.InvoiceLines
             .Include(line => line.Product).ThenInclude(product => product.Brand)
@@ -107,7 +107,7 @@ public class ParityTests
     public void Invoice_to_InvoiceDto()
     {
         using TestDbContext context = _fixture.CreateContext();
-        TestMapper mapper = _fixture.Mapper;
+        Mapper mapper = _fixture.Mapper;
 
         List<Invoice> entities = context.Invoices
             .Include(invoice => invoice.Lines).ThenInclude(line => line.Product).ThenInclude(p => p.Brand)
@@ -154,7 +154,7 @@ public class ParityTests
     [Fact]
     public void StockDto_back_to_Stock()
     {
-        TestMapper mapper = _fixture.Mapper;
+        Mapper mapper = _fixture.Mapper;
 
         var dtos = new List<StockDto>
         {
@@ -183,7 +183,7 @@ public class ParityTests
     [Fact]
     public void StockTextDto_back_to_Stock()
     {
-        TestMapper mapper = _fixture.Mapper;
+        Mapper mapper = _fixture.Mapper;
 
         var dtos = new List<StockTextDto>
         {

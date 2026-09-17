@@ -1,20 +1,22 @@
 using BenchmarkDotNet.Attributes;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace ShiftMapper.Benchmarks;
 
 /// <summary>
 /// The in-memory maps.
 ///
-/// The two that matter for caching are at the bottom. <c>PerRequest*</c> builds a NEW mapper for
-/// every iteration, which is what <c>AddShiftMapper</c>'s default Scoped lifetime does on every
-/// request — and before the compile cache was keyed by mapper type, that meant compiling every
-/// customization the request touched, all over again.
+/// The one that matters for caching is at the bottom. <c>PerRequest</c> resolves a NEW mapper
+/// from a new scope for every iteration, which is what <c>AddShiftMapper</c>'s default Scoped
+/// lifetime does on every request — and before the compile cache was keyed by mapper type, that
+/// meant compiling every customization the request touched, all over again.
 /// </summary>
 [MemoryDiagnoser]
 public class MapBenchmarks
 {
-    private readonly BenchmarkMapper _mapper = new(new Numbering());
-    private readonly INumbering _numbering = new Numbering();
+    private readonly ServiceProvider _provider = Container.Build();
+    private IServiceScope _scope = null!;
+    private Mapper _mapper = null!;
 
     private Brand _brand = null!;
     private Invoice _invoice = null!;
@@ -23,14 +25,23 @@ public class MapBenchmarks
     [GlobalSetup]
     public void Setup()
     {
+        _scope = _provider.CreateScope();
+        _mapper = _scope.ServiceProvider.GetRequiredService<Mapper>();
+
         _brand = Sample.Brand();
         _invoice = Sample.Invoice();
         _brands = Sample.Brands(10_000);
 
-        // Warm both caches, so the steady-state benchmarks measure mapping rather than the first
+        // Warm the cache, so the steady-state benchmarks measure mapping rather than the first
         // call's one-off compilation.
         _ = _mapper.MapToInvoiceDto(_invoice);
-        _ = new SharedOnlyMapper().MapToInvoiceDto(_invoice);
+    }
+
+    [GlobalCleanup]
+    public void Cleanup()
+    {
+        _scope.Dispose();
+        _provider.Dispose();
     }
 
     /// <summary>One object, a conversion and a collection copy. The floor for everything else.</summary>
@@ -61,21 +72,16 @@ public class MapBenchmarks
     }
 
     /// <summary>
-    /// A REQUEST: resolve a mapper, map once, throw it away.
+    /// A REQUEST: open a scope, resolve the mapper, map once, throw it all away.
     ///
-    /// This mapper has one customization that closes over its injected service, so that one is
-    /// compiled per instance and shows up here. The other two are shared.
+    /// The mapper class has one customization that closes over its injected service, so that one
+    /// is compiled per instance and shows up here. The other two come out of the per-process cache.
     /// </summary>
     [Benchmark]
-    public InvoiceDto PerRequestWithACapturedService() =>
-        new BenchmarkMapper(_numbering).MapToInvoiceDto(_invoice);
+    public InvoiceDto PerRequest()
+    {
+        using IServiceScope scope = _provider.CreateScope();
 
-    /// <summary>
-    /// The same request against a mapper that captures nothing: every customization comes out of
-    /// the per-process cache, so what is left is building the expression trees the constructor
-    /// writes. The gap between this and the one above is the price of closing over a service.
-    /// </summary>
-    [Benchmark]
-    public InvoiceDto PerRequestCapturingNothing() =>
-        new SharedOnlyMapper().MapToInvoiceDto(_invoice);
+        return scope.ServiceProvider.GetRequiredService<Mapper>().MapToInvoiceDto(_invoice);
+    }
 }

@@ -7,336 +7,146 @@ using Xunit;
 namespace ShiftMapper.Tests;
 
 /// <summary>
-/// The OPTIONS form of <c>AddShiftMapper</c>: what one call registers, what it includes and adds,
-/// and what <c>IShiftMapper</c> becomes when there is more than one mapper.
+/// REGISTRATION: what <c>AddShiftMapper</c> puts in the container, what a second call — a
+/// package's own — adds to it, and what <see cref="Mapper"/> is made of as a result.
+///
+/// <para>Nothing names a mapper class anywhere in here. Each call registers the generated mapper
+/// of the assembly that made it; this test assembly's holds every map declared in this project
+/// AND every map Contoso.Platform declares, read from the package's metadata.</para>
 /// </summary>
 public class RegistrationOptionsTests
 {
+    private static Brand ABrand() => new() { Id = 1, Name = "Acme", ISOCode = "IQ", FoundedYear = 1994 };
+
+    // -----------------------------------------------------------------
+    // ONE CALL.
+    // -----------------------------------------------------------------
+
+    /// <summary>The generated mapper is registered without being named: the assembly's metadata says which class it is.</summary>
     [Fact]
-    public void An_included_mapper_is_registered_and_gets_its_dependency()
+    public void The_calling_assemblys_generated_mapper_is_registered()
     {
         var services = new ServiceCollection();
         services.AddSingleton<IInvoiceNumbering, InvoiceNumbering>();
-        services.AddShiftMapper(o => o.AddMapper<IncludingMapper>());
+        services.AddShiftMapper();
 
         using ServiceProvider provider = services.BuildServiceProvider();
+        using IServiceScope scope = provider.CreateScope();
 
-        // Nobody registered NumberedMapper by hand: the registration read what IncludingMapper
-        // composes and registered it, and its IInvoiceNumbering was injected.
-        NumberedMapper included = provider.GetRequiredService<NumberedMapper>();
+        Mapper mapper = scope.ServiceProvider.GetRequiredService<Mapper>();
 
-        Assert.Equal("IQ/thing", included.Map<DoodadDto>(new Doodad { Name = "thing" }).Label);
-        Assert.Equal("IQ/thing", provider.GetRequiredService<IncludingMapper>().Map<DoodadDto>(new Doodad { Name = "thing" }).Label);
+        Type generated = Mapper.GeneratedIn(typeof(TestMapper).Assembly)!;
+
+        Assert.Single(mapper.Registered);
+        Assert.IsType(generated, mapper.Registered[0]);
+        Assert.Equal("Acme", mapper.Map<BrandDto>(ABrand()).Name);
     }
 
     /// <summary>
-    /// An include written at REGISTRATION is baked into the mapper — for the whole project, since
-    /// a mapper is generated once. That is why RegistrationMapper exists: nothing else registers
-    /// it, so what is composed here is all it has.
+    /// A mapper class with a dependency needs no registration of its own: it is built from the
+    /// provider the first time anything is mapped, with the dependency injected.
     /// </summary>
     [Fact]
-    public void An_include_written_at_registration_is_applied()
+    public void A_mapper_class_with_a_dependency_is_built_from_the_provider()
     {
         var services = new ServiceCollection();
-        services.AddShiftMapper(o => o.AddMapper<RegistrationMapper>(m => m.IncludeMapper<TrinketMapper>()));
+        services.AddSingleton<IInvoiceNumbering>(new InvoiceNumbering());
+        services.AddShiftMapper();
 
         using ServiceProvider provider = services.BuildServiceProvider();
+        using IServiceScope scope = provider.CreateScope();
 
-        // RegistrationMapper's constructor composes nothing, but its registration does — the
-        // generator baked the map in, and the runtime materialises the include.
-        RegistrationMapper mapper = provider.GetRequiredService<RegistrationMapper>();
+        Mapper mapper = scope.ServiceProvider.GetRequiredService<Mapper>();
 
-        Assert.Equal("ring", mapper.Map<TrinketDto>(new Trinket { Name = "ring" }).Name);
-        Assert.Equal("ring", mapper.MapToTrinketDto(new Trinket { Name = "ring" }).Name);
-        Assert.NotNull(provider.GetService<TrinketMapper>());
+        Assert.Equal("IQ/thing", mapper.Map<DoodadDto>(new Doodad { Name = "thing" }).Label);
     }
 
+    /// <summary>The interface and the class are one object per scope, however they are asked for.</summary>
     [Fact]
-    public void One_mapper_makes_IShiftMapper_the_mapper_itself()
+    public void IShiftMapper_and_Mapper_resolve_to_the_same_instance()
     {
         var services = new ServiceCollection();
         services.AddSingleton<IInvoiceNumbering, InvoiceNumbering>();
-        services.AddShiftMapper(o => o.AddMapper<TestMapper>());
+        services.AddShiftMapper();
 
         using ServiceProvider provider = services.BuildServiceProvider();
         using IServiceScope scope = provider.CreateScope();
 
         Assert.Same(
-            scope.ServiceProvider.GetRequiredService<TestMapper>(),
+            scope.ServiceProvider.GetRequiredService<Mapper>(),
             scope.ServiceProvider.GetRequiredService<IShiftMapper>());
     }
 
+    /// <summary>
+    /// A second call from the same assembly changes nothing: one generated mapper, registered once.
+    /// (A pack added in a registration call is read at compile time and applied to every map in the
+    /// project, so none is added here — it would change every other test's maps.)
+    /// </summary>
     [Fact]
-    public void Several_mappers_make_IShiftMapper_a_composite_that_dispatches_by_pair()
+    public void Registering_the_same_assembly_twice_is_harmless()
     {
         var services = new ServiceCollection();
         services.AddSingleton<IInvoiceNumbering, InvoiceNumbering>();
-        services.AddShiftMapper(o =>
-        {
-            o.AddMapper<IncludingMapper>();
-            o.AddMapper<ConversionMapper>();
-        });
+        services.AddShiftMapper();
+        services.AddShiftMapper(o => o.Lifetime = ServiceLifetime.Scoped);
 
         using ServiceProvider provider = services.BuildServiceProvider();
         using IServiceScope scope = provider.CreateScope();
 
-        IShiftMapper mapper = scope.ServiceProvider.GetRequiredService<IShiftMapper>();
-
-        Assert.IsType<CompositeShiftMapper>(mapper);
-        Assert.True(mapper.CanMap(typeof(Doodad), typeof(DoodadDto)));      // IncludingMapper
-        Assert.True(mapper.CanMap(typeof(Vault), typeof(VaultDto)));        // ConversionMapper
-        Assert.False(mapper.CanMap(typeof(Doodad), typeof(VaultDto)));
-
-        Assert.Equal("IQ/thing", mapper.Map<DoodadDto>(new Doodad { Name = "thing" }).Label);
-    }
-
-    [Fact]
-    public void A_second_call_adds_to_the_same_container()
-    {
-        var services = new ServiceCollection();
-        services.AddSingleton<IInvoiceNumbering, InvoiceNumbering>();
-        services.AddShiftMapper<IncludingMapper>();
-        services.AddShiftMapper<ConversionMapper>();
-
-        using ServiceProvider provider = services.BuildServiceProvider();
-
-        Assert.IsType<CompositeShiftMapper>(provider.GetRequiredService<IShiftMapper>());
-    }
-
-    [Fact]
-    public void Registering_a_mapper_twice_throws()
-    {
-        var services = new ServiceCollection();
-        services.AddShiftMapper<ConversionMapper>();
-
-        InvalidOperationException error = Assert.Throws<InvalidOperationException>(
-            () => services.AddShiftMapper<ConversionMapper>());
-
-        Assert.Contains("registered twice", error.Message);
+        Assert.Single(scope.ServiceProvider.GetRequiredService<Mapper>().Registered);
     }
 
     // -----------------------------------------------------------------
-    // WHO OWNS A PAIR IN IShiftMapper.
+    // A PACKAGE'S MAPS, IN THIS ASSEMBLY'S GENERATED MAPPER.
     // -----------------------------------------------------------------
 
     /// <summary>
-    /// THE SAME DECLARATION REACHED TWO WAYS is allowed: a mapper and one that includes it, both
-    /// registered. The interface answers with the first registered, and it is the same map.
+    /// THE POINT OF READING A REFERENCE: a pair the package declared is a typed method on this
+    /// assembly's Mapper, with nothing written here to ask for it — and it is built with this
+    /// project's rules: the shared pack's hash id reaches Size, and the package's own MapFrom
+    /// (Trim) still runs.
     /// </summary>
     [Fact]
-    public void A_mapper_and_one_that_includes_it_may_both_be_registered()
+    public void A_packages_map_is_generated_into_this_assembly()
     {
         var services = new ServiceCollection();
         services.AddSingleton<IInvoiceNumbering, InvoiceNumbering>();
-        services.AddShiftMapper(o =>
-        {
-            o.AddMapper<IncludingMapper>();     // includes NumberedMapper
-            o.AddMapper<NumberedMapper>();
-        });
-
-        using ServiceProvider provider = services.BuildServiceProvider();
-
-        IShiftMapper mapper = provider.GetRequiredService<IShiftMapper>();
-
-        Assert.True(mapper.CanMap(typeof(Doodad), typeof(DoodadDto)));
-        Assert.Equal("IQ/thing", mapper.Map<DoodadDto>(new Doodad { Name = "thing" }).Label);
-    }
-
-    /// <summary>
-    /// TWO INDEPENDENT DECLARATIONS of one pair, both registered, fail at REGISTRATION — not on the
-    /// request that happens to go through the interface — naming both mappers. The build reports
-    /// the same thing (SM0040, an error); it is silenced here on purpose so the runtime half of
-    /// the rule — the one that catches registrations made from different projects — is tested.
-    /// </summary>
-    [Fact]
-    public void Two_mappers_each_declaring_a_pair_fail_at_registration()
-    {
-        var services = new ServiceCollection();
-
-        #pragma warning disable SM0040
-        InvalidOperationException error = Assert.Throws<InvalidOperationException>(() =>
-            services.AddShiftMapper(o =>
-            {
-                o.AddMapper<PublicTrinketMapper>();
-                o.AddMapper<AdminTrinketMapper>();
-            }));
-        #pragma warning restore SM0040
-
-        Assert.Contains("PublicTrinketMapper", error.Message);
-        Assert.Contains("AdminTrinketMapper", error.Message);
-        Assert.Contains("Trinket", error.Message);
-    }
-
-    /// <summary>And across two calls: the second call fails.</summary>
-    [Fact]
-    public void Two_mappers_each_declaring_a_pair_fail_across_calls()
-    {
-        var services = new ServiceCollection();
-
-        #pragma warning disable SM0040
-        services.AddShiftMapper<PublicTrinketMapper>();
-
-        InvalidOperationException error = Assert.Throws<InvalidOperationException>(() =>
-            services.AddShiftMapper<AdminTrinketMapper>());
-        #pragma warning restore SM0040
-
-        Assert.Contains("AdminTrinketMapper", error.Message);
-    }
-
-    /// <summary>
-    /// A PACKAGE MAPPER REGISTERED DIRECTLY resolves to the ADAPTER this project's generator wrote
-    /// for it — a subclass with this call's packs baked in — so the package's <c>long</c> becomes
-    /// a hash id here, which its own compiled code never did.
-    /// </summary>
-    [Fact]
-    public void A_package_mapper_resolves_to_its_adapter_with_this_projects_packs_applied()
-    {
-        var services = new ServiceCollection();
-        services.AddShiftMapper(o =>
-        {
-            o.AddMapper<PlatformMapper>();
-            o.AddConversions<PlatformConversions>();
-        });
+        services.AddShiftMapper();
 
         using ServiceProvider provider = services.BuildServiceProvider();
         using IServiceScope scope = provider.CreateScope();
 
-        PlatformMapper mapper = scope.ServiceProvider.GetRequiredService<PlatformMapper>();
-
-        Assert.IsNotType<PlatformMapper>(mapper, exactMatch: true);
-        Assert.Contains("Adapter", mapper.GetType().Name);
+        Mapper mapper = scope.ServiceProvider.GetRequiredService<Mapper>();
 
         FileSummary summary = mapper.MapToFileSummary(new FileDto { Name = "  report.pdf ", Size = 42 });
 
-        // The package's own MapFrom (Trim) still runs, AND this project's rule reaches Size.
         Assert.Equal("report.pdf", summary.Name);
         Assert.Equal("H42", summary.Size);
 
-        // The package's own extension methods dispatch into the adapter too.
+        // Both spellings, and the run-time door.
         Assert.Equal("H7", new FileDto { Size = 7 }.Map<FileSummary>(mapper).Size);
-
-        // And so does IShiftMapper.
         Assert.Equal("H9", scope.ServiceProvider.GetRequiredService<IShiftMapper>()
             .Map<FileSummary>(new FileDto { Size = 9 }).Size);
     }
 
     /// <summary>
-    /// THE UNION RULE. A mapper is generated once per project with everything any registration
-    /// composes into it, and every call applies that same set — so this call, which names no pack,
-    /// still gets the one the test above gave the adapter. The build says so (SM0041); what it
-    /// cannot be is a mapper whose code and store disagree.
+    /// THE PACKAGE'S OWN CALL: <c>AddContosoPlatform()</c> registers the package's generated mapper
+    /// from the package's own assembly. It joins the one registry with what this project registers;
+    /// this assembly's generated mapper comes FIRST, since it carries the package's maps too, and the
+    /// package's own is the fallback.
     /// </summary>
     [Fact]
-    public void A_mapper_registered_differently_in_two_calls_gets_the_union_in_both()
-    {
-        var services = new ServiceCollection();
-        services.AddShiftMapper<PlatformMapper>();
-
-        using ServiceProvider provider = services.BuildServiceProvider();
-
-        FileSummary summary = provider.GetRequiredService<PlatformMapper>()
-            .MapToFileSummary(new FileDto { Name = "a", Size = 42 });
-
-        Assert.Equal("H42", summary.Size);
-    }
-
-    // -----------------------------------------------------------------
-    // A PACKAGE THAT REGISTERS ITSELF, and the pack it SHARES.
-    // -----------------------------------------------------------------
-
-    /// <summary>
-    /// THE PACKAGE'S OWN CALL: <c>AddContosoPlatform()</c> registers the package's mapper from the
-    /// package's own assembly — no adapter, the package's own class — mapping by the package's own
-    /// rules, and it joins the one registry with whatever this project registers.
-    /// </summary>
-    [Fact]
-    public void A_package_registers_its_own_mapper()
-    {
-        var services = new ServiceCollection();
-        services.AddSingleton<IInvoiceNumbering, InvoiceNumbering>();
-        services.AddContosoPlatform();
-        services.AddShiftMapper<IncludingMapper>();
-
-        using ServiceProvider provider = services.BuildServiceProvider();
-        using IServiceScope scope = provider.CreateScope();
-
-        PlatformMapper mapper = scope.ServiceProvider.GetRequiredService<PlatformMapper>();
-
-        Assert.IsType<PlatformMapper>(mapper, exactMatch: true);
-        Assert.Equal("H42", mapper.MapToFileSummary(new FileDto { Name = "a", Size = 42 }).Size);
-
-        IShiftMapper composite = scope.ServiceProvider.GetRequiredService<IShiftMapper>();
-
-        Assert.IsType<CompositeShiftMapper>(composite);
-        Assert.True(composite.CanMap(typeof(FileDto), typeof(FileSummary)));
-        Assert.True(composite.CanMap(typeof(Doodad), typeof(DoodadDto)));
-    }
-
-    /// <summary>
-    /// THE SHARED PACK. SharedRulesMapper names nothing of the package's and composes nothing;
-    /// registered here, it converts long to string by the package's rule, because the package
-    /// shared its pack and this project's build baked it in — and recorded it as composition, so
-    /// this call applies it without naming it either.
-    /// </summary>
-    [Fact]
-    public void A_shared_pack_reaches_a_mapper_this_project_registers()
-    {
-        var services = new ServiceCollection();
-        services.AddShiftMapper<SharedRulesMapper>();
-
-        using ServiceProvider provider = services.BuildServiceProvider();
-        using IServiceScope scope = provider.CreateScope();
-
-        SharedRulesMapper mapper = scope.ServiceProvider.GetRequiredService<SharedRulesMapper>();
-
-        Assert.Equal("H42", mapper.Map<TicketDto>(new Ticket { Id = 42, Subject = "s" }).Id);
-
-        // The pack was registered along with the mapper, as any composed pack is.
-        Assert.NotNull(scope.ServiceProvider.GetService<PlatformConversions>());
-
-        // And it is written down where the runtime read it from.
-        Assert.Contains(
-            typeof(SharedRulesMapper).Assembly.GetCustomAttributes<ShiftMapperDeclaredCompositionAttribute>(),
-            composition => composition.Mapper == typeof(SharedRulesMapper) && composition.Composed == typeof(PlatformConversions));
-    }
-
-    /// <summary>
-    /// THE UNION RULE, for a shared pack. A mapper is generated once per project with everything
-    /// its registration composed — a shared pack included — so a mapper built by hand has code that
-    /// names the pack and a store nothing put it in. Same as any registration-composed pack: the
-    /// first map fails, saying which pack and why, rather than mapping by a different rule from the
-    /// one its diagnostics described.
-    /// </summary>
-    [Fact]
-    public void A_mapper_built_by_hand_fails_naming_the_shared_pack()
-    {
-        var mapper = new SharedRulesMapper();
-
-        InvalidOperationException error = Assert.Throws<InvalidOperationException>(
-            () => mapper.Map<TicketDto>(new Ticket { Id = 42 }));
-
-        Assert.Contains("PlatformConversions", error.Message);
-        Assert.Contains("built by hand", error.Message);
-    }
-
-    /// <summary>
-    /// THE FALLBACK RULE. The package registers its own mapper, and this project registers the same
-    /// mapper too — through the adapter its generator wrote. The adapter wins, in either order,
-    /// because it is the more specific registration: the package's rules AND this project's.
-    /// </summary>
-    [Fact]
-    public void A_projects_registration_of_a_package_mapper_wins_over_the_packages_own()
+    public void A_package_registers_its_own_generated_mapper_as_the_fallback()
     {
         foreach (bool packageFirst in new[] { true, false })
         {
             var services = new ServiceCollection();
+            services.AddSingleton<IInvoiceNumbering, InvoiceNumbering>();
 
             if (packageFirst)
                 services.AddContosoPlatform();
 
-            #pragma warning disable SM0041 // the other tests' registrations of PlatformMapper name the pack; this one gets the union
-            services.AddShiftMapper<PlatformMapper>();
-            #pragma warning restore SM0041
+            services.AddShiftMapper();
 
             if (!packageFirst)
                 services.AddContosoPlatform();
@@ -344,56 +154,103 @@ public class RegistrationOptionsTests
             using ServiceProvider provider = services.BuildServiceProvider();
             using IServiceScope scope = provider.CreateScope();
 
-            PlatformMapper mapper = scope.ServiceProvider.GetRequiredService<PlatformMapper>();
+            Mapper mapper = scope.ServiceProvider.GetRequiredService<Mapper>();
 
-            Assert.Contains("Adapter", mapper.GetType().Name);
-            Assert.Equal("H42", mapper.MapToFileSummary(new FileDto { Name = "a", Size = 42 }).Size);
+            Assert.Equal(2, mapper.Registered.Count);
+            Assert.Same(typeof(TestMapper).Assembly, mapper.Registered[0].GetType().Assembly);
+            Assert.Same(typeof(PlatformMapper).Assembly, mapper.Registered[1].GetType().Assembly);
 
-            // One registration of the type, whichever came first, and one mapper behind the interface.
-            Assert.Single(services, descriptor => descriptor.ServiceType == typeof(PlatformMapper));
-            Assert.IsType<PlatformMapper>(scope.ServiceProvider.GetRequiredService<IShiftMapper>(), exactMatch: false);
+            // Whichever call came first, the run-time door answers with this assembly's mapper.
+            IShiftMapper door = scope.ServiceProvider.GetRequiredService<IShiftMapper>();
+
+            Assert.True(door.CanMap(typeof(FileDto), typeof(FileSummary)));
+            Assert.True(door.CanMap(typeof(Doodad), typeof(DoodadDto)));
+            Assert.Equal("H42", door.Map<FileSummary>(new FileDto { Name = "a", Size = 42 }).Size);
         }
     }
 
     /// <summary>
-    /// A package with rules and NO mapper makes a call that registers nothing — what
-    /// <c>AddXxx()</c> looks like when the package ships only a pack. Harmless in either order:
-    /// the registry is untouched and <c>IShiftMapper</c> is whatever the real registrations make it.
+    /// A host with NO generated mapper of its own — nothing in it declares a map — still maps the
+    /// package's pairs through the package's own registration. Modelled with a Mapper built from
+    /// the package assembly alone.
     /// </summary>
     [Fact]
-    public void A_call_that_registers_no_mapper_is_harmless_in_either_order()
+    public void The_packages_own_mapper_serves_a_host_that_generated_nothing()
     {
-        foreach (bool packFirst in new[] { true, false })
-        {
-            var services = new ServiceCollection();
+        Mapper mapper = Mapper.Create(typeof(PlatformMapper).Assembly);
 
-            if (packFirst)
-                services.AddShiftMapper(o => o.AddConversions<PlatformConversions>());
+        Assert.Single(mapper.Registered);
 
-            services.AddShiftMapper<SharedRulesMapper>();
+        IShiftMapper door = mapper;
 
-            if (!packFirst)
-                services.AddShiftMapper(o => o.AddConversions<PlatformConversions>());
-
-            using ServiceProvider provider = services.BuildServiceProvider();
-            using IServiceScope scope = provider.CreateScope();
-
-            Assert.Same(
-                scope.ServiceProvider.GetRequiredService<SharedRulesMapper>(),
-                scope.ServiceProvider.GetRequiredService<IShiftMapper>());
-        }
+        Assert.True(door.CanMap(typeof(FileDto), typeof(FileSummary)));
+        Assert.Equal("H42", door.Map<FileSummary>(new FileDto { Name = "a", Size = 42 }).Size);
     }
 
-    /// <summary>The package registering itself twice is still twice.</summary>
+    /// <summary>A second call from the package's assembly is harmless too.</summary>
     [Fact]
-    public void A_package_registering_itself_twice_throws()
+    public void A_package_registering_itself_twice_is_harmless()
     {
         var services = new ServiceCollection();
         services.AddContosoPlatform();
+        services.AddContosoPlatform();
 
-        InvalidOperationException error = Assert.Throws<InvalidOperationException>(
-            () => services.AddContosoPlatform());
+        using ServiceProvider provider = services.BuildServiceProvider();
+        using IServiceScope scope = provider.CreateScope();
 
-        Assert.Contains("registered twice", error.Message);
+        Assert.Single(scope.ServiceProvider.GetRequiredService<Mapper>().Registered);
+    }
+
+    // -----------------------------------------------------------------
+    // THE PACK A PACKAGE SHARES.
+    // -----------------------------------------------------------------
+
+    /// <summary>
+    /// THE SHARED PACK: Contoso.Platform's registration wrote <c>o.ShareConversions&lt;PlatformConversions&gt;()</c>,
+    /// its build recorded that in metadata, and this project's generator gave the pack to every map
+    /// here without a line naming it. SharedRulesMapper mentions no pack, and gets the hash id.
+    /// </summary>
+    [Fact]
+    public void A_shared_pack_reaches_this_projects_maps()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IInvoiceNumbering, InvoiceNumbering>();
+        services.AddShiftMapper();
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+        using IServiceScope scope = provider.CreateScope();
+
+        Mapper mapper = scope.ServiceProvider.GetRequiredService<Mapper>();
+
+        Assert.Equal("H42", mapper.Map<TicketDto>(new Ticket { Id = 42, Subject = "s" }).Id);
+
+        // And it is written down where the runtime read it from: the generated mapper composes it.
+        Type generated = Mapper.GeneratedIn(typeof(TestMapper).Assembly)!;
+
+        Assert.Contains(
+            typeof(TestMapper).Assembly.GetCustomAttributes<ShiftMapperDeclaredCompositionAttribute>(),
+            composition => composition.Mapper == generated && composition.Composed == typeof(PlatformConversions));
+    }
+
+    /// <summary>
+    /// The composition metadata lists every mapper class the generated mapper folded in — local and
+    /// packaged — which is what the runtime builds them from.
+    /// </summary>
+    [Fact]
+    public void The_generated_mapper_composes_every_mapper_class_it_can_see()
+    {
+        Type generated = Mapper.GeneratedIn(typeof(TestMapper).Assembly)!;
+
+        Type[] composed = typeof(TestMapper).Assembly
+            .GetCustomAttributes<ShiftMapperDeclaredCompositionAttribute>()
+            .Where(composition => composition.Mapper == generated)
+            .Select(composition => composition.Composed)
+            .ToArray();
+
+        Assert.Contains(typeof(TestMapper), composed);
+        Assert.Contains(typeof(GadgetMapper), composed);
+        Assert.Contains(typeof(NumberedMapper), composed);
+        Assert.Contains(typeof(DeclaredMapper), composed);
+        Assert.Contains(typeof(PlatformMapper), composed);
     }
 }

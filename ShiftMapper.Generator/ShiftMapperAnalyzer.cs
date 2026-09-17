@@ -133,15 +133,16 @@ public sealed partial class ShiftMapperAnalyzer : DiagnosticAnalyzer
             .ToArray();
 
         var trees = new Dictionary<string, SyntaxTree>(StringComparer.Ordinal);
+
         foreach (MapperPart part in ordered)
             trees[part.Tree.FilePath] = part.Tree;
 
         var reporter = new DiagnosticReporter(context.ReportDiagnostic, trees);
         MapperClassModel first = ordered[0].Model;
 
-        // SM0005 — the class is clearly meant to be a mapper and the generator cannot add a part
-        // to it, so nothing at all was written for it. Reported once for the type, and there is
-        // nothing further to say: with no generated code, no property in it is mapped or unmapped.
+        // SM0005 — the class is clearly meant to be a mapper and the generated mapper cannot
+        // include it, so nothing it declares is generated. Reported once for the type, and there
+        // is nothing further to say: with no generated code, no property in it is mapped or unmapped.
         if (first.SkipReason != MapperSkipReason.None)
         {
             reporter.Report(
@@ -151,36 +152,6 @@ public sealed partial class ShiftMapperAnalyzer : DiagnosticAnalyzer
                 DescribeSkipReason(first.SkipReason));
 
             return;
-        }
-
-        // SM0026 — open generic declarations that produced no map. Reported per PART, because
-        // that is where the declaration was written.
-        foreach (MapperPart part in ordered)
-        {
-            foreach (string problem in part.Model.OpenGenericProblems)
-                reporter.Report(DiagnosticDescriptors.OpenGenericNotClosed, part.Model.Location, problem);
-        }
-
-        // SM0027 — the include problems, each carrying the id that reports it. One list rather
-        // than one per diagnostic keeps the model from growing a limb per diagnostic.
-        foreach (MapperPart part in ordered)
-        {
-            foreach (string problem in part.Model.ProfileProblems)
-            {
-                int split = problem.IndexOf('|');
-
-                if (split < 0)
-                    continue;
-
-                DiagnosticDescriptor? descriptor = problem.Substring(0, split) switch
-                {
-                    "SM0027" => DiagnosticDescriptors.IncludedMapDeclaredTwice,
-                    _ => null,
-                };
-
-                if (descriptor is not null)
-                    reporter.Report(descriptor, part.Model.Location, problem.Substring(split + 1));
-            }
         }
 
         // SM0035 — declarations the generator cannot bake where they are written. Reported PER
@@ -203,31 +174,69 @@ public sealed partial class ShiftMapperAnalyzer : DiagnosticAnalyzer
             }
         }
 
-        // SM0028 / SM0031 / SM0032 / SM0033 / SM0034 — everything read from DECLARATIONS, whether
-        // a referenced assembly's or this project's.
-        //
-        // EVERY PART, DEDUPED BY MESSAGE, rather than only the first. Two different kinds of fact
-        // ride this one channel: a package carrying no metadata is true of the whole mapper and
-        // appears in every part that includes it, while an SM0034 is about ONE MAP and appears
-        // only in the part that declared it. Reading the first part alone silenced every convention
-        // failure written in a later file, and would have silenced a package problem too whenever
-        // the IncludeMapper happened to live in the second file. Deduping serves both: the
-        // whole-mapper facts are still said once, and the per-map ones are no longer lost.
-        var saidAlready = new HashSet<string>(StringComparer.Ordinal);
-
-        foreach (string problem in ordered.SelectMany(part => part.Model.DeclaredProblems))
-        {
-            if (!saidAlready.Add(problem))
-                continue;
-
-            ReportDeclaredProblem(reporter, problem, first.Location);
-        }
-
-        // Merging and resolving is what raises SM0011 and SM0012; what comes back is the graph
-        // the generator will emit, which is what the rest of the messages are about.
+        // THE MAPS THIS CLASS DECLARED, reported from here — in this file, at each CreateMap — but
+        // AS THE GENERATED MAPPER BUILT THEM: with every pack applied, and every other class's maps
+        // available to nest, because that is the only build they have. Merging and resolving the
+        // whole set is what raises SM0011 and SM0012, and what settles which declaration of a pair
+        // survives; that is said once, at the end of the compilation, where the set is in hand.
         ReportSkippedProperties(
             reporter,
-            ShiftMapperGenerator.MergeAndResolve(ordered.Select(part => part.Model), reporter));
+            ShiftMapperGenerator.ReadResolved(context.Compilation, context.CancellationToken),
+            only: map => map.DeclaredBy == first.FullyQualifiedName);
+    }
+
+    /// <summary>
+    /// Everything about the GENERATED MAPPER as a whole, once the compilation is in hand: which
+    /// declaration of a pair survives (SM0027, SM0042), the nested graph (SM0011, SM0012), what
+    /// referenced assemblies' declarations had wrong (SM0028 and the rest), open generics that
+    /// closed over nothing (SM0026) — and, for maps a PACKAGE declared, what stops the build or
+    /// takes a projection away, since the package's own build already reported everything else
+    /// about those maps once.
+    /// </summary>
+    private static void ReportGenerated(CompilationAnalysisContext context)
+    {
+        MapperClassModel? generated = ShiftMapperGenerator.ReadGenerated(context.Compilation, context.CancellationToken);
+
+        if (generated is null)
+            return;
+
+        var trees = new Dictionary<string, SyntaxTree>(StringComparer.Ordinal);
+
+        foreach (SyntaxTree tree in context.Compilation.SyntaxTrees)
+            trees[tree.FilePath] = tree;
+
+        var reporter = new DiagnosticReporter(context.ReportDiagnostic, trees);
+
+        // SM0026 — open generic declarations that produced no map, at the declaration.
+        foreach (PositionedProblem problem in generated.OpenGenericProblems)
+            reporter.Report(DiagnosticDescriptors.OpenGenericNotClosed, problem.Location, problem.Problem);
+
+        foreach (string problem in generated.ProfileProblems)
+            ReportDeclaredProblem(reporter, problem, location: null);
+
+        // SM0028 / SM0031 / SM0032 / SM0033 / SM0034 — everything read from DECLARATIONS, once each.
+        var saidAlready = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (string problem in generated.DeclaredProblems)
+        {
+            if (saidAlready.Add(problem))
+                ReportDeclaredProblem(reporter, problem, location: null);
+        }
+
+        // The merge, WITH a reporter this time: the per-class pass reads the same graph silently.
+        ImmutableArray<MapModel> merged = ShiftMapperGenerator.MergeAndResolve(new[] { generated }, reporter);
+
+        var local = new HashSet<string>(generated.LocalMappers, StringComparer.Ordinal);
+
+        var filtered = new DiagnosticReporter(
+            diagnostic =>
+            {
+                if (diagnostic.Severity == DiagnosticSeverity.Error || diagnostic.Id is "SM0030" or "SM0036")
+                    context.ReportDiagnostic(diagnostic);
+            },
+            trees);
+
+        ReportSkippedProperties(filtered, merged, only: map => !local.Contains(map.DeclaredBy));
     }
 
     /// <summary>
@@ -252,7 +261,6 @@ public sealed partial class ShiftMapperAnalyzer : DiagnosticAnalyzer
             "SM0033" => DiagnosticDescriptors.DeclaredContractMismatch,
             "SM0034" => DiagnosticDescriptors.MemberConventionFailed,
             "SM0038" => DiagnosticDescriptors.MemberConventionIsEmpty,
-            "SM0039" => DiagnosticDescriptors.MapperCannotBeAdapted,
             _ => null,
         };
 
@@ -287,9 +295,8 @@ public sealed partial class ShiftMapperAnalyzer : DiagnosticAnalyzer
     /// <summary>Human wording for <see cref="MapperSkipReason"/>, used in SM0005.</summary>
     private static string DescribeSkipReason(MapperSkipReason reason) => reason switch
     {
-        MapperSkipReason.NotPartial => "it is not declared partial, so no code can be added to it",
-        MapperSkipReason.ContainerNotPartial => "a type it is nested inside is not declared partial",
-        MapperSkipReason.Generic => "generic mapper classes are not supported",
+        MapperSkipReason.Generic => "generic mapper classes are not supported: the generated mapper constructs each mapper class it includes, and an open generic type has no type arguments to construct it with",
+        MapperSkipReason.NotRegistered => "discovery is MapperDiscovery.Registered and no o.AddMapper<...>() names it; name it in the AddShiftMapper call, or choose a discovery mode that takes it",
 
         // EXPLICIT rather than a catch-all, so a reason added to the enum without a sentence here
         // is a question rather than a confident lie about generics. The wording is deliberately the
@@ -301,14 +308,22 @@ public sealed partial class ShiftMapperAnalyzer : DiagnosticAnalyzer
     /// Turns every skipped property, and every destination we cannot construct, into a real
     /// build warning pointing at the CreateMap call that asked for the map.
     /// </summary>
-    private static void ReportSkippedProperties(DiagnosticReporter report, ImmutableArray<MapModel> maps)
+    private static void ReportSkippedProperties(
+        DiagnosticReporter report,
+        ImmutableArray<MapModel> maps,
+        Func<MapModel, bool>? only = null)
     {
         // Which pairs this mapper actually declares. Include and As both name another map, and
         // whether it exists is only answerable once every part has been merged — which is here.
+        // Over EVERY map, whichever ones are reported below: what a map may nest or dispatch to
+        // is a fact about the whole graph.
         var declared = new HashSet<string>(maps.Select(map => map.Key), StringComparer.Ordinal);
 
         foreach (MapModel map in maps)
         {
+            if (only is not null && !only(map))
+                continue;
+
             LocationInfo? location = map.Location;
 
             // SM0022 — a base map that is not there. Nothing else goes wrong, which is exactly

@@ -1,4 +1,5 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using ShiftMapper;
 using ShiftMapper.Sample.Data;
 using ShiftMapper.Sample.Dtos;
 using ShiftMapper.Sample.Entities;
@@ -31,7 +32,7 @@ public static class StockEndpoints
         var group = app.MapGroup("/api/stocks").WithTags("Stocks");
 
         // GET /api/stocks
-        group.MapGet("/", async (AppDbContext db, AppMapper mapper) =>
+        group.MapGet("/", async (AppDbContext db, Mapper mapper) =>
         {
             var stocks = await db.Stocks
                 .AsNoTracking()
@@ -47,7 +48,7 @@ public static class StockEndpoints
 
         // GET /api/stocks/{id}
         // The instance form of the "copy onto an existing object" overload.
-        group.MapGet("/{id:int}", async (int id, AppDbContext db, AppMapper mapper) =>
+        group.MapGet("/{id:int}", async (int id, AppDbContext db, Mapper mapper) =>
         {
             var stock = await db.Stocks
                 .AsNoTracking()
@@ -76,7 +77,7 @@ public static class StockEndpoints
         // a Products navigation list and StockDto has nothing to fill it from, so the new
         // entity comes back with an empty Products — reported at compile time as SM0006.
         // That is the normal shape of mapping a DTO back onto an entity, not a bug.
-        group.MapPost("/", async (StockDto dto, AppDbContext db, AppMapper mapper) =>
+        group.MapPost("/", async (StockDto dto, AppDbContext db, Mapper mapper) =>
         {
             if (string.IsNullOrWhiteSpace(dto.Name))
                 return Results.BadRequest("A stock location needs a name.");
@@ -111,7 +112,7 @@ public static class StockEndpoints
         // afterwards is moved OUT of the object initializer to make that true. Then read "summary",
         // built by AfterMap from two values the map had already put there. That is the difference
         // between the pair, and the whole reason AfterMap is the useful one.
-        group.MapGet("/hooks", async (AppDbContext db, AppMapper mapper, bool project = false) =>
+        group.MapGet("/hooks", async (AppDbContext db, Mapper mapper, bool project = false) =>
         {
             if (project)
             {

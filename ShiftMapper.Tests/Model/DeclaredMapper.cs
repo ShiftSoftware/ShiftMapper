@@ -105,14 +105,14 @@ public class DocumentIdDto
 }
 
 /// <summary>Its own mapper, so a package's rules do not reach the rest of the suite's maps.</summary>
-public partial class DeclaredMapper : ShiftMapperBase
+public class DeclaredMapper : ShiftMapperBase
 {
     public DeclaredMapper()
     {
-        // THE TWO LINES. Contoso.Platform is a compiled assembly with no source here, and these
-        // are identical to including a mapper and adding a pack from this project — which is the
-        // whole of the contract.
-        IncludeMapper<PlatformMapper>();
+        // THE ONE LINE. Contoso.Platform is a compiled assembly with no source here, and adding
+        // its pack is identical to adding a pack from this project — which is the whole of the
+        // contract. Its MAPPER needs no line: every mapper class a referenced package declares is
+        // in this project's generated mapper already.
         AddConversions<PlatformConversions>();
 
         CreateMap<Document, DocumentDto>();

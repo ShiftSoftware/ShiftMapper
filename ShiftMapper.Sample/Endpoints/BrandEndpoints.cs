@@ -1,4 +1,5 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using ShiftMapper;
 using ShiftMapper.Sample.Data;
 using ShiftMapper.Sample.Dtos;
 using ShiftMapper.Sample.Entities;
@@ -34,7 +35,7 @@ public static class BrandEndpoints
         //
         // which is the line every application ended up writing, in every list endpoint, because
         // the mapper had nothing to say about sequences. Now it does:
-        group.MapGet("/", async (AppDbContext db, AppMapper mapper) =>
+        group.MapGet("/", async (AppDbContext db, Mapper mapper) =>
         {
             var brands = await db.Brands
                 .AsNoTracking()
@@ -62,7 +63,7 @@ public static class BrandEndpoints
         //
         // Add ?sql=true to see the query. The coalesce costs nothing there: EF reads the column
         // exactly as it did before and applies it while shaping the row.
-        group.MapGet("/projected", (AppDbContext db, AppMapper mapper, bool sql = false) =>
+        group.MapGet("/projected", (AppDbContext db, Mapper mapper, bool sql = false) =>
         {
             IQueryable<BrandDto> query = db.Brands
                 .AsNoTracking()
@@ -78,7 +79,7 @@ public static class BrandEndpoints
         // GET /api/brands/{id}
         // Two doors in one endpoint: MapOrNull for a row that may not be there, and the overload
         // that does not create anything but copies onto an object that already exists.
-        group.MapGet("/{id:int}", async (int id, AppDbContext db, AppMapper mapper) =>
+        group.MapGet("/{id:int}", async (int id, AppDbContext db, Mapper mapper) =>
         {
             Brand? brand = await db.Brands
                 .AsNoTracking()
@@ -105,10 +106,10 @@ public static class BrandEndpoints
                 brand = returned,
                 // Proof that it updated the object we passed in.
                 updatedInPlace = ReferenceEquals(returned, existing),
-                // Proof that the mapper really is a DI service with its own dependency.
-                injectedDependency = mapper.InjectedDependency,
-                // Proof that AddShiftMapper filled in ShiftMapperBase.Services.
-                canResolveThroughServices = mapper.CanResolveThroughServices,
+                // Proof that AddShiftMapper filled in Mapper.Services: something never passed to
+                // any constructor resolves through it. (That AppMapper's OWN dependency is injected
+                // is proved by /api/invoices, whose numbers carry IInvoiceNumbering's prefix.)
+                canResolveThroughServices = mapper.Services.GetService(typeof(ILoggerFactory)) is not null,
             });
         })
         .WithName("GetBrandById");
@@ -124,7 +125,7 @@ public static class BrandEndpoints
         // Add ?sql=true: the concatenation is done by the database, and only Name and ISOCode are
         // read. Compare that with the label in request 1h, which ConstructUsing builds in C# and
         // which therefore cannot be projected at all.
-        group.MapGet("/labels", (AppDbContext db, AppMapper mapper, bool sql = false) =>
+        group.MapGet("/labels", (AppDbContext db, Mapper mapper, bool sql = false) =>
         {
             IQueryable<BrandLabelDto> query = db.Brands
                 .AsNoTracking()
@@ -150,7 +151,7 @@ public static class BrandEndpoints
         // still goes through the conversion ShiftMapper picked for it.
         //
         // Send { "country": "Ireland" } and watch the name, ISO code and founded year survive.
-        group.MapPatch("/{id:int}", async (int id, BrandPatch patch, AppDbContext db, AppMapper mapper) =>
+        group.MapPatch("/{id:int}", async (int id, BrandPatch patch, AppDbContext db, Mapper mapper) =>
         {
             Brand? brand = await db.Brands.FirstOrDefaultAsync(b => b.Id == id);
 

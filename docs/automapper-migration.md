@@ -17,7 +17,7 @@ can read a `ResolutionContext`, and whether the configuration is complete is a q
 (`AssertConfigurationIsValid`) after it has been built.
 
 ShiftMapper reads your `CreateMap` calls from **source**, at **compile time**, and writes the map as
-ordinary C# into the other half of your partial class. That is what buys the things AutoMapper
+ordinary C# into one generated mapper for your assembly. That is what buys the things AutoMapper
 cannot offer: a generated file you can step through, 38 build diagnostics that name the property
 and the line, and a `ProjectTo` that is a real expression tree EF Core turns into one `SELECT`. It is
 also, exactly, what costs the dynamic forms. A decision the generator cannot see cannot be baked,
@@ -45,9 +45,9 @@ equivalent; Part two says why.
 
 | AutoMapper | ShiftMapper |
 |---|---|
-| `class CatalogProfile : Profile` with `CreateMap` in its constructor | `partial class CatalogMapper : ShiftMapperBase`, same shape — and a mapper in its own right, injectable on its own; another mapper takes its maps with `IncludeMapper<CatalogMapper>()` |
-| `new MapperConfiguration(cfg => cfg.AddProfile<CatalogProfile>())` | a `partial class AppMapper : ShiftMapperBase` that calls `IncludeMapper<T>()` for each — or `services.AddShiftMapper(o => o.AddMapper<AppMapper>(m => m.IncludeMapper<T>()))`, which the generator reads the same way |
-| `services.AddAutoMapper(typeof(Startup).Assembly)` — assembly scanning | `services.AddShiftMapper(o => { o.AddMapper<AppMapper>(); ... })` — explicit mappers, no scanning |
+| `class CatalogProfile : Profile` with `CreateMap` in its constructor | `class CatalogMapper : ShiftMapperBase`, same shape — a place to write maps; every such class in the project, and in every referenced package, is generated into the one mapper without being named |
+| `new MapperConfiguration(cfg => cfg.AddProfile<CatalogProfile>())` | nothing — the generator reads every mapper class it can see at build time |
+| `services.AddAutoMapper(typeof(Startup).Assembly)` — assembly scanning | `services.AddShiftMapper()` — the assembly's generated mapper, found through metadata, no scanning |
 | `CreateMap<TSource, TDestination>()` | `CreateMap<TSource, TDestination>()` |
 | `CreateMap<TSource, TDestination>(MemberList.Source)` / `.ValidateMemberList(...)` | none — validation is per destination member, always on (SM0001); tune severity per folder in `.editorconfig` |
 | `CreateMap(typeof(Wrapper<>), typeof(WrapperDto<>))` — open generics | `CreateMap(typeof(Wrapper<>), typeof(WrapperDto<>))`; one type parameter a side (SM0026), closed over the pairs the mapper already declares |
@@ -140,9 +140,9 @@ through `IncludeBase` as `UPPER([c].[Sku])`.
 
 | AutoMapper | ShiftMapper |
 |---|---|
-| `IMapper` injected | the mapper class itself (`AppMapper`), injected; `IShiftMapper` for a library that cannot name it |
+| `IMapper` injected | `Mapper`, the one class in the runtime package, injected; `IShiftMapper` for a library generic over its types |
 | `mapper.Map<TDestination>(source)` | `mapper.Map<TDestination>(source)` or `source.Map<TDestination>(mapper)` |
-| `mapper.Map<TSource, TDestination>(source)` | generated methods infer the source; on `IShiftMapper`, `Map<TSource, TDestination>(source)` |
+| `mapper.Map<TSource, TDestination>(source)` | the generated extension methods infer the source: `mapper.Map<TDestination>(source)`, or `mapper.MapToXxx(source)`; on `IShiftMapper`, `Map<TSource, TDestination>(source)` |
 | `mapper.Map(source, destination)` | `mapper.Map(source, destination)` — not generated for a destination with nothing assignable after construction (a positional record) |
 | `mapper.Map<TDestination>(null)` | `Map` throws on a null source; `mapper.MapOrNull<TDestination>(maybe)` returns null |
 | `mapper.Map<List<TDto>>(items)` | `mapper.Map<List<TDto>>(items)`, also `TDto[]`, `HashSet<TDto>`, `IReadOnlyList<TDto>`, and a typed `MapToBrandDtoList(items)` |
@@ -161,7 +161,7 @@ through `IncludeBase` as `UPPER([c].[Sku])`.
 | `IValueResolver` reading a service | a `MapFrom` closing over an injected field; in a projection a row-independent service *value* becomes a SQL parameter, a row-dependent *call* is client-evaluated by EF, and filtering on such a member throws |
 | `cfg.AssertConfigurationIsValid()` | none — the build is the assertion |
 | `[AutoMap(typeof(Source))]`, `[IgnoreMap]`, `[SourceMember("X")]` | none — declarations are C# calls the compiler checks; the `ShiftMapper*` attributes in the package are emitted by the generator, never written by hand |
-| an AutoMapper `Profile` in a referenced package, picked up by scanning | a mapper (or a `ShiftMapperConversions` pack of rules) in a package **built with the ShiftMapper generator**, included with `IncludeMapper<T>()`, registered with `o.AddMapper<T>()`, or added with `AddConversions<T>()`; a package built without it is SM0028 |
+| an AutoMapper `Profile` in a referenced package, picked up by scanning | a mapper class in a package **built with the ShiftMapper generator** — generated into your mapper from the reference alone; its packs of rules are added with `AddConversions<T>()` or shared by the package; a package built without the generator declares nothing |
 
 `CreateMemberConvention<TMember>()` has no AutoMapper counterpart in either direction. It is a rule
 about a member *shape* — "any destination member of type `SelectDto` is filled from
@@ -299,9 +299,9 @@ Three more you may meet, in order of likelihood:
 
 A workable order for the port itself:
 
-1. Turn each `Profile` into a `partial class : ShiftMapperBase`, and the `MapperConfiguration`
-   into one partial mapper class that calls `IncludeMapper<T>()` for each. Replace
-   `AddAutoMapper(...)` with `AddShiftMapper<AppMapper>()`. Everything inside the profiles that is
+1. Turn each `Profile` into a `class : ShiftMapperBase`, and delete the `MapperConfiguration` —
+   the generator reads every mapper class in the project on its own, so nothing lists them.
+   Replace `AddAutoMapper(...)` with `AddShiftMapper()`, and `IMapper` with `Mapper`. Everything inside the profiles that is
    `CreateMap`, `ForMember`, `MapFrom`, `Ignore`, `ReverseMap`, `Include`, `IncludeBase`, `As` and
    open-generic `CreateMap` compiles unchanged. A `CreateConversion` written in a profile now
    reaches only that mapper's maps; move the ones meant for everything into a

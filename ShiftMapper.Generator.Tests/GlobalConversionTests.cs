@@ -403,7 +403,6 @@ public class GlobalConversionTests
             {
                 public TestMapper()
                 {
-                    IncludeMapper<CoinMapper>();
                     CreateMap<Brand, BrandDto>();
                 }
             }
@@ -438,7 +437,6 @@ public class GlobalConversionTests
                 public TestMapper()
                 {
                     CreateConversion<Money, string>(m => m.Amount.ToString(), m => m.Amount.ToString());
-                    IncludeMapper<CoinMapper>();
                     CreateMap<Brand, BrandDto>();
                 }
             }
@@ -449,7 +447,7 @@ public class GlobalConversionTests
 
         // TestMapper's half converts CoinDto.Price; only CoinMapper's OWN half, which has no rule
         // for the pair, reports it.
-        string testMapperFile = run.GeneratedFiles.Single(file => file.Contains("partial class TestMapper"));
+        string testMapperFile = run.GeneratedFiles.Single(file => file.Contains("class GeneratedMapper"));
         Assert.Contains("Customizations.Conversion<global::Money, string>(typeof(global::TestMapper))(source.Price)", testMapperFile);
         Assert.All(run.All("SM0002"), d => Assert.Contains("CoinDto.Price", d.GetMessage()));
     }
@@ -490,7 +488,6 @@ public class GlobalConversionTests
                 public TestMapper()
                 {
                     AddConversions<Own>();
-                    IncludeMapper<CoinMapper>();
                     CreateMap<Brand, BrandDto>();
                 }
             }
@@ -500,7 +497,6 @@ public class GlobalConversionTests
                 public static void Configure(IServiceCollection services) =>
                     services.AddShiftMapper(o =>
                     {
-                        o.AddMapper<TestMapper>();
                         o.AddConversions<Global>();
                     });
             }
@@ -537,7 +533,6 @@ public class GlobalConversionTests
                 public static void Configure(IServiceCollection services) =>
                     services.AddShiftMapper(o =>
                     {
-                        o.AddMapper<TestMapper>();
                         o.AddConversions<Global>();
                     });
             }

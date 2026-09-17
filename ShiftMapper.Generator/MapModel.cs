@@ -476,12 +476,12 @@ internal sealed class MapModel
     public string Key => SourceType + "->" + DestinationType;
 
     /// <summary>
-    /// The mapper whose constructor DECLARED this map, fully qualified — the mapper being generated
-    /// for its own maps, an included mapper for a map that arrived through <c>IncludeMapper</c>.
+    /// The mapper class whose constructor DECLARED this map, fully qualified — local or from a
+    /// referenced package.
     ///
-    /// <para>What tells one declaration reached two ways (the same included mapper, in two parts)
-    /// from two declarations of one pair (two included mappers, or two <c>CreateMap</c> calls in one
-    /// class) — the first collapses, the second is an error (SM0042).</para>
+    /// <para>What tells one declaration reached two ways (the same package declaration, through
+    /// two references) from two declarations of one pair (two classes, or two <c>CreateMap</c>
+    /// calls in one class) — the first collapses, the second is an error (SM0042).</para>
     /// </summary>
     public string DeclaredBy { get; }
 

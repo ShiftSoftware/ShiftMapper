@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using ShiftMapper;
 using ShiftMapper.Sample.Data;
 using ShiftMapper.Sample.Dtos;
 using ShiftMapper.Sample.Entities;
@@ -33,7 +34,7 @@ public static class CatalogEndpoints
         // Look at "kinds" in the response: two PhysicalItemDto, two DigitalItemDto, chosen per
         // element by the generated type test. The collection overload dispatches per ELEMENT, which
         // is where it earns its keep — a mixed list is the normal case for a TPH table.
-        group.MapGet("/", (AppDbContext db, AppMapper mapper) =>
+        group.MapGet("/", (AppDbContext db, Mapper mapper) =>
         {
             List<CatalogItem> items = db.CatalogItems.AsNoTracking().OrderBy(item => item.Id).ToList();
 
@@ -77,7 +78,7 @@ public static class CatalogEndpoints
         // CatalogItemDtos — which would have been the wrong answer wearing the right type.
         //
         // The message names the alternative, and /physical is that alternative.
-        group.MapGet("/projected", (AppDbContext db, AppMapper mapper) =>
+        group.MapGet("/projected", (AppDbContext db, Mapper mapper) =>
         {
             try
             {
@@ -111,7 +112,7 @@ public static class CatalogEndpoints
         // against CatalogItem -> CatalogItemDto, not against this pair, so the projection has to
         // walk the lineage to find it exactly as Map does. If it did not, Map would upper-case and
         // ProjectTo would not — two answers that each look right on their own.
-        group.MapGet("/physical", (AppDbContext db, AppMapper mapper, bool sql = false) =>
+        group.MapGet("/physical", (AppDbContext db, Mapper mapper, bool sql = false) =>
         {
             IQueryable<PhysicalItemDto> query = db.CatalogItems
                 .AsNoTracking()
@@ -147,7 +148,7 @@ public static class CatalogEndpoints
         //     WHERE [c].[Discriminator] = N'BundleItem'
         //
         // One row, one query, and the discriminator picked the LEAF of the hierarchy.
-        group.MapGet("/bundles", (AppDbContext db, AppMapper mapper, bool sql = false) =>
+        group.MapGet("/bundles", (AppDbContext db, Mapper mapper, bool sql = false) =>
         {
             IQueryable<BundleItemDto> query = db.CatalogItems
                 .AsNoTracking()
@@ -175,7 +176,7 @@ public static class CatalogEndpoints
         // fixed when the CreateMap was written, so the projection is the concrete map's own
         // expression with a widening cast on the end. ?sql=true shows the database was never told
         // anything changed — same SELECT, discriminator and all.
-        group.MapGet("/labels", (AppDbContext db, AppMapper mapper, bool sql = false) =>
+        group.MapGet("/labels", (AppDbContext db, Mapper mapper, bool sql = false) =>
         {
             IQueryable<ICatalogLabel> query = db.CatalogItems
                 .AsNoTracking()
@@ -213,7 +214,7 @@ public static class CatalogEndpoints
         //
         // The alternative is that same declaration written once per DTO, until somebody adds a DTO
         // and forgets.
-        group.MapGet("/paged", (AppDbContext db, AppMapper mapper) =>
+        group.MapGet("/paged", (AppDbContext db, Mapper mapper) =>
         {
             var page = new PagedResult<PhysicalItem>
             {
@@ -233,7 +234,7 @@ public static class CatalogEndpoints
         // earlier and with nothing to do with the catalogue. This is what "closed over every pair
         // you already map" buys, and why the rule is that one: any wider rule would mean guessing
         // which of a program's thousands of types somebody meant to wrap.
-        group.MapGet("/paged-brands", (AppDbContext db, AppMapper mapper) =>
+        group.MapGet("/paged-brands", (AppDbContext db, Mapper mapper) =>
         {
             var page = new PagedResult<Brand>
             {

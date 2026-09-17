@@ -18,7 +18,7 @@ public class GlobalConversionTests
 
     public GlobalConversionTests(DatabaseFixture fixture) => _fixture = fixture;
 
-    private ConversionMapper Mapper => _fixture.ConversionMapper;
+    private Mapper Mapper => _fixture.Mapper;
 
     // -----------------------------------------------------------------
     // IN MEMORY.

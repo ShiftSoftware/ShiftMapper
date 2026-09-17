@@ -10,10 +10,11 @@ namespace ShiftMapper.Generator.Tests;
 ///
 /// <para>The one declaration that reaches a project without the project naming the type. The
 /// package's build writes it down (<c>ShiftMapperDeclaredSharedPack</c>); the referencing
-/// project's generator reads it and treats it as an <c>AddConversions</c> appended to every
-/// <c>AddShiftMapper</c> call there — the furthest level, so anything the project wrote itself
-/// still wins — and says so (SM0043). The runtime follows from the composition attribute the
-/// referencing project's own build emits, so the two halves cannot disagree.</para>
+/// project's generator reads it and treats it as an <c>AddConversions</c> for every map in the
+/// project, as long as the project makes an <c>AddShiftMapper</c> call at all — the furthest
+/// level, so anything the project wrote itself still wins — and says so (SM0043). The runtime
+/// follows from the composition attribute the referencing project's own build emits, so the two
+/// halves cannot disagree.</para>
 /// </summary>
 public class SharedPackTests
 {
@@ -29,7 +30,7 @@ public class SharedPackTests
 
         public class FileSummary { public string Name { get; set; } = ""; public string Size { get; set; } = ""; }
 
-        public partial class PlatformMapper : ShiftMapperBase
+        public class PlatformMapper : ShiftMapperBase
         {
             public PlatformMapper() => CreateMap<FileDto, FileSummary>();
         }
@@ -44,7 +45,6 @@ public class SharedPackTests
             public static IServiceCollection AddPlatform(this IServiceCollection services) =>
                 services.AddShiftMapper(o =>
                 {
-                    o.AddMapper<PlatformMapper>();
                     o.ShareConversions<PlatformConversions>();
                 });
         }
@@ -60,7 +60,7 @@ public class SharedPackTests
 
         public class BrandDto { public string Id { get; set; } = ""; }
 
-        public partial class AppMapper : ShiftMapperBase
+        public class AppMapper : ShiftMapperBase
         {
             public AppMapper() => CreateMap<Brand, BrandDto>();
         }
@@ -119,12 +119,12 @@ public class SharedPackTests
     // -----------------------------------------------------------------
 
     /// <summary>
-    /// THE POINT: the application registers its own mapper, names nothing of the package's, and
-    /// its long renders as the package's hash id — in the code, in the metadata the runtime reads,
-    /// and in the build output.
+    /// THE POINT: the application registers, names nothing of the package's, and its long renders
+    /// as the package's hash id — in the code, in the metadata the runtime reads, and in the build
+    /// output.
     /// </summary>
     [Fact]
-    public void A_shared_pack_reaches_every_mapper_a_referencing_project_registers()
+    public void A_shared_pack_reaches_every_map_of_a_referencing_project_that_registers()
     {
         GeneratorRun run = GeneratorHarness.RunWithPackage(
             SharingPackage,
@@ -134,14 +134,14 @@ public class SharedPackTests
             public static class Startup
             {
                 public static void Configure(IServiceCollection services) =>
-                    services.AddShiftMapper(o => o.AddMapper<AppMapper>());
+                    services.AddShiftMapper();
             }
             """);
 
         run.Compiles()
            .Emits("Id = Customizations.Conversion<long, string>(typeof(global::Framework.PlatformConversions))(source.Id)")
            // Recorded as composition, so the runtime applies the pack from this assembly's metadata alone.
-           .Emits("[assembly: global::ShiftMapper.ShiftMapperDeclaredComposition(typeof(global::AppMapper), typeof(global::Framework.PlatformConversions))]");
+           .Emits("[assembly: global::ShiftMapper.ShiftMapperDeclaredComposition(typeof(global::ShiftMapper.Generated.ShiftMapperSnippet.GeneratedMapper), typeof(global::Framework.PlatformConversions))]");
 
         Diagnostic notice = run.Single("SM0043");
 
@@ -151,9 +151,9 @@ public class SharedPackTests
         Assert.StartsWith("services.AddShiftMapper(", run.CodeUnder(notice));
     }
 
-    /// <summary>The short form is a call like any other, and gets the pack.</summary>
+    /// <summary>The parameterless form is a call like any other, and gets the pack.</summary>
     [Fact]
-    public void The_generic_short_form_gets_a_shared_pack_too()
+    public void The_short_form_gets_a_shared_pack_too()
     {
         GeneratorRun run = GeneratorHarness.RunWithPackage(
             SharingPackage,
@@ -163,7 +163,7 @@ public class SharedPackTests
             public static class Startup
             {
                 public static void Configure(IServiceCollection services) =>
-                    services.AddShiftMapper<AppMapper>();
+                    services.AddShiftMapper();
             }
             """);
 
@@ -193,11 +193,7 @@ public class SharedPackTests
             public static class Startup
             {
                 public static void Configure(IServiceCollection services) =>
-                    services.AddShiftMapper(o =>
-                    {
-                        o.AddMapper<AppMapper>();
-                        o.AddConversions<Own>();
-                    });
+                    services.AddShiftMapper(o => o.AddConversions<Own>());
             }
             """);
 
@@ -210,17 +206,19 @@ public class SharedPackTests
     }
 
     /// <summary>
-    /// A shared pack is a REGISTRATION's pack. A mapper nothing registers is generated from its own
-    /// constructor alone, exactly as it is with a call-wide pack.
+    /// A shared pack is a REGISTRATION's pack. A project that makes no AddShiftMapper call at all
+    /// is generated from its own declarations alone, exactly as it is with a call-wide pack — and
+    /// that goes for the package's own map, which this project generates for itself.
     /// </summary>
     [Fact]
-    public void A_mapper_nothing_registers_does_not_get_a_shared_pack()
+    public void A_project_that_registers_nothing_does_not_get_a_shared_pack()
     {
         GeneratorRun run = GeneratorHarness.RunWithPackage(SharingPackage, Application);
 
         run.Compiles()
-           .DoesNotEmit("typeof(global::Framework.PlatformConversions)")
-           .DoesNotEmit("ShiftMapperDeclaredComposition");
+           .Emits("MapToFileSummary(global::Framework.FileDto source)")
+           .DoesNotEmit("typeof(global::Framework.PlatformConversions))(")
+           .DoesNotEmit("typeof(global::Framework.PlatformConversions))]");
 
         run.None("SM0043");
     }
@@ -237,11 +235,7 @@ public class SharedPackTests
             public static class Startup
             {
                 public static void Configure(IServiceCollection services) =>
-                    services.AddShiftMapper(o =>
-                    {
-                        o.AddMapper<AppMapper>();
-                        o.AddConversions<Framework.PlatformConversions>();
-                    });
+                    services.AddShiftMapper(o => o.AddConversions<Framework.PlatformConversions>());
             }
             """);
 
@@ -252,11 +246,11 @@ public class SharedPackTests
     }
 
     /// <summary>
-    /// A package mapper the application registers DIRECTLY — the adapter — gets the shared pack the
-    /// same way, so the package's own long renders by the package's own rule in the application.
+    /// THE PACKAGE'S OWN MAP, generated into the application, gets the shared pack the same way —
+    /// so the package's long renders by the package's own rule in the application too.
     /// </summary>
     [Fact]
-    public void An_adapted_package_mapper_gets_the_shared_pack()
+    public void A_packages_own_map_gets_the_shared_pack_in_the_application()
     {
         GeneratorRun run = GeneratorHarness.RunWithPackage(
             SharingPackage,
@@ -268,12 +262,12 @@ public class SharedPackTests
             public static class Startup
             {
                 public static void Configure(IServiceCollection services) =>
-                    services.AddShiftMapper(o => o.AddMapper<PlatformMapper>());
+                    services.AddShiftMapper();
             }
             """);
 
         run.Compiles()
-           .Emits("Framework_PlatformMapper_Adapter")
+           .Emits("MapToFileSummary(global::Framework.FileDto source)")
            .Emits("Size = Customizations.Conversion<long, string>(typeof(global::Framework.PlatformConversions))(source.Size)");
     }
 
@@ -316,7 +310,7 @@ public class SharedPackTests
             public static class Startup
             {
                 public static void Configure(IServiceCollection services) =>
-                    services.AddShiftMapper(o => o.AddMapper<AppMapper>());
+                    services.AddShiftMapper();
             }
             """);
 
@@ -343,7 +337,7 @@ public class SharedPackTests
             public static class Startup
             {
                 public static void Configure(IServiceCollection services) =>
-                    services.AddShiftMapper(o => o.AddMapper<AppMapper>());
+                    services.AddShiftMapper();
             }
             """);
 

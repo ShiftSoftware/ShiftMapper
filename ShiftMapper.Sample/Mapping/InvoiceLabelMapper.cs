@@ -5,27 +5,24 @@ using ShiftMapper.Sample.Services;
 namespace ShiftMapper.Sample.Mapping;
 
 /// <summary>
-/// An included mapper WITH A DEPENDENCY, which is the half of the feature that needed designing
-/// rather than merely moving text.
+/// A mapper class WITH A DEPENDENCY — the half of the feature that needed designing rather than
+/// merely moving text.
 ///
 /// <code>
 /// public InvoiceLabelMapper(IInvoiceNumbering numbering) =&gt; ...
 /// </code>
 ///
-/// <para><b>IT CANNOT BE BUILT WHILE APPMAPPER'S CONSTRUCTOR RUNS.</b> A mapper's
-/// <c>Services</c> is assigned by <c>AddShiftMapper</c> AFTER the constructor returns — the
-/// object has to exist before anything can be set on it — so a mapper resolved eagerly from
-/// <c>IncludeMapper</c> would have nowhere to resolve from. Included mappers are therefore
-/// materialised on FIRST USE: the <c>IncludeMapper</c> call records the type, and the mapper is
-/// constructed the first time anything is actually mapped, by which point DI is in place.</para>
+/// <para><b>IT IS BUILT ON FIRST USE, NOT AT STARTUP.</b> The generated mapper's <c>Services</c>
+/// is assigned by <c>AddShiftMapper</c> after it is constructed, so the mapper classes it holds
+/// are constructed the first time anything is actually mapped, from the service provider, with
+/// their dependencies injected — by which point DI is in place. Nothing has to be registered for
+/// that.</para>
 ///
-/// <para>Nothing has to be registered for that: <c>AddShiftMapper</c> registers what AppMapper
-/// includes, and even an included mapper it does not know about is constructed with its
-/// dependencies injected. What it does mean is that AppMapper is DI-only — a hand-built
-/// <c>new AppMapper()</c> in a test would fail its first map, naming this class and its
+/// <para>What it does mean is that this assembly's generated mapper is DI-only — a hand-built
+/// <c>Mapper.Create(assembly)</c> in a test would fail its first map, naming this class and its
 /// dependency, rather than quietly mapping without it.</para>
 /// </summary>
-public partial class InvoiceLabelMapper : ShiftMapperBase
+public class InvoiceLabelMapper : ShiftMapperBase
 {
     public InvoiceLabelMapper(IInvoiceNumbering numbering)
     {

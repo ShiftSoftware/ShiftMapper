@@ -54,7 +54,7 @@ internal sealed class DeclarationModel
     /// <summary>Member-shaped rules from <c>CreateMemberConvention</c>.</summary>
     public ImmutableArray<DeclaredConventionModel> Conventions { get; }
 
-    /// <summary>What the constructor composes: <c>IncludeMapper</c> targets and <c>AddConversions</c> packs, fully qualified.</summary>
+    /// <summary>What the constructor composes: the <c>AddConversions</c> packs, fully qualified.</summary>
     public ImmutableArray<string> Composed { get; }
 
     /// <summary>What the mapper's <c>ConfigureDefaults</c> set.</summary>

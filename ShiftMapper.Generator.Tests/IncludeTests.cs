@@ -1,15 +1,18 @@
+using Microsoft.CodeAnalysis;
 using ShiftMapper.Generator.Tests.Infrastructure;
 using Xunit;
 
 namespace ShiftMapper.Generator.Tests;
 
 /// <summary>
-/// INCLUDED MAPPERS — maps written in one mapper and used by another.
+/// SEVERAL MAPPER CLASSES — maps written in classes of their own, all generated into the one
+/// generated mapper.
 ///
-/// The thing being tested is that an included mapper is an ordinary mapper on both sides:
-/// everything it declares must come out of the INCLUDING mapper's generator identical to the same
-/// text written in that mapper's own constructor, and the included mapper must ALSO get its own
-/// generated half, because it is a mapper in its own right.
+/// Nothing names another class anywhere: every <c>ShiftMapperBase</c> subclass in the project
+/// is read, and everything each declares comes out of the generator identical to the same text
+/// written in one class. What is tested here is that union, the rules that stay per class
+/// (defaults, conversions), and what happens when two classes say different things about one
+/// pair.
 /// </summary>
 public class IncludeTests
 {
@@ -27,186 +30,136 @@ public class IncludeTests
 
     private static GeneratorRun Run(string body) => GeneratorHarness.Run(Types + "\n" + body);
 
+    private static int Occurrences(string text, string fragment)
+    {
+        int count = 0;
+
+        for (int index = text.IndexOf(fragment, StringComparison.Ordinal);
+             index >= 0;
+             index = text.IndexOf(fragment, index + fragment.Length, StringComparison.Ordinal))
+        {
+            count++;
+        }
+
+        return count;
+    }
+
     // -----------------------------------------------------------------
     // THE BASICS.
     // -----------------------------------------------------------------
 
-    /// <summary>An included mapper's map becomes the including mapper's map, in every generated form.</summary>
+    /// <summary>Every class's maps land in the one generated mapper — once each, in one file.</summary>
     [Fact]
-    public void An_included_mappers_maps_are_generated_onto_the_including_mapper()
+    public void Every_mapper_classs_maps_are_generated_into_the_one_mapper()
     {
         GeneratorRun run = Run(
             """
-            public partial class BrandMapper : ShiftMapperBase
+            public class BrandMapper : ShiftMapperBase
             {
                 public BrandMapper() => CreateMap<Brand, BrandDto>();
             }
 
-            public partial class TestMapper : ShiftMapperBase
+            public class StockMapper : ShiftMapperBase
             {
-                public TestMapper() => IncludeMapper<BrandMapper>();
+                public StockMapper() => CreateMap<Stock, StockDto>();
             }
             """);
 
         run.Compiles()
-           .Emits("partial class TestMapper : global::ShiftMapper.IShiftMapper")
+           .Emits("internal sealed class GeneratedMapper : global::ShiftMapper.ShiftMapperBase, global::ShiftMapper.IShiftMapper")
+           .Emits("MapToBrandDto(global::Brand source)")
+           .Emits("MapToStockDto(global::Stock source)")
            .Emits("_ShiftMapperProjection_Brand_To_BrandDto");
 
-        // Once on each mapper: the included one is a mapper too.
-        Assert.Equal(2, Occurrences(run.Generated, "public virtual global::BrandDto MapToBrandDto(global::Brand source)"));
-    }
+        Assert.Single(run.GeneratedFiles);
+        Assert.Equal(1, Occurrences(run.Generated, "public global::BrandDto MapToBrandDto(global::Brand source)"));
 
-    /// <summary>
-    /// AND THE INCLUDED MAPPER GETS ITS OWN HALF. It is not a place to write and nothing else: it
-    /// is a mapper, with Map methods of its own, injectable on its own.
-    /// </summary>
-    [Fact]
-    public void An_included_mapper_is_itself_generated_for()
-    {
-        GeneratorRun run = Run(
-            """
-            public partial class BrandMapper : ShiftMapperBase
-            {
-                public BrandMapper() => CreateMap<Brand, BrandDto>();
-            }
-
-            public partial class TestMapper : ShiftMapperBase
-            {
-                public TestMapper() => IncludeMapper<BrandMapper>();
-            }
-            """);
-
-        run.Compiles()
-           .Emits("partial class BrandMapper : global::ShiftMapper.IShiftMapper")
-           .Emits("partial class TestMapper : global::ShiftMapper.IShiftMapper");
-
+        // Neither class is written into, so neither has to be partial — and neither is a door.
+        run.DoesNotEmit("partial class BrandMapper");
+        run.DoesNotEmit("partial class StockMapper");
         run.None("SM0005");
     }
 
     /// <summary>
-    /// An included mapper is a normal place to write, so a refinement written there has to behave
-    /// like one written anywhere else — including reaching the PROJECTION, which is a separate
-    /// code path.
+    /// The generated mapper records every class it folded in, for the runtime to build on first
+    /// use — which is what puts each class's MapFrom trees where the generated code looks.
     /// </summary>
     [Fact]
-    public void A_ForMember_written_in_an_included_mapper_reaches_both_backends()
+    public void The_generated_mapper_composes_every_class()
     {
         GeneratorRun run = Run(
             """
-            public partial class BrandMapper : ShiftMapperBase
+            public class BrandMapper : ShiftMapperBase
+            {
+                public BrandMapper() => CreateMap<Brand, BrandDto>();
+            }
+
+            public class StockMapper : ShiftMapperBase
+            {
+                public StockMapper() => CreateMap<Stock, StockDto>();
+            }
+            """);
+
+        run.Compiles()
+           .Emits("[assembly: global::ShiftMapper.ShiftMapperGenerated(typeof(global::ShiftMapper.Generated.ShiftMapperSnippet.GeneratedMapper))]")
+           .Emits("[assembly: global::ShiftMapper.ShiftMapperDeclaredComposition(typeof(global::ShiftMapper.Generated.ShiftMapperSnippet.GeneratedMapper), typeof(global::BrandMapper))]")
+           .Emits("[assembly: global::ShiftMapper.ShiftMapperDeclaredComposition(typeof(global::ShiftMapper.Generated.ShiftMapperSnippet.GeneratedMapper), typeof(global::StockMapper))]");
+    }
+
+    /// <summary>
+    /// A refinement written in any class reaches both backends — including the PROJECTION, which
+    /// is a separate code path.
+    /// </summary>
+    [Fact]
+    public void A_ForMember_written_in_any_class_reaches_both_backends()
+    {
+        GeneratorRun run = Run(
+            """
+            public class BrandMapper : ShiftMapperBase
             {
                 public BrandMapper() =>
                     CreateMap<Brand, BrandDto>()
                         .ForMember(d => d.Name, opt => opt.MapFrom(s => "brand:" + s.Name));
             }
 
-            public partial class TestMapper : ShiftMapperBase
+            public class StockMapper : ShiftMapperBase
             {
-                public TestMapper() => IncludeMapper<BrandMapper>();
+                public StockMapper() => CreateMap<Stock, StockDto>();
             }
             """);
 
         run.Compiles()
            .Emits("Customizations.Value<global::Brand, global::BrandDto, string>(\"Name\")");
 
-        // At least twice on the including mapper alone: once in the create method, once in the
-        // projection template. (The included mapper's own half has the same again.)
+        // Once in the create method (the update overload shares its cached delegate), once in the
+        // projection template.
         Assert.True(
-            Occurrences(run.Generated, "Customizations.Value<global::Brand, global::BrandDto, string>(\"Name\")") >= 4,
-            "the included mapper's MapFrom should reach the create method AND the projection");
+            Occurrences(run.Generated, "Customizations.Value<global::Brand, global::BrandDto, string>(\"Name\")") >= 2,
+            "the MapFrom should reach the create method AND the projection");
     }
 
-    /// <summary>Several included mappers, and the mapper's own maps alongside them.</summary>
+    /// <summary>A nested map finds its pair in ANY class, not only its own.</summary>
     [Fact]
-    public void Several_included_mappers_and_the_mappers_own_maps_all_land()
+    public void A_nested_map_is_resolved_across_classes()
     {
         GeneratorRun run = Run(
             """
-            public partial class BrandMapper : ShiftMapperBase
+            public class Product { public string Sku { get; set; } = ""; public Brand Brand { get; set; } = new(); }
+            public class ProductDto { public string Sku { get; set; } = ""; public BrandDto Brand { get; set; } = new(); }
+
+            public class ProductMapper : ShiftMapperBase
+            {
+                public ProductMapper() => CreateMap<Product, ProductDto>();
+            }
+
+            public class BrandMapper : ShiftMapperBase
             {
                 public BrandMapper() => CreateMap<Brand, BrandDto>();
             }
-
-            public partial class StockMapper : ShiftMapperBase
-            {
-                public StockMapper() => CreateMap<Stock, StockDto>();
-            }
-
-            public partial class TestMapper : ShiftMapperBase
-            {
-                public TestMapper()
-                {
-                    IncludeMapper<BrandMapper>();
-                    IncludeMapper<StockMapper>();
-                }
-            }
             """);
 
-        run.Compiles()
-           .Emits("MapToBrandDto")
-           .Emits("MapToStockDto");
-    }
-
-    /// <summary>A mapper that includes another mapper, which is a reasonable way to group them.</summary>
-    [Fact]
-    public void An_included_mapper_can_include_another()
-    {
-        GeneratorRun run = Run(
-            """
-            public partial class StockMapper : ShiftMapperBase
-            {
-                public StockMapper() => CreateMap<Stock, StockDto>();
-            }
-
-            public partial class RootMapper : ShiftMapperBase
-            {
-                public RootMapper()
-                {
-                    CreateMap<Brand, BrandDto>();
-                    IncludeMapper<StockMapper>();
-                }
-            }
-
-            public partial class TestMapper : ShiftMapperBase
-            {
-                public TestMapper() => IncludeMapper<RootMapper>();
-            }
-            """);
-
-        run.Compiles().Emits("MapToBrandDto").Emits("MapToStockDto");
-    }
-
-    /// <summary>Two mappers including each other must terminate rather than recurse forever.</summary>
-    [Fact]
-    public void Mappers_that_include_each_other_terminate()
-    {
-        GeneratorRun run = Run(
-            """
-            public partial class AMapper : ShiftMapperBase
-            {
-                public AMapper()
-                {
-                    CreateMap<Brand, BrandDto>();
-                    IncludeMapper<BMapper>();
-                }
-            }
-
-            public partial class BMapper : ShiftMapperBase
-            {
-                public BMapper()
-                {
-                    CreateMap<Stock, StockDto>();
-                    IncludeMapper<AMapper>();
-                }
-            }
-
-            public partial class TestMapper : ShiftMapperBase
-            {
-                public TestMapper() => IncludeMapper<AMapper>();
-            }
-            """);
-
-        run.Compiles().Emits("MapToBrandDto").Emits("MapToStockDto");
+        run.Compiles().Emits("Brand = MapToBrandDto(source.Brand)");
+        run.None("SM0011");
     }
 
     // -----------------------------------------------------------------
@@ -214,88 +167,73 @@ public class IncludeTests
     // -----------------------------------------------------------------
 
     /// <summary>
-    /// INCLUDEBASE ACROSS MAPPERS. A base map in one mapper and the derived map in another is an
-    /// ordinary thing to write, and the base lookup has to walk included declarations or it
+    /// INCLUDEBASE ACROSS CLASSES. A base map in one class and the derived map in another is an
+    /// ordinary thing to write, and the base lookup has to walk every class's declarations or it
     /// silently resolves to nothing — the member would come back unconfigured with no message.
     /// </summary>
     [Fact]
-    public void IncludeBase_finds_a_base_map_declared_in_another_included_mapper()
+    public void IncludeBase_finds_a_base_map_declared_in_another_class()
     {
         GeneratorRun run = GeneratorHarness.Run(
             """
             using ShiftMapper;
 
-            public class EntityBase { public long Id { get; set; } }
-            public class BaseDto { public string Id { get; set; } = ""; }
-            public class Brand : EntityBase { public string Name { get; set; } = ""; }
-            public class BrandDto : BaseDto { public string Name { get; set; } = ""; }
+            public class Item { public string Sku { get; set; } = ""; }
+            public class ItemDto { public string Sku { get; set; } = ""; }
+            public class PhysicalItem : Item { public decimal Weight { get; set; } }
+            public class PhysicalItemDto : ItemDto { public decimal Weight { get; set; } }
 
-            public partial class BaseMapper : ShiftMapperBase
+            public class BaseMapper : ShiftMapperBase
             {
                 public BaseMapper() =>
-                    CreateMap<EntityBase, BaseDto>()
-                        .ForMember(d => d.Id, opt => opt.MapFrom(s => "E" + s.Id));
+                    CreateMap<Item, ItemDto>()
+                        .ForMember(d => d.Sku, opt => opt.MapFrom(s => s.Sku.ToUpper()));
             }
 
-            public partial class BrandMapper : ShiftMapperBase
+            public class DerivedMapper : ShiftMapperBase
             {
-                public BrandMapper() =>
-                    CreateMap<Brand, BrandDto>().IncludeBase<EntityBase, BaseDto>();
-            }
-
-            public partial class TestMapper : ShiftMapperBase
-            {
-                public TestMapper()
-                {
-                    IncludeMapper<BaseMapper>();
-                    IncludeMapper<BrandMapper>();
-                }
+                public DerivedMapper() =>
+                    CreateMap<PhysicalItem, PhysicalItemDto>().IncludeBase<Item, ItemDto>();
             }
             """);
 
-        // Resolved under the BASE pair, which is what proves the lookup crossed the boundary.
         run.Compiles()
-           .Emits("Customizations.Value<global::EntityBase, global::BaseDto, string>(\"Id\")");
+           // The derived map inherited the base's Sku refinement.
+           .Emits("Customizations.Value<global::PhysicalItem, global::PhysicalItemDto, string>(\"Sku\")");
+
+        run.None("SM0022");
     }
 
-    /// <summary>
-    /// AN OPEN GENERIC declared on the mapper closes over pairs declared in an INCLUDED mapper.
-    /// The pair list is gathered from the same declarations, so missing them here would quietly
-    /// produce a wrapper map for some of your types and not others.
-    /// </summary>
+    /// <summary>An open generic in one class closes over pairs declared in every other.</summary>
     [Fact]
-    public void An_open_generic_closes_over_an_included_mappers_pairs()
+    public void An_open_generic_closes_over_every_classs_pairs()
     {
         GeneratorRun run = Run(
             """
             public class Page<T> { public List<T> Items { get; set; } = new(); }
             public class PageDto<T> { public List<T> Items { get; set; } = new(); }
 
-            public partial class BrandMapper : ShiftMapperBase
+            public class BrandMapper : ShiftMapperBase
             {
                 public BrandMapper() => CreateMap<Brand, BrandDto>();
             }
 
-            public partial class TestMapper : ShiftMapperBase
+            public class PagingMapper : ShiftMapperBase
             {
-                public TestMapper()
-                {
-                    IncludeMapper<BrandMapper>();
-                    CreateMap(typeof(Page<>), typeof(PageDto<>));
-                }
+                public PagingMapper() => CreateMap(typeof(Page<>), typeof(PageDto<>));
             }
             """);
 
-        run.Compiles().Emits("global::PageDto<global::BrandDto>");
+        run.Compiles()
+           .Emits("global::PageDto<global::BrandDto> MapToPageDto(global::Page<global::Brand> source)");
     }
 
     /// <summary>
-    /// THE DECLARING MAPPER'S DEFAULTS GOVERN ITS MAPS. A map takes its ConfigureDefaults from the
-    /// mapper that WROTE it, whichever mapper ends up generating it — so an including mapper's
-    /// defaults do not reach an included map, and the included mapper's own do.
+    /// THE DECLARING CLASS'S DEFAULTS GOVERN ITS MAPS. A map takes its ConfigureDefaults from the
+    /// class that WROTE it, so one class's strictness does not reach another's maps.
     /// </summary>
     [Fact]
-    public void The_declaring_mappers_ConfigureDefaults_governs_its_maps()
+    public void The_declaring_classs_ConfigureDefaults_governs_its_maps()
     {
         const string types =
             """
@@ -303,179 +241,119 @@ public class IncludeTests
 
             public class Brand { public string SKU { get; set; } = ""; }
             public class BrandDto { public string Sku { get; set; } = ""; }
+            public class Other { public string SKU { get; set; } = ""; }
+            public class OtherDto { public string Sku { get; set; } = ""; }
             """;
 
-        // The INCLUDING mapper is case-sensitive; the included map is not, and still fills Sku.
-        GeneratorRun includerStrict = GeneratorHarness.Run(types +
+        GeneratorRun run = GeneratorHarness.Run(types +
             """
 
-            public partial class BrandMapper : ShiftMapperBase
+            public class BrandMapper : ShiftMapperBase
             {
                 public BrandMapper() => CreateMap<Brand, BrandDto>();
             }
 
-            public partial class TestMapper : ShiftMapperBase
+            public class StrictMapper : ShiftMapperBase
             {
-                public TestMapper() => IncludeMapper<BrandMapper>();
+                public StrictMapper() => CreateMap<Other, OtherDto>();
 
                 protected override void ConfigureDefaults(MapOptions options)
                     => options.Matching = PropertyMatching.CaseSensitive;
-            }
-            """);
-
-        includerStrict.Compiles();
-        includerStrict.None("SM0001");
-
-        // The INCLUDED mapper is case-sensitive, so its map no longer fills Sku — in both halves.
-        GeneratorRun includedStrict = GeneratorHarness.Run(types +
-            """
-
-            public partial class BrandMapper : ShiftMapperBase
-            {
-                public BrandMapper() => CreateMap<Brand, BrandDto>();
-
-                protected override void ConfigureDefaults(MapOptions options)
-                    => options.Matching = PropertyMatching.CaseSensitive;
-            }
-
-            public partial class TestMapper : ShiftMapperBase
-            {
-                public TestMapper() => IncludeMapper<BrandMapper>();
-            }
-            """);
-
-        includedStrict.Compiles();
-        Assert.Contains("SM0001", includedStrict.Ids());
-    }
-
-    // -----------------------------------------------------------------
-    // THE DIAGNOSTICS.
-    // -----------------------------------------------------------------
-
-    /// <summary>SM0027 — the same pair in an included mapper and in the including one.</summary>
-    [Fact]
-    public void A_pair_declared_twice_is_reported()
-    {
-        GeneratorRun run = Run(
-            """
-            public partial class BrandMapper : ShiftMapperBase
-            {
-                public BrandMapper() =>
-                    CreateMap<Brand, BrandDto>()
-                        .ForMember(d => d.Name, opt => opt.MapFrom(s => "included:" + s.Name));
-            }
-
-            public partial class TestMapper : ShiftMapperBase
-            {
-                public TestMapper()
-                {
-                    CreateMap<Brand, BrandDto>();
-                    IncludeMapper<BrandMapper>();
-                }
             }
             """);
 
         run.Compiles();
 
-        Assert.Contains("BrandMapper", run.Single("SM0027").GetMessage());
-
-        // And the including mapper's own is the one that survived on TestMapper: its file has no
-        // MapFrom lookup. (BrandMapper's own half still has its own.)
-        string testMapperFile = run.GeneratedFiles.Single(file => file.Contains("partial class TestMapper"));
-        Assert.DoesNotContain("Customizations.Value<global::Brand, global::BrandDto, string>(\"Name\")", testMapperFile);
+        // The strict class's map no longer fills Sku; the other class's still does.
+        Diagnostic unmapped = run.Single("SM0001");
+        Assert.Contains("OtherDto.Sku", unmapped.GetMessage());
     }
 
-    /// <summary>
-    /// SM0042 — the same pair written in TWO INCLUDED mappers, with nothing to choose between them.
-    /// An ERROR, where SM0027 is a warning: the including mapper's own declaration is nearer and
-    /// wins, but between two includes there is no nearer, and picking by order would make the map
-    /// silently depend on which IncludeMapper was written first.
-    /// </summary>
+    /// <summary>A conversion declared in one class reaches that class's maps and no other's.</summary>
     [Fact]
-    public void A_pair_declared_in_two_included_mappers_is_an_error()
+    public void A_classs_conversion_stays_with_its_own_maps()
     {
         GeneratorRun run = Run(
             """
-            public partial class BrandMapper : ShiftMapperBase
+            public class Money { public decimal Amount { get; set; } }
+            public class Price { public Money Value { get; set; } = new(); }
+            public class PriceDto { public string Value { get; set; } = ""; }
+            public class Fee { public Money Value { get; set; } = new(); }
+            public class FeeDto { public string Value { get; set; } = ""; }
+
+            public class PriceMapper : ShiftMapperBase
+            {
+                public PriceMapper()
+                {
+                    CreateConversion<Money, string>(m => m.Amount.ToString(), m => m.Amount.ToString());
+                    CreateMap<Price, PriceDto>();
+                }
+            }
+
+            public class FeeMapper : ShiftMapperBase
+            {
+                public FeeMapper() => CreateMap<Fee, FeeDto>();
+            }
+            """);
+
+        run.Compiles()
+           .Emits("Value = Customizations.Conversion<global::Money, string>(typeof(global::PriceMapper))(source.Value)");
+
+        // FeeMapper has no such rule, so its Money member is SM0002.
+        Diagnostic refused = run.Single("SM0002");
+        Assert.Contains("FeeDto.Value", refused.GetMessage());
+    }
+
+    // -----------------------------------------------------------------
+    // THE DIAGNOSTICS — one declaration per pair.
+    // -----------------------------------------------------------------
+
+    /// <summary>
+    /// SM0042 — the same pair written in TWO classes, with nothing to choose between them. An
+    /// error: picking by file order would make the map silently depend on which class came first.
+    /// </summary>
+    [Fact]
+    public void A_pair_declared_in_two_classes_is_an_error()
+    {
+        GeneratorRun run = Run(
+            """
+            public class BrandMapper : ShiftMapperBase
             {
                 public BrandMapper() => CreateMap<Brand, BrandDto>();
             }
 
-            public partial class OtherMapper : ShiftMapperBase
+            public class OtherMapper : ShiftMapperBase
             {
                 public OtherMapper() =>
                     CreateMap<Brand, BrandDto>()
                         .ForMember(d => d.Name, opt => opt.MapFrom(s => "other:" + s.Name));
-            }
-
-            public partial class TestMapper : ShiftMapperBase
-            {
-                public TestMapper()
-                {
-                    IncludeMapper<BrandMapper>();
-                    IncludeMapper<OtherMapper>();
-                }
             }
             """);
 
         // The generated file still compiles: the first declaration is kept.
         run.Compiles();
 
-        Microsoft.CodeAnalysis.Diagnostic problem = run.Single("SM0042");
+        Diagnostic problem = run.Single("SM0042");
 
-        Assert.Equal(Microsoft.CodeAnalysis.DiagnosticSeverity.Error, problem.Severity);
+        Assert.Equal(DiagnosticSeverity.Error, problem.Severity);
         Assert.Contains("BrandMapper", problem.GetMessage());
         Assert.Contains("OtherMapper", problem.GetMessage());
-        Assert.Contains("TestMapper", problem.GetMessage());
 
         // Reported at the SECOND declaration — the CreateMap in OtherMapper.
-        Assert.Contains("other:", run.Source.Substring(problem.Location.SourceSpan.Start, 200));
+        Assert.Contains("other:", run.Source.Substring(problem.Location.SourceSpan.Start));
     }
 
-    /// <summary>Declaring the pair on the including mapper settles it: its own wins, SM0027 says so, no SM0042.</summary>
+    /// <summary>SM0042 — the same pair written twice in ONE class.</summary>
     [Fact]
-    public void The_including_mappers_own_declaration_settles_two_included_ones()
+    public void A_pair_declared_twice_in_one_class_is_an_error()
     {
         GeneratorRun run = Run(
             """
-            public partial class BrandMapper : ShiftMapperBase
-            {
-                public BrandMapper() => CreateMap<Brand, BrandDto>();
-            }
-
-            public partial class OtherMapper : ShiftMapperBase
-            {
-                public OtherMapper() => CreateMap<Brand, BrandDto>();
-            }
-
-            public partial class TestMapper : ShiftMapperBase
+            public class TestMapper : ShiftMapperBase
             {
                 public TestMapper()
                 {
                     CreateMap<Brand, BrandDto>();
-                    IncludeMapper<BrandMapper>();
-                    IncludeMapper<OtherMapper>();
-                }
-            }
-            """);
-
-        run.Compiles();
-        run.None("SM0042");
-        Assert.Equal(2, run.All("SM0027").Length);
-    }
-
-    /// <summary>SM0042 — the same pair written twice in ONE mapper.</summary>
-    [Fact]
-    public void A_pair_declared_twice_in_one_mapper_is_an_error()
-    {
-        GeneratorRun run = Run(
-            """
-            public partial class TestMapper : ShiftMapperBase
-            {
-                public TestMapper()
-                {
-                    CreateMap<Brand, BrandDto>();
-                    CreateMap<Stock, StockDto>();
                     CreateMap<Brand, BrandDto>().ForMember(d => d.Name, opt => opt.Ignore());
                 }
             }
@@ -486,13 +364,13 @@ public class IncludeTests
         Assert.Contains("declared twice in 'TestMapper'", run.Single("SM0042").GetMessage());
     }
 
-    /// <summary>A ReverseMap declares the other direction; writing that direction again is the same error.</summary>
+    /// <summary>A ReverseMap and an explicit CreateMap for the same pair are two declarations.</summary>
     [Fact]
     public void A_reverse_map_and_an_explicit_map_for_the_same_pair_is_an_error()
     {
         GeneratorRun run = Run(
             """
-            public partial class TestMapper : ShiftMapperBase
+            public class TestMapper : ShiftMapperBase
             {
                 public TestMapper()
                 {
@@ -503,13 +381,12 @@ public class IncludeTests
             """);
 
         run.Compiles();
-
-        Assert.Contains("'BrandDto' to 'Brand'", run.Single("SM0042").GetMessage());
+        run.Single("SM0042");
     }
 
-    /// <summary>And across the PARTS of a partial mapper, which only the merge can see.</summary>
+    /// <summary>The same pair in two PARTS of one partial class is the same thing: twice in one class.</summary>
     [Fact]
-    public void A_pair_declared_in_two_parts_of_one_mapper_is_an_error()
+    public void A_pair_declared_in_two_parts_of_one_class_is_an_error()
     {
         GeneratorRun run = Run(
             """
@@ -525,56 +402,10 @@ public class IncludeTests
             """);
 
         run.Compiles();
-
-        Assert.Contains("declared twice", run.Single("SM0042").GetMessage());
+        run.Single("SM0042");
     }
 
-    /// <summary>
-    /// The SAME included declaration arriving twice — two parts each including one mapper, or a
-    /// diamond of includes — is one CreateMap and collapses silently.
-    /// </summary>
-    [Fact]
-    public void The_same_included_declaration_reached_twice_is_not_reported()
-    {
-        GeneratorRun run = Run(
-            """
-            public partial class BrandMapper : ShiftMapperBase
-            {
-                public BrandMapper() => CreateMap<Brand, BrandDto>();
-            }
-
-            public partial class LeftMapper : ShiftMapperBase
-            {
-                public LeftMapper() => IncludeMapper<BrandMapper>();
-            }
-
-            public partial class RightMapper : ShiftMapperBase
-            {
-                public RightMapper() => IncludeMapper<BrandMapper>();
-            }
-
-            public partial class TestMapper : ShiftMapperBase
-            {
-                public TestMapper()
-                {
-                    IncludeMapper<LeftMapper>();
-                    IncludeMapper<RightMapper>();
-                }
-            }
-
-            public partial class TestMapper
-            {
-                private void More() => IncludeMapper<BrandMapper>();
-            }
-            """);
-
-        run.Compiles();
-        run.None("SM0042");
-        run.None("SM0027");
-        Assert.Equal(1, Occurrences(run.GeneratedFiles.Single(file => file.Contains("partial class TestMapper")), "public virtual global::BrandDto MapToBrandDto("));
-    }
-
-    /// <summary>An explicit map for a pair an open generic would also close is the explicit one, silently.</summary>
+    /// <summary>An explicit map for a pair an open generic would have closed over wins, silently.</summary>
     [Fact]
     public void An_explicit_map_over_an_open_generic_closure_is_not_reported()
     {
@@ -583,7 +414,7 @@ public class IncludeTests
             public class Page<T> { public List<T> Items { get; set; } = new(); }
             public class PageDto<T> { public List<T> Items { get; set; } = new(); }
 
-            public partial class TestMapper : ShiftMapperBase
+            public class TestMapper : ShiftMapperBase
             {
                 public TestMapper()
                 {
@@ -596,15 +427,16 @@ public class IncludeTests
 
         run.Compiles();
         run.None("SM0042");
+        run.None("SM0027");
     }
 
-    /// <summary>A mapper that includes nothing says nothing about includes.</summary>
+    /// <summary>One class, one pair: nothing to report.</summary>
     [Fact]
-    public void A_mapper_without_includes_reports_nothing()
+    public void A_single_class_reports_nothing()
     {
         GeneratorRun run = Run(
             """
-            public partial class TestMapper : ShiftMapperBase
+            public class TestMapper : ShiftMapperBase
             {
                 public TestMapper() => CreateMap<Brand, BrandDto>();
             }
@@ -612,18 +444,14 @@ public class IncludeTests
 
         run.Compiles();
         run.None("SM0027");
-        run.None("SM0028");
+        run.None("SM0042");
     }
 
     // -----------------------------------------------------------------
-    // METADATA — every mapper announces itself.
+    // THE METADATA.
     // -----------------------------------------------------------------
 
-    /// <summary>
-    /// EVERY MAPPER EMITS DECLARATION METADATA, even one that declares nothing, so a consumer can
-    /// tell "built with the generator" from "built without it" (SM0028). And what a constructor
-    /// composes is written down, so a consumer that includes the mapper follows it.
-    /// </summary>
+    /// <summary>Every mapper class and pack writes what it declares, and what it composes, into metadata.</summary>
     [Fact]
     public void Every_mapper_and_pack_emits_metadata_including_what_it_composes()
     {
@@ -631,49 +459,42 @@ public class IncludeTests
             """
             public class Rules : ShiftMapperConversions
             {
-                public Rules() => CreateConversion<int, string>(i => "I" + i, i => "I" + i);
+                public Rules() => CreateConversion<int, string>(i => "#" + i, i => "#" + i);
             }
 
-            public partial class BrandMapper : ShiftMapperBase
+            public class BrandMapper : ShiftMapperBase
             {
-                public BrandMapper() => CreateMap<Brand, BrandDto>();
-            }
-
-            public partial class EmptyMapper : ShiftMapperBase
-            {
-            }
-
-            public partial class TestMapper : ShiftMapperBase
-            {
-                public TestMapper()
+                public BrandMapper()
                 {
-                    IncludeMapper<BrandMapper>();
                     AddConversions<Rules>();
+                    CreateMap<Brand, BrandDto>();
                 }
+            }
+
+            public class StockMapper : ShiftMapperBase
+            {
+                public StockMapper() => CreateMap<Stock, StockDto>();
             }
             """);
 
         run.Compiles();
 
-        Assert.Contains("ShiftMapperContract(2)", run.Metadata);
-        Assert.Contains("ShiftMapperDeclaredMapper(typeof(global::TestMapper))", run.Metadata);
-        Assert.Contains("ShiftMapperDeclaredMapper(typeof(global::EmptyMapper))", run.Metadata);
+        Assert.Contains("ShiftMapperDeclaredMapper(typeof(global::BrandMapper)", run.Metadata);
+        Assert.Contains("ShiftMapperDeclaredMapper(typeof(global::StockMapper)", run.Metadata);
         Assert.Contains("ShiftMapperDeclaredPack(typeof(global::Rules))", run.Metadata);
-        Assert.Contains("ShiftMapperDeclaredComposition(typeof(global::TestMapper), typeof(global::BrandMapper))", run.Metadata);
-        Assert.Contains("ShiftMapperDeclaredComposition(typeof(global::TestMapper), typeof(global::Rules))", run.Metadata);
-        Assert.Contains("ShiftMapperDeclaredConversion(typeof(global::Rules), typeof(int), typeof(string), HasQueryForm = true)", run.Metadata);
-        Assert.Contains("ShiftMapperDeclaredMap(typeof(global::BrandMapper), typeof(global::Brand), typeof(global::BrandDto))", run.Metadata);
+        Assert.Contains("ShiftMapperDeclaredComposition(typeof(global::BrandMapper), typeof(global::Rules))", run.Metadata);
+        Assert.Contains("ShiftMapperDeclaredMap(typeof(global::BrandMapper), typeof(global::Brand), typeof(global::BrandDto)", run.Metadata);
     }
 
-    /// <summary>A mapper's <c>ConfigureDefaults</c> travels with it, so a consumer applies the same defaults.</summary>
+    /// <summary>A class's ConfigureDefaults travels in its metadata, so a consuming project builds its maps the same way.</summary>
     [Fact]
     public void ConfigureDefaults_travels_in_the_metadata()
     {
         GeneratorRun run = Run(
             """
-            public partial class TestMapper : ShiftMapperBase
+            public class BrandMapper : ShiftMapperBase
             {
-                public TestMapper() => CreateMap<Brand, BrandDto>();
+                public BrandMapper() => CreateMap<Brand, BrandDto>();
 
                 protected override void ConfigureDefaults(MapOptions options)
                     => options.Matching = PropertyMatching.CaseSensitive;
@@ -682,28 +503,6 @@ public class IncludeTests
 
         run.Compiles();
 
-        Assert.Contains(
-            "ShiftMapperDeclaredMapper(typeof(global::TestMapper), CaseSensitive = global::ShiftMapper.DeclaredOption.True)",
-            run.Metadata);
+        Assert.Contains("ShiftMapperDeclaredMapper(typeof(global::BrandMapper), CaseSensitive = global::ShiftMapper.DeclaredOption.True", run.Metadata);
     }
-
-    /// <summary>A SEALED mapper gets no virtual members — C# would refuse them.</summary>
-    [Fact]
-    public void A_sealed_mapper_has_no_virtual_members()
-    {
-        GeneratorRun run = Run(
-            """
-            public sealed partial class TestMapper : ShiftMapperBase
-            {
-                public TestMapper() => CreateMap<Brand, BrandDto>();
-            }
-            """);
-
-        run.Compiles()
-           .Emits("public global::BrandDto MapToBrandDto(global::Brand source)")
-           .DoesNotEmit("virtual");
-    }
-
-    private static int Occurrences(string text, string fragment) =>
-        text.Split([fragment], StringSplitOptions.None).Length - 1;
 }

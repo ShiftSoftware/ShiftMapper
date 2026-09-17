@@ -13,17 +13,25 @@ public sealed class GeneratorRun
         ImmutableArray<Diagnostic> diagnostics,
         ImmutableArray<string> generatedFiles,
         ImmutableArray<Diagnostic> compilerErrors,
-        ImmutableArray<string> declarationMetadata = default)
+        ImmutableArray<string> declarationMetadata = default,
+        Compilation? compilation = null)
     {
         Source = source;
         Diagnostics = diagnostics;
         GeneratedFiles = generatedFiles;
         CompilerErrors = compilerErrors;
         DeclarationMetadata = declarationMetadata.IsDefault ? ImmutableArray<string>.Empty : declarationMetadata;
+        Compilation = compilation;
     }
 
     /// <summary>The snippet, kept so a diagnostic's span can be turned back into the code it names.</summary>
     public string Source { get; }
+
+    /// <summary>
+    /// The compilation WITH the generated code in it, for a test that wants to run what was
+    /// generated rather than read it. See <see cref="GeneratorRunAssertions.Load"/>.
+    /// </summary>
+    public Compilation? Compilation { get; }
 
     /// <summary>What the generator reported — the SM#### messages.</summary>
     public ImmutableArray<Diagnostic> Diagnostics { get; }
@@ -104,6 +112,32 @@ public static class GeneratorRunAssertions
             $"'{diagnostic.Id}' points past the end of the snippet.{Describe(run)}");
 
         return run.Source.Substring(span.Start, span.Length);
+    }
+
+    /// <summary>
+    /// Compiles the snippet and its generated half to an in-memory assembly and loads it, so a
+    /// test can construct the generated mapper and MAP with it. The runtime library the snippet
+    /// binds against is the very one this test process runs, so what executes is the real thing.
+    /// </summary>
+    public static System.Reflection.Assembly Load(this GeneratorRun run)
+    {
+        run.Compiles();
+
+        Assert.NotNull(run.Compilation);
+
+        using var stream = new MemoryStream();
+
+        Microsoft.CodeAnalysis.Emit.EmitResult emitted = run.Compilation!.Emit(stream);
+
+        Assert.True(
+            emitted.Success,
+            "The generated code does not emit:" + Environment.NewLine +
+            string.Join(Environment.NewLine, emitted.Diagnostics
+                .Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)
+                .Select(diagnostic => "  " + diagnostic)) +
+            Describe(run));
+
+        return System.Reflection.Assembly.Load(stream.ToArray());
     }
 
     /// <summary>Asserts the snippet plus everything the generator wrote still compiles.</summary>

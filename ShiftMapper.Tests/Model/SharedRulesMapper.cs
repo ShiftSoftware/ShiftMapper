@@ -26,7 +26,7 @@ public class TicketDto
 }
 
 /// <summary>Declares one map and nothing else. See the note at the top of the file.</summary>
-public partial class SharedRulesMapper : ShiftMapperBase
+public class SharedRulesMapper : ShiftMapperBase
 {
     public SharedRulesMapper() => CreateMap<Ticket, TicketDto>();
 }

@@ -1,23 +1,22 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using System.Linq.Expressions;
+using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace ShiftMapper;
 
 /// <summary>
-/// Base class for a mapper.
-///
-/// You write a small partial class that derives from this and declares its maps in the
-/// CONSTRUCTOR; the ShiftMapper source generator writes the other half of that same class,
-/// containing the real Map methods.
+/// Base class for a mapper — a class whose CONSTRUCTOR declares maps.
 ///
 /// <code>
-/// public partial class AppMapper : ShiftMapperBase
+/// public class CatalogMapper : ShiftMapperBase
 /// {
 ///     private readonly ICurrencyService _currency;
 ///
-///     public AppMapper(ICurrencyService currency)
+///     public CatalogMapper(ICurrencyService currency)
 ///     {
 ///         _currency = currency;           // ordinary constructor injection
 ///
@@ -28,20 +27,19 @@ namespace ShiftMapper;
 /// }
 /// </code>
 ///
-/// Register it with <c>builder.Services.AddShiftMapper&lt;AppMapper&gt;();</c>.
+/// <para><b>NOTHING IS GENERATED ONTO THIS CLASS, AND NOTHING INJECTS IT.</b> It is a place to
+/// write declarations. The ShiftMapper generator reads every such class in a project — and every
+/// one declared by the packages the project references — and writes ONE generated class per
+/// assembly holding all of their maps, reached through <see cref="Mapper"/>: inject that, call
+/// <c>mapper.Map&lt;BrandDto&gt;(brand)</c>. Write as many mapper classes as read well; none of them
+/// needs to be partial, registered, or named anywhere.</para>
 ///
-/// The generator writes the real mapping code as INSTANCE methods on your class, plus
-/// EXTENSION methods that forward to them. Both spellings do the same work, so use
-/// whichever reads better where you are:
-/// <code>
-/// // instance
-/// var dto = mapper.Map&lt;BrandDto&gt;(brand);
-/// mapper.Map(brand, existingDto);
+/// <para>A mapper class is constructed the first time anything is mapped, with its dependencies
+/// injected, so what its constructor registers at run time — the <c>MapFrom</c> trees, the hooks,
+/// the factories — is where the generated code looks for it. The rest of the declaration API
+/// (<c>CreateMap</c> and its chain) does nothing at run time: it is read at compile time.</para>
 ///
-/// // extension — the mapper comes last
-/// var dto = brand.Map&lt;BrandDto&gt;(mapper);
-/// brand.Map(existingDto, mapper);
-/// </code>
+/// <para>Register once, in the application: <c>builder.Services.AddShiftMapper();</c>.</para>
 /// </summary>
 public abstract class ShiftMapperBase
 {
@@ -65,8 +63,8 @@ public abstract class ShiftMapperBase
     public IServiceProvider Services =>
         _services ?? throw new InvalidOperationException(
             $"ShiftMapper: no service provider has been set on '{DeclaringType.Name}'. That happens " +
-            "when the mapper is constructed directly instead of resolved from DI. Register it " +
-            $"with services.AddShiftMapper<{DeclaringType.Name}>() and inject it.");
+            "when the mapper is constructed directly instead of resolved from DI. Register with " +
+            "services.AddShiftMapper() and inject Mapper.");
 
     /// <summary>
     /// Called by <c>AddShiftMapper</c> when the mapper is created. Internal on purpose:
@@ -84,8 +82,8 @@ public abstract class ShiftMapperBase
     /// robust than trying to copy your code into the generated file as text. So it survives
     /// here, and the generated code reads it from this property.
     ///
-    /// Protected because the generated half of your mapper is the only thing that should touch
-    /// it; that code lives in the same partial class, so protected is enough.
+    /// Protected because the generated mapper — which derives from this class — is the only
+    /// thing that should touch it.
     /// </summary>
     protected MapCustomizations Customizations
     {
@@ -107,7 +105,7 @@ public abstract class ShiftMapperBase
     /// </summary>
     private readonly MapCustomizations _customizations;
 
-    /// <summary>The mapper types <see cref="IncludeMapper{TMapper}"/> recorded, in order.</summary>
+    /// <summary>The mapper types this one includes, in order — what the generated mapper's metadata says, plus what a registration added.</summary>
     private List<Type>? _includedTypes;
 
     /// <summary>The pack types <see cref="AddConversions{TPack}"/> recorded, in order.</summary>
@@ -128,11 +126,8 @@ public abstract class ShiftMapperBase
     /// The type whose DECLARATIONS this instance's constructor registers — the key every
     /// conversion it declares is stored under, and the one the generated code looks it up by.
     ///
-    /// <para>Normally the runtime type. The one exception is the ADAPTER the generator writes for a
-    /// mapper registered from a referenced package: the adapter derives from that mapper and runs
-    /// its constructor, but the conversions that constructor declares were compiled under the
-    /// package mapper's own name, so the adapter overrides this to say so. Nobody else needs
-    /// to.</para>
+    /// <para>The runtime type. Virtual so a derived class that runs another mapper's constructor
+    /// could say whose declarations those are; nothing ShiftMapper generates does.</para>
     /// </summary>
     protected virtual Type DeclaringType => GetType();
 
@@ -219,48 +214,6 @@ public abstract class ShiftMapperBase
     protected MemberConventionExpression<TMember> CreateMemberConvention<TMember>() => new();
 
     /// <summary>
-    /// Declares that this mapper also has every map ANOTHER mapper declares. Call it from your
-    /// constructor, like <c>CreateMap</c>.
-    ///
-    /// <code>
-    /// public partial class AppMapper : ShiftMapperBase
-    /// {
-    ///     public AppMapper()
-    ///     {
-    ///         IncludeMapper&lt;CatalogMapper&gt;();
-    ///         IncludeMapper&lt;PlatformMapper&gt;();   // from a referenced package
-    ///     }
-    /// }
-    /// </code>
-    ///
-    /// <para>The included mapper's maps become THIS mapper's maps — <c>mapper.Map&lt;BrandDto&gt;(brand)</c>
-    /// and <c>ProjectTo</c> work exactly as if the <c>CreateMap</c> had been written here, and a
-    /// map written here may nest one of them. The included mapper is unchanged: it keeps its own
-    /// generated methods and can still be registered and injected on its own.</para>
-    ///
-    /// <para><b>WHAT COMES ALONG.</b> Its maps, open generic maps, and whatever it includes in turn.
-    /// Its <c>CreateConversion</c>s and member conventions come along too, but keep their reach:
-    /// they apply to the maps IT declared, not to the ones written here — see
-    /// <see cref="CreateConversion{TSource, TDestination}"/>.</para>
-    ///
-    /// <para>UNLIKE the rest of the declaration API, this one does something at run time as well
-    /// as at compile time. The generator reads it to find the maps; the call itself records the
-    /// type so the mapper can be CONSTRUCTED later — which is what puts its <c>MapFrom</c> trees
-    /// where the generated code looks for them.</para>
-    ///
-    /// <para>"Later" rather than "now" is deliberate: an included mapper may take constructor
-    /// dependencies, and this mapper's <see cref="Services"/> is not assigned until after its own
-    /// constructor returns. So included mappers are built on first use — from the service
-    /// provider when the mapper came from DI (resolved if registered, constructed with its
-    /// dependencies injected otherwise), and through the parameterless constructor when it did
-    /// not.</para>
-    ///
-    /// <para>A pair declared BOTH here and in an included mapper keeps the version written here,
-    /// and the build reports the clash (SM0027) rather than leaving you to find out which won.</para>
-    /// </summary>
-    protected void IncludeMapper<TMapper>() where TMapper : ShiftMapperBase => IncludeMapper(typeof(TMapper));
-
-    /// <summary>
     /// Gives this mapper the rules of a <see cref="ShiftMapperConversions"/> pack. Call it from your
     /// constructor, like <c>CreateMap</c>.
     ///
@@ -272,19 +225,20 @@ public abstract class ShiftMapperBase
     /// }
     /// </code>
     ///
-    /// <para>The pack's conversions and member conventions apply to every map this mapper declares
-    /// and to every map it includes. A rule this mapper wrote itself still wins over the pack's, and
-    /// a pack added here wins over one the registration gave every mapper.</para>
+    /// <para>The pack's conversions and member conventions apply to every map THIS mapper declares.
+    /// A rule this mapper wrote itself still wins over the pack's, and a pack added here wins over
+    /// one the registration gave every mapper.</para>
     ///
-    /// <para>Like <see cref="IncludeMapper{TMapper}"/> this both tells the generator and records
-    /// the type, so the pack can be constructed on first use — through DI when there is a
-    /// provider, so it may take dependencies.</para>
+    /// <para>Unlike <c>CreateMap</c> this does something at run time as well: it records the type,
+    /// so the pack can be constructed on first use — through DI when there is a provider, so it
+    /// may take dependencies.</para>
     /// </summary>
     protected void AddConversions<TPack>() where TPack : ShiftMapperConversions => AddConversions(typeof(TPack));
 
     /// <summary>
-    /// The non-generic form <c>AddShiftMapper</c> uses for includes written at registration.
-    /// Internal because the registration API is the only other place a type may arrive from.
+    /// Records a mapper to include — what the GENERATED mapper's metadata lists, applied by
+    /// <see cref="EnsureIncluded"/>, and what a registration adds. Internal: nobody writes an
+    /// include by hand any more, because the generator includes everything it can see.
     /// </summary>
     internal void IncludeMapper(Type mapper)
     {
@@ -345,6 +299,18 @@ public abstract class ShiftMapperBase
         if (_materialised)
             return;
 
+        // WHAT THE GENERATED MAPPER COMPOSES — every mapper and pack the generator folded into it —
+        // is written into its assembly as metadata, and read from there: one list, whether the
+        // instance came from DI, from Mapper.Create, or from a bare new. Before the flag below,
+        // because recording an include clears it.
+        foreach (Type composed in Composition.For(GetType()))
+        {
+            if (typeof(ShiftMapperConversions).IsAssignableFrom(composed))
+                AddConversions(composed);
+            else
+                IncludeMapper(composed);
+        }
+
         // Set FIRST. A constructor that reached back into this mapper would otherwise re-enter
         // here and build the same set again, forever.
         _materialised = true;
@@ -396,6 +362,25 @@ public abstract class ShiftMapperBase
     {
     }
 
+    /// <summary>
+    /// What a generated mapper composes, read once per type from the
+    /// <see cref="ShiftMapperDeclaredCompositionAttribute"/>s its assembly carries: every mapper
+    /// class and every pack the generator folded into it. A hand-written mapper class composes
+    /// nothing this way — its assembly lists nothing under its name — so the read costs it one
+    /// empty lookup.
+    /// </summary>
+    private static class Composition
+    {
+        private static readonly ConcurrentDictionary<Type, Type[]> ByType = new();
+
+        public static Type[] For(Type generated) =>
+            ByType.GetOrAdd(generated, static type =>
+                type.Assembly.GetCustomAttributes<ShiftMapperDeclaredCompositionAttribute>()
+                    .Where(attribute => attribute.Mapper == type)
+                    .Select(attribute => attribute.Composed)
+                    .ToArray());
+    }
+
     private object Construct(Type type, string kind)
     {
         if (_services is not null)
@@ -415,8 +400,8 @@ public abstract class ShiftMapperBase
         {
             throw new InvalidOperationException(
                 $"ShiftMapper: the {kind} '{type.Name}' takes constructor arguments, so it has to " +
-                $"come from DI, but '{GetType().Name}' was not resolved from a service provider. " +
-                "Resolve the mapper through AddShiftMapper, or give the " + kind + " a " +
+                "come from DI, but the mapper was not resolved from a service provider. " +
+                "Resolve Mapper through AddShiftMapper(), or give the " + kind + " a " +
                 "parameterless constructor.",
                 error);
         }

@@ -10,7 +10,7 @@ SM0001 | ShiftMapper | Warning | Destination property has no matching source pro
 SM0002 | ShiftMapper | Warning | Destination property is not mapped because ShiftMapper does not convert between the two types
 SM0003 | ShiftMapper | Warning | Destination property is not mapped because its setter is not public
 SM0004 | ShiftMapper | Warning | Destination type has no constructor ShiftMapper can call
-SM0005 | ShiftMapper | Warning | No mapping code was generated for a ShiftMapperBase-derived class
+SM0005 | ShiftMapper | Warning | A generic mapper class cannot be included in the generated mapper
 SM0006 | ShiftMapper | Info | Reverse map leaves a destination property unmapped
 SM0007 | ShiftMapper | Warning | Destination property matches several source properties when case is ignored
 SM0008 | ShiftMapper | Info | Destination property is mapped through a conversion that can lose information
@@ -32,7 +32,7 @@ SM0023 | ShiftMapper | Warning | Include cannot dispatch to the derived pair
 SM0024 | ShiftMapper | Warning | Map cannot be projected because it dispatches on the runtime type
 SM0025 | ShiftMapper | Warning | As names a type that cannot stand in for the destination
 SM0026 | ShiftMapper | Warning | Open generic map was not closed
-SM0027 | ShiftMapper | Warning | A map is declared both in an included mapper and in the mapper that includes it
+SM0027 | ShiftMapper | Warning | A map is declared both in this project and by a referenced package
 SM0028 | ShiftMapper | Error | A referenced assembly carries no ShiftMapper declaration metadata
 SM0030 | ShiftMapper | Warning | Map cannot be projected because a conversion has no query form
 SM0031 | ShiftMapper | Error | Two packs declare a conversion for the same type pair
@@ -43,9 +43,7 @@ SM0035 | ShiftMapper | Error | A declaration cannot be honoured where it is writ
 SM0036 | ShiftMapper | Warning | Map cannot be projected because a map it nests cannot
 SM0037 | ShiftMapper | Warning | ProjectTo cannot be used for this pair
 SM0038 | ShiftMapper | Warning | This member convention fills nothing
-SM0039 | ShiftMapper | Error | A sealed mapper from a referenced assembly cannot be registered here
-SM0040 | ShiftMapper | Error | Two registered mappers declare their own map for the same pair
-SM0041 | ShiftMapper | Warning | A mapper is registered with different includes or packs in two calls
 SM0042 | ShiftMapper | Error | A map is declared twice with nothing to choose between the two
-SM0043 | ShiftMapper | Info | A referenced package shared a pack with every mapper this call registers
-SM0044 | ShiftMapper | Error | A shared pack must be public
+SM0043 | ShiftMapper | Info | A referenced package shared a pack or a mapper class with this project
+SM0044 | ShiftMapper | Error | A shared pack or mapper class must be public
+SM0046 | ShiftMapper | Warning | A registration line has no effect under the project's discovery mode

@@ -8,23 +8,20 @@ namespace ShiftMapper.Sample.Mapping;
 /// splitting mappers. Every line below used to sit in AppMapper's constructor, which was six
 /// hundred lines long and growing by a feature a step.
 ///
-/// <para><b>IT IS AN ORDINARY MAPPER.</b> It gets its own generated Map methods, so a service
-/// that only deals with the catalogue can inject <c>CatalogMapper</c> and call
-/// <c>catalog.Map&lt;CatalogItemDto&gt;(item)</c>. AND its maps are AppMapper's maps too, because
-/// AppMapper includes it: <c>mapper.Map&lt;CatalogItemDto&gt;(item)</c> and
-/// <c>db.CatalogItems.OfType&lt;PhysicalItem&gt;().ProjectTo&lt;PhysicalItemDto&gt;(mapper)</c> work
-/// exactly as before, and /api/catalog is untouched.</para>
+/// <para><b>IT IS A PLACE TO WRITE, AND NOTHING MORE.</b> Nothing is generated onto this class
+/// and nothing injects it: the generator reads every mapper class in the project into the one
+/// generated mapper behind <c>ShiftMapper.Mapper</c>, so <c>mapper.Map&lt;CatalogItemDto&gt;(item)</c>
+/// and <c>db.CatalogItems.OfType&lt;PhysicalItem&gt;().ProjectTo&lt;PhysicalItemDto&gt;(mapper)</c>
+/// work exactly as if the CreateMaps below had been written in AppMapper, and /api/catalog is
+/// untouched.</para>
 ///
-/// <para><b>INCLUSION CROSSES BOUNDARIES.</b> The open generic at the foot of this file closes
-/// over pairs declared in OTHER files — PagedResultDto&lt;BrandDto&gt; comes from a CreateMap in
-/// AppMapper itself, once this mapper is included there. An <c>IncludeBase</c> works the same way
-/// round. An included mapper is a place to write, not a wall.</para>
+/// <para><b>FILES ARE NOT WALLS.</b> The open generic at the foot of this file closes over pairs
+/// declared in OTHER files — PagedResultDto&lt;BrandDto&gt; comes from a CreateMap in AppMapper.
+/// An <c>IncludeBase</c> works the same way round.</para>
 ///
 /// <para>This one takes no dependencies. See <see cref="InvoiceLabelMapper"/> for the other case.</para>
-///
-/// Included by <c>IncludeMapper&lt;CatalogMapper&gt;()</c> in <see cref="AppMapper"/>.
 /// </summary>
-public partial class CatalogMapper : ShiftMapperBase
+public class CatalogMapper : ShiftMapperBase
 {
     public CatalogMapper()
     {

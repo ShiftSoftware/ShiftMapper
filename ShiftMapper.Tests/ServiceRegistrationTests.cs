@@ -14,7 +14,7 @@ public class ServiceRegistrationTests
     {
         var services = new ServiceCollection();
         services.AddSingleton<IInvoiceNumbering, InvoiceNumbering>();
-        services.AddShiftMapper<TestMapper>(lifetime);
+        services.AddShiftMapper(lifetime);
 
         return services.BuildServiceProvider();
     }
@@ -24,7 +24,9 @@ public class ServiceRegistrationTests
     {
         using ServiceProvider provider = Build();
 
-        Assert.Equal("IQ/", provider.GetRequiredService<TestMapper>().ConfiguredPrefix);
+        // TestMapper's Invoice map closes over its injected numbering; the prefix on the way out
+        // is the proof the class was built from the container.
+        Assert.Equal("IQ/0001", provider.GetRequiredService<Mapper>().Map<InvoiceDto>(new Invoice { Number = "0001" }).Number);
     }
 
     /// <summary>
@@ -36,7 +38,7 @@ public class ServiceRegistrationTests
     {
         using ServiceProvider provider = Build();
 
-        TestMapper mapper = provider.GetRequiredService<TestMapper>();
+        Mapper mapper = provider.GetRequiredService<Mapper>();
 
         Assert.NotNull(mapper.Services.GetService(typeof(IInvoiceNumbering)));
     }
@@ -51,12 +53,12 @@ public class ServiceRegistrationTests
         using IServiceScope second = provider.CreateScope();
 
         Assert.Same(
-            first.ServiceProvider.GetRequiredService<TestMapper>(),
-            first.ServiceProvider.GetRequiredService<TestMapper>());
+            first.ServiceProvider.GetRequiredService<Mapper>(),
+            first.ServiceProvider.GetRequiredService<Mapper>());
 
         Assert.NotSame(
-            first.ServiceProvider.GetRequiredService<TestMapper>(),
-            second.ServiceProvider.GetRequiredService<TestMapper>());
+            first.ServiceProvider.GetRequiredService<Mapper>(),
+            second.ServiceProvider.GetRequiredService<Mapper>());
     }
 
     [Fact]
@@ -68,8 +70,8 @@ public class ServiceRegistrationTests
         using IServiceScope second = provider.CreateScope();
 
         Assert.Same(
-            first.ServiceProvider.GetRequiredService<TestMapper>(),
-            second.ServiceProvider.GetRequiredService<TestMapper>());
+            first.ServiceProvider.GetRequiredService<Mapper>(),
+            second.ServiceProvider.GetRequiredService<Mapper>());
     }
 
     /// <summary>
@@ -79,12 +81,12 @@ public class ServiceRegistrationTests
     [Fact]
     public void A_mapper_constructed_by_hand_says_why_it_has_no_services()
     {
-        var mapper = new TestMapper(new InvoiceNumbering());
+        var mapper = new Mapper();
 
         InvalidOperationException error = Assert.Throws<InvalidOperationException>(() => mapper.Services);
 
-        Assert.Contains("no service provider has been set", error.Message);
-        Assert.Contains("AddShiftMapper<TestMapper>()", error.Message);
+        Assert.Contains("outside a service provider", error.Message);
+        Assert.Contains("AddShiftMapper()", error.Message);
     }
 
     /// <summary>Everything the generated methods do works the same on a mapper resolved from DI.</summary>
@@ -93,7 +95,7 @@ public class ServiceRegistrationTests
     {
         using ServiceProvider provider = Build();
 
-        BrandDto dto = provider.GetRequiredService<TestMapper>().Map<BrandDto>(new Brand
+        BrandDto dto = provider.GetRequiredService<Mapper>().Map<BrandDto>(new Brand
         {
             Id = 1,
             Name = "Acme",
