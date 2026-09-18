@@ -1,4 +1,4 @@
-﻿using System.Collections.Immutable;
+using System.Collections.Immutable;
 
 namespace ShiftMapper.Generator;
 
@@ -25,8 +25,10 @@ internal sealed class DeclarationModel
         ImmutableArray<DeclaredConventionModel> conventions,
         ImmutableArray<string> composed,
         DeclaredDefaults defaults,
-        bool isFirstPart)
+        bool isFirstPart,
+        ImmutableArray<DeclaredIgnoreModel> ignores = default)
     {
+        Ignores = ignores.IsDefault ? ImmutableArray<DeclaredIgnoreModel>.Empty : ignores;
         IsFirstPart = isFirstPart;
         DeclaringType = declaringType;
         IsPack = isPack;
@@ -65,6 +67,9 @@ internal sealed class DeclarationModel
     /// marker and the defaults, so a mapper split over files announces itself once.
     /// </summary>
     public bool IsFirstPart { get; }
+
+    /// <summary>The <c>IgnoreMember</c> rules this part declared.</summary>
+    public ImmutableArray<DeclaredIgnoreModel> Ignores { get; }
 }
 
 /// <summary>A mapper's <c>ConfigureDefaults</c>, as it travels: three-state options and naming.</summary>
@@ -118,8 +123,12 @@ internal sealed class DeclaredMapModel
         bool? allowNullCollections,
         bool? flattening,
         ImmutableArray<string> prefixes,
-        ImmutableArray<string> postfixes)
+        ImmutableArray<string> postfixes,
+        bool isImplicit = false,
+        string? configuredBy = null)
     {
+        IsImplicit = isImplicit;
+        ConfiguredBy = configuredBy;
         Source = source;
         Destination = destination;
         Ignored = ignored;
@@ -184,6 +193,29 @@ internal sealed class DeclaredMapModel
     public ImmutableArray<string> Prefixes { get; }
 
     public ImmutableArray<string> Postfixes { get; }
+
+    /// <summary>Declared by a marker, not a <c>CreateMap</c>; a consumer's own declaration replaces it silently.</summary>
+    public bool IsImplicit { get; }
+
+    /// <summary>The type whose configuration surface customized it, fully qualified, or null.</summary>
+    public string? ConfiguredBy { get; }
+}
+
+/// <summary>One <c>IgnoreMember</c> rule, as declared: the declaring type unbound, the member, the role.</summary>
+internal sealed class DeclaredIgnoreModel
+{
+    public DeclaredIgnoreModel(string declaring, string member, int role)
+    {
+        Declaring = declaring;
+        Member = member;
+        Role = role;
+    }
+
+    public string Declaring { get; }
+
+    public string Member { get; }
+
+    public int Role { get; }
 }
 
 /// <summary>One <c>CreateMemberConvention</c> a mapper or pack declared — entirely shape.</summary>
@@ -217,6 +249,9 @@ internal sealed class DeclaredConventionModel
     public ImmutableArray<string> WhenDestinationIs { get; }
 
     public int Direction { get; }
+
+    /// <summary>The <c>ForEachElement()</c> entries, spelled like <see cref="Fill"/>; empty when the rule claims no collections.</summary>
+    public ImmutableArray<string> ElementFill { get; set; } = ImmutableArray<string>.Empty;
 }
 
 /// <summary>One <c>CreateConversion</c> a mapper or pack declared.</summary>

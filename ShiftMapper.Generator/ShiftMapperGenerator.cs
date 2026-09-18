@@ -78,6 +78,9 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     /// </summary>
     private const string MemberConventionMetadataName = "ShiftMapper.MemberConventionExpression`1";
 
+    /// <summary>The handle <c>ForEachElement</c> returns — the element half of a member convention.</summary>
+    private const string ElementConventionMetadataName = "ShiftMapper.ElementConventionExpression`1";
+
     /// <summary>
     /// The single namespace every generated extension class lives in. It is globally
     /// imported, so it deliberately contains nothing but ShiftMapper's own classes.
@@ -117,7 +120,15 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             .Where(static model => model is not null)
             .Select(static (model, _) => model!);
 
-        context.RegisterSourceOutput(declared.Collect(), static (spc, models) => EmitDeclarations(spc, models));
+        // The IMPLICIT maps are declared too — by the generated implicit mapper — so that a project
+        // referencing this one reads them exactly as it reads a package mapper's. They depend on the
+        // whole compilation, like the generated mapper they come from.
+        IncrementalValueProvider<DeclarationModel?> implicitDeclared = context.CompilationProvider
+            .Select(static (compilation, ct) => ImplicitDeclaration(compilation, ct));
+
+        context.RegisterSourceOutput(
+            declared.Collect().Combine(implicitDeclared),
+            static (spc, pair) => EmitDeclarations(spc, pair.Right is null ? pair.Left : pair.Left.Add(pair.Right)));
 
         // THE THIRD OUTPUT: what this project's registrations SHARE with every project that
         // references it — o.ShareConversions<T>() — written into the assembly as metadata, the way
@@ -242,7 +253,8 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         ClassDeclarationSyntax? ownPart,
         bool isPrimaryPart,
         LocationInfo? location,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        List<PositionedProblem>? implicitProblems = null)
     {
         INamedTypeSymbol classSymbol = set.Mapper;
         INamedTypeSymbol baseClass = compilation.GetTypeByMetadataName(BaseClassMetadataName)!;
@@ -273,12 +285,15 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         ReadConversions(compilation, set, baseClass, packBase, conversions, cancellationToken);
         ReadMemberConventions(compilation, set, baseClass, packBase, conventions, declaredProblems, cancellationToken);
 
+        var ignores = new IgnoreScopes();
+        ReadIgnoreRules(compilation, set, baseClass, packBase, ignores, cancellationToken);
+
         // SCOPES THAT ARRIVED AS METADATA. Their own build wrote down what they declare, because a
         // generator compiling this assembly sees a reference as metadata and no method bodies. What
         // comes back is the same shape the source path produces, so everything below treats a
         // package's map as an ordinary map — and what THEY compose is followed and folded in.
         DeclaredMappers.Recovered recovered = DeclaredMappers.Read(
-            compilation, set.Metadata, conversions, conventions, declaredProblems);
+            compilation, set.Metadata, conversions, conventions, ignores, declaredProblems);
 
         ApplyCompositions(set, recovered, cancellationToken);
 
@@ -305,7 +320,12 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
 
             ClassDefaults defaults;
 
-            if (scope.IsMetadata)
+            // The implicit scope stands for a generated class with no ConfigureDefaults of its own.
+            if (scope.IsImplicit)
+            {
+                defaults = new ClassDefaults(null, null, null, NamingConventions.Empty);
+            }
+            else if (scope.IsMetadata)
             {
                 DeclaredDefaults declared = recovered.Defaults.TryGetValue(scope.Name, out DeclaredDefaults found)
                     ? found
@@ -333,12 +353,12 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
 
         // THE CHAIN for each declaring scope: its own rules first, then outward. Built once per
         // scope and reused by every map it declared.
-        var chains = new Dictionary<string, (ConversionTable Conversions, List<MemberConventions.Convention> Conventions)>(StringComparer.Ordinal);
+        var chains = new Dictionary<string, (ConversionTable Conversions, List<MemberConventions.Convention> Conventions, List<IgnoreRule> Ignores)>(StringComparer.Ordinal);
         var conflicts = new HashSet<string>(StringComparer.Ordinal);
 
-        (ConversionTable, List<MemberConventions.Convention>) ChainFor(DeclarationScope scope)
+        (ConversionTable, List<MemberConventions.Convention>, List<IgnoreRule>) ChainFor(DeclarationScope scope)
         {
-            if (chains.TryGetValue(scope.Name, out (ConversionTable, List<MemberConventions.Convention>) known))
+            if (chains.TryGetValue(scope.Name, out (ConversionTable, List<MemberConventions.Convention>, List<IgnoreRule>) known))
                 return known;
 
             ConversionTable chain = conversions.ChainFor(set, scope);
@@ -352,7 +372,8 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                     declaredProblems.Add(conflict);
             }
 
-            (ConversionTable, List<MemberConventions.Convention>) built = (chain, conventions.ChainFor(set, scope));
+            (ConversionTable, List<MemberConventions.Convention>, List<IgnoreRule>) built =
+                (chain, conventions.ChainFor(set, scope), ignores.ChainFor(set, scope));
             chains[scope.Name] = built;
 
             return built;
@@ -375,7 +396,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         List<DeclarationScope> partScopes = ScopesForPart(compilation, set, ownPart, isPrimaryPart, baseClass, recovered, cancellationToken);
 
         ClassDefaults ownDefaults = DefaultsFor(set.Own);
-        (ConversionTable ownConversions, List<MemberConventions.Convention> ownConventions) = ChainFor(set.Own);
+        (ConversionTable ownConversions, List<MemberConventions.Convention> ownConventions, List<IgnoreRule> ownIgnores) = ChainFor(set.Own);
 
         // THE MAPPER'S OWN MAPS FIRST — so a pair written here wins over one arriving from an
         // included mapper, exactly as the runtime's merge keeps what is already there.
@@ -395,7 +416,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                              ownModel, invocation, createMap, mapExpression, memberOptions,
                              allMemberOptions, mapOptions, ownDefaults.CaseSensitive,
                              ownDefaults.AllowNullCollections, ownDefaults.Flattening, ownDefaults.Naming,
-                             Lookup, ownConversions, ownConventions, declaredProblems, set.Own.Name, cancellationToken))
+                             Lookup, ownConversions, ownConventions, ownIgnores, declaredProblems, set.Own.Name, cancellationToken))
                 {
                     // EVERY declaration is kept, duplicates included: which one survives, and
                     // whether a duplicate is a clash or the same declaration reached twice, is
@@ -410,7 +431,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             // An ADAPTER: the mapper's own maps are the ones its package declared.
             foreach (MapModel recoveredMap in RecoverMaps(
                          compilation, recovered, set.Own.Name, DefaultsFor(set.Own), ownConversions,
-                         ownConventions, Lookup, declaredProblems, location))
+                         ownConventions, ownIgnores, Lookup, declaredProblems, location))
             {
                 seen.Add(recoveredMap.Key);
                 maps.Add(recoveredMap);
@@ -427,12 +448,12 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         foreach (DeclarationScope scope in partScopes)
         {
             ClassDefaults defaults = DefaultsFor(scope);
-            (ConversionTable scopeConversions, List<MemberConventions.Convention> scopeConventions) = ChainFor(scope);
+            (ConversionTable scopeConversions, List<MemberConventions.Convention> scopeConventions, List<IgnoreRule> scopeIgnores) = ChainFor(scope);
 
             IEnumerable<MapModel> included = scope.IsMetadata
-                ? RecoverMaps(compilation, recovered, scope.Name, defaults, scopeConversions, scopeConventions, Lookup, declaredProblems, location)
+                ? RecoverMaps(compilation, recovered, scope.Name, defaults, scopeConversions, scopeConventions, scopeIgnores, Lookup, declaredProblems, location)
                 : SyntaxMaps(compilation, scope, baseClass, mapExpression, memberOptions, allMemberOptions, mapOptions,
-                    defaults, Lookup, scopeConversions, scopeConventions, declaredProblems, cancellationToken);
+                    defaults, Lookup, scopeConversions, scopeConventions, scopeIgnores, declaredProblems, cancellationToken);
 
             foreach (MapModel map in included)
             {
@@ -467,7 +488,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             }
 
             ClassDefaults defaults = DefaultsFor(scope);
-            (ConversionTable scopeConversions, List<MemberConventions.Convention> scopeConventions) = ChainFor(scope);
+            (ConversionTable scopeConversions, List<MemberConventions.Convention> scopeConventions, List<IgnoreRule> scopeIgnores) = ChainFor(scope);
 
             foreach ((INamedTypeSymbol element, INamedTypeSymbol elementDestination) in AllPairs())
             {
@@ -501,17 +522,59 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                     memberConventions: scopeConventions,
                     declaredProblems: declaredProblems,
                     isOpenGenericClosure: true,
-                    declaredBy: scope.Name);
+                    declaredBy: scope.Name,
+                    ignoreRules: scopeIgnores);
 
                 if (seen.Add(closed.Key))
                     maps.Add(closed);
             }
         }
 
+        // IMPLICIT MAPS, last of all — after every explicit map and every closure is in `seen`, so
+        // that anything explicit always wins. See ShiftMapperGenerator.Implicit.cs.
+        var implicitDeclarations = ImmutableArray.CreateBuilder<DeclaredMapModel>();
+
+        implicitProblems ??= new List<PositionedProblem>();
+        implicitProblems.AddRange(set.Surfaces.Problems);
+
+        if (set.ImplicitScope is { } implicitScope && set.Implicit.Count > 0)
+        {
+            var byKey = new Dictionary<string, MapModel>(StringComparer.Ordinal);
+
+            foreach (MapModel map in maps)
+            {
+                if (!byKey.ContainsKey(map.Key))
+                    byKey[map.Key] = map;
+            }
+
+            (ConversionTable implicitConversions, List<MemberConventions.Convention> implicitConventions, List<IgnoreRule> implicitIgnores) = ChainFor(implicitScope);
+
+            BuildImplicitMaps(
+                compilation, set, implicitScope, DefaultsFor(implicitScope), implicitConversions, implicitConventions,
+                implicitIgnores, declaredProblems, byKey, seen, maps, implicitProblems, implicitDeclarations);
+        }
+
+        // A surface configuring a pair nothing declares — a lambda over the wrong types, or a marker
+        // that did not apply — would otherwise be baked into nothing, in silence.
+        foreach (string configured in set.Surfaces.Pairs)
+        {
+            if (!seen.Contains(configured) && set.Surfaces.TryGet(configured, out SurfaceEntry orphan))
+            {
+                int arrow = configured.IndexOf("->", StringComparison.Ordinal);
+
+                implicitProblems.Add(new PositionedProblem(
+                    $"SM0052|'{orphan.Configurator.Name}' configures the map from " +
+                    $"'{ShortName(configured.Substring(0, arrow))}' to '{ShortName(configured.Substring(arrow + 2))}', " +
+                    "but no map is declared for that pair — not by a marker this type closes, and not by a CreateMap. " +
+                    "The configuration does nothing.",
+                    orphan.Location));
+            }
+        }
+
         // Every chain's query registrations, once each.
         var queryRegistrations = new List<string>();
 
-        foreach ((ConversionTable chain, _) in chains.Values)
+        foreach ((ConversionTable chain, _, _) in chains.Values)
         {
             foreach (string line in chain.QueryRegistrations)
             {
@@ -531,7 +594,12 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             openGenericProblems: openProblems.ToImmutable(),
             profileProblems: includeProblems.ToImmutable(),
             declaredProblems: declaredProblems.ToImmutableArray(),
-            queryRegistrations: queryRegistrations.ToImmutableArray());
+            queryRegistrations: queryRegistrations.ToImmutableArray(),
+            implicitProblems: implicitProblems.ToImmutableArray(),
+            implicitDeclarations: implicitDeclarations.ToImmutable(),
+            implicitPacks: set.ImplicitScope is null
+                ? ImmutableArray<string>.Empty
+                : set.ImplicitScope.Packs.Select(FullName).ToImmutableArray());
     }
 
     /// <summary>
@@ -618,6 +686,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         Func<Dictionary<string, Refinements>> lookup,
         ConversionTable conversions,
         List<MemberConventions.Convention> memberConventions,
+        List<IgnoreRule> ignoreRules,
         List<string> declaredProblems,
         CancellationToken cancellationToken)
     {
@@ -636,7 +705,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                              model, invocation, createMap, mapExpression, memberOptions, allMemberOptions,
                              mapOptions, defaults.CaseSensitive, defaults.AllowNullCollections,
                              defaults.Flattening, defaults.Naming, lookup, conversions, memberConventions,
-                             declaredProblems, scope.Name, cancellationToken))
+                             ignoreRules, declaredProblems, scope.Name, cancellationToken))
                 {
                     yield return map;
                 }
@@ -887,6 +956,8 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         if (conventionExpression is null)
             return;
 
+        INamedTypeSymbol? elementExpression = compilation.GetTypeByMetadataName(ElementConventionMetadataName);
+
         foreach (DeclarationScope scope in set.AllScopes)
         {
             INamedTypeSymbol? declaringBase = scope.IsPack ? packBase : baseClass;
@@ -903,7 +974,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                     if (GetCreateMemberConventionName(model, invocation, declaringBase, cancellationToken) is not { } name)
                         continue;
 
-                    if (MemberConventions.Read(model, invocation, name, conventionExpression, cancellationToken)
+                    if (MemberConventions.Read(model, invocation, name, conventionExpression, cancellationToken, elementExpression)
                             is not { } convention)
                     {
                         continue;
@@ -915,7 +986,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                     // wrote a convention for. Worse, SM0001's code fix then offers to Ignore it, which
                     // is one click from cementing the wrong answer. Naming the real cause here is what
                     // makes that fix safe to ship.
-                    if (convention.Fill.Count == 0)
+                    if (convention.Fill.Count == 0 && convention.ElementFill.Count == 0)
                     {
                         declaredProblems.Add(
                             $"SM0038|the member convention for '{convention.MemberType.Name}' fills " +
@@ -1428,7 +1499,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     /// </summary>
     private static ChainInfo ReadChain(
         SemanticModel semanticModel,
-        InvocationExpressionSyntax createMap,
+        SyntaxNode createMap,
         INamedTypeSymbol? mapExpression,
         INamedTypeSymbol? memberOptions,
         INamedTypeSymbol? allMemberOptions,
@@ -1968,7 +2039,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     }
 
     /// <summary>Everything one CreateMap chain asked for, split by direction.</summary>
-    private readonly struct ChainInfo
+    internal readonly struct ChainInfo
     {
         public ChainInfo(SimpleNameSyntax? reverseMapName, Refinements forward, Refinements reverse)
         {
@@ -1988,7 +2059,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
     }
 
     /// <summary>The refinements belonging to ONE direction of a map.</summary>
-    private readonly struct Refinements
+    internal readonly struct Refinements
     {
         public Refinements(
             ImmutableArray<string> ignored,
@@ -2157,6 +2228,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         Func<Dictionary<string, Refinements>> lookup,
         ConversionTable conversions,
         List<MemberConventions.Convention> memberConventions,
+        List<IgnoreRule> ignoreRules,
         List<string> declaredProblems,
         string declaredBy,
         CancellationToken cancellationToken)
@@ -2225,7 +2297,8 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             conversions: conversions,
             memberConventions: memberConventions,
             declaredProblems: declaredProblems,
-            declaredBy: declaredBy);
+            declaredBy: declaredBy,
+            ignoreRules: ignoreRules);
 
         if (chain.ReverseMapName is null)
             yield break;
@@ -2276,7 +2349,8 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             conversions: conversions,
             memberConventions: memberConventions,
             declaredProblems: declaredProblems,
-            declaredBy: declaredBy);
+            declaredBy: declaredBy,
+            ignoreRules: ignoreRules);
     }
 
     /// <summary>The configure lambda passed to a call, or null when it was left off.</summary>
@@ -2545,7 +2619,11 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         List<MemberConventions.Convention>? memberConventions = null,
         List<string>? declaredProblems = null,
         bool isOpenGenericClosure = false,
-        string declaredBy = "")
+        string declaredBy = "",
+        List<IgnoreRule>? ignoreRules = null,
+        List<(string Key, INamedTypeSymbol Source, INamedTypeSymbol Destination, string Member)>? nestedPairs = null,
+        bool isImplicit = false,
+        string? configuredBy = null)
     {
         List<MemberConventions.Convention> conventionList =
             memberConventions ?? new List<MemberConventions.Convention>();
@@ -2565,7 +2643,8 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
 
         PropertyAnalysis analysis = FindMatchingProperties(
             compilation, sourceType, destinationType, caseSensitive, allowNullCollections,
-            flattening, naming, refinements, globals, conventionList, conventionProblems);
+            flattening, naming, refinements, globals, conventionList, conventionProblems,
+            ignoreRules ?? new List<IgnoreRule>(), nestedPairs);
 
         // WHICH GLOBAL CONVERSIONS THIS MAP USED that cannot be written in SQL. Read from the
         // table's usage log rather than carried out of the analysis: a conversion can be reached
@@ -2611,7 +2690,9 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             asConcreteRejected: refinements.AsConcreteRejected,
             projectionRefusals: projectionRefusals,
             isOpenGenericClosure: isOpenGenericClosure,
-            declaredBy: declaredBy);
+            declaredBy: declaredBy,
+            isImplicit: isImplicit,
+            configuredBy: configuredBy);
     }
 
     /// <summary>The result of comparing one source type against one destination type.</summary>
@@ -2990,7 +3071,9 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         Refinements refinements,
         ConversionTable globals,
         List<MemberConventions.Convention> conventions,
-        List<string> conventionProblems)
+        List<string> conventionProblems,
+        List<IgnoreRule> ignoreRules,
+        List<(string Key, INamedTypeSymbol Source, INamedTypeSymbol Destination, string Member)>? nestedPairs)
     {
         // An `As` map has no members of its own either, and for a cleaner reason than
         // ConvertUsing's: it does not map, it REDIRECTS. Everything is the concrete map's, so
@@ -3067,6 +3150,10 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         var sourceProperties = new Dictionary<string, IPropertySymbol>(StringComparer.Ordinal);
         foreach (IPropertySymbol property in GetProperties(sourceType))
         {
+            // A member a pack's IgnoreMember says is never READ is not a candidate for anything.
+            if (ignoreRules.Count > 0 && IsIgnoredByRule(ignoreRules, sourceType, property, asSource: true))
+                continue;
+
             if (property.GetMethod is not null && !sourceProperties.ContainsKey(property.Name))
                 sourceProperties[property.Name] = property;
         }
@@ -3127,6 +3214,12 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             // An overriding or `new`-hiding property appears more than once in the base
             // chain. Assigning the same member twice in one object initializer is CS1912.
             if (!seen.Add(destinationProperty.Name))
+                continue;
+
+            // A FRAMEWORK'S RULE: a member a pack's IgnoreMember says is never WRITTEN. Treated as
+            // an opt.Ignore() — omitted, and not reported — wherever the destination type declares,
+            // inherits or implements it, so the rule is written once instead of on every map.
+            if (ignoreRules.Count > 0 && IsIgnoredByRule(ignoreRules, destinationType, destinationProperty, asSource: false))
                 continue;
 
             // A `required` member has to end up filled by SOMETHING or the object cannot be
@@ -3224,6 +3317,23 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                     sourcePropertyType: null));
 
                 NoteRequired(unfilledRequired, isRequired, destinationProperty);
+                continue;
+            }
+
+            // A COLLECTION OF SHAPED MEMBERS, when a convention claims the element type with
+            // ForEachElement: each element of the name-matched source collection fills one, inline,
+            // on both backends.
+            if (conventions.Count > 0
+                && ElementConventionMember(
+                       compilation, conventions, sourceType, destinationType, destinationProperty,
+                       sourceProperties, byIgnoreCase, naming, allowNullCollections, caseSensitive,
+                       globals, conventionProblems) is { } elements)
+            {
+                all.Add(elements);
+
+                if (!setter.IsInitOnly)
+                    writable.Add(elements);
+
                 continue;
             }
 
@@ -3398,6 +3508,31 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                 // pair is recorded and the verdict left to the resolve pass.
                 if (ConversionResolver.DescribeComplex(compilation, sourceProperty.Type, destinationProperty.Type) is { } complex)
                 {
+                    // The WRITE side of an element convention: the source collection's element is
+                    // shaped (a select DTO) and the destination collection is the related rows. That
+                    // is a reconciliation, not an assignment, so the member is reported (SM0002)
+                    // rather than nested — nesting would demand a map from the shaped type to the row.
+                    if (conventions.Count > 0 && ElementClaimed(conventions, complex.Source, sourceType))
+                    {
+                        unmapped.Add(new UnmappedProperty(
+                            destinationProperty.Name,
+                            UnmappedReason.NotConvertible,
+                            ShortTypeName(destinationProperty.Type),
+                            ShortTypeName(sourceProperty.Type)));
+
+                        NoteRequired(unfilledRequired, isRequired, destinationProperty);
+                        continue;
+                    }
+
+                    // The pair, as SYMBOLS, for whoever declares nested maps automatically: strings
+                    // are what the model keeps, and a symbol cannot be got back from one.
+                    if (complex.Source is INamedTypeSymbol nestedSource && complex.Destination is INamedTypeSymbol nestedDestination)
+                    {
+                        nestedPairs?.Add((
+                            FullName(nestedSource) + "->" + FullName(nestedDestination),
+                            nestedSource, nestedDestination, destinationProperty.Name));
+                    }
+
                     nested.Add(new NestedProperty(
                         destination: destinationProperty.Name,
                         source: sourceProperty.Name,
@@ -4123,7 +4258,9 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
             MergeAndResolve(new[] { model }, report: null),
             queryRegistrations: model.QueryRegistrations,
             composition: model.Composition,
-            localMappers: model.LocalMappers));
+            localMappers: model.LocalMappers,
+            implicitDeclarations: model.ImplicitDeclarations,
+            implicitPacks: model.ImplicitPacks));
     }
 
     /// <summary>
@@ -4183,6 +4320,41 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
 
                 bool existingLocal = local.Contains(existing.DeclaredBy);
                 bool incomingLocal = local.Contains(map.DeclaredBy);
+
+                // IMPLICIT maps: never displace anything explicit, and are displaced by anything
+                // explicit — with a note, because replacing a framework's implicit map is the
+                // customization path and worth seeing. Two implicit declarations of one pair keep
+                // the nearer: this project's over a package's, otherwise the first.
+                if (map.IsImplicit && existing.IsImplicit)
+                {
+                    if (incomingLocal && !existingLocal)
+                        survivors[map.Key] = map;
+
+                    continue;
+                }
+
+                if (map.IsImplicit)
+                {
+                    report?.Report(
+                        DiagnosticDescriptors.ImplicitMapReplaced,
+                        existing.Location ?? map.Location,
+                        $"the implicit map from '{map.SourceName}' to '{map.DestinationName}' is replaced by " +
+                        $"the one in '{ShortName(existing.DeclaredBy)}'");
+
+                    continue;
+                }
+
+                if (existing.IsImplicit)
+                {
+                    report?.Report(
+                        DiagnosticDescriptors.ImplicitMapReplaced,
+                        map.Location ?? existing.Location,
+                        $"the implicit map from '{map.SourceName}' to '{map.DestinationName}' is replaced by " +
+                        $"the one in '{ShortName(map.DeclaredBy)}'");
+
+                    survivors[map.Key] = map;
+                    continue;
+                }
 
                 // The same package declaration reached twice — through two references — is one.
                 if (!existingLocal && !incomingLocal && existing.DeclaredBy == map.DeclaredBy)
@@ -4735,6 +4907,24 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         AppendDeclaredConversionRegistrations(sb, indent, model);
 
         sb.AppendLine($"{indent}}}");
+
+        if (model.HasImplicitMaps)
+        {
+            // The class the implicit maps are DECLARED BY. Public and empty: it exists so those maps
+            // have a declaring type to travel under — a referencing project's generator reads them
+            // from this assembly's metadata exactly as it reads a package mapper's — and so the
+            // runtime, which constructs every composed type on first use, finds a parameterless
+            // class with nothing to register.
+            sb.AppendLine();
+            sb.AppendLine($"{indent}/// <summary>");
+            sb.AppendLine($"{indent}/// Declares this assembly's IMPLICIT maps — the pairs a marked framework type declares for");
+            sb.AppendLine($"{indent}/// every type here that closes it — so they travel like any package mapper's. It declares");
+            sb.AppendLine($"{indent}/// nothing itself.");
+            sb.AppendLine($"{indent}/// </summary>");
+            sb.AppendLine($"{indent}public sealed class {ImplicitMapperClassName} : global::ShiftMapper.ShiftMapperBase");
+            sb.AppendLine($"{indent}{{");
+            sb.AppendLine($"{indent}}}");
+        }
 
         // ---- part 2: the extension methods on ShiftMapper.Mapper ----
         sb.AppendLine();
@@ -5515,8 +5705,12 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         // object, and it changes nothing else: Value still returns the delegate this INSTANCE
         // should use, and the first call still goes through it, so a stale generated file still
         // gets the "rebuild" message rather than silently mapping nothing.
+        // A member a CONFIGURATION SURFACE customized names the type whose lambda did it, so a map
+        // used before that type has run in this scope can have it constructed rather than fail.
+        string configuredBy = map.ConfiguredBy is null ? string.Empty : $", typeof({map.ConfiguredBy})";
+
         string call = $"({CustomizationFieldName(map, custom)} ??= " +
-                      $"Customizations.Value<{map.SourceType}, {map.DestinationType}, {custom.DelegateType}>(\"{custom.Name}\"))(source)";
+                      $"Customizations.Value<{map.SourceType}, {map.DestinationType}, {custom.DelegateType}>(\"{custom.Name}\"{configuredBy}))(source)";
 
         return custom.ConversionTemplate is null ? call : custom.ConversionTemplate.Replace("{0}", call);
     }
@@ -6398,6 +6592,13 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
 
         sb.AppendLine($"{indent}        return false;");
         sb.AppendLine($"{indent}    }}");
+        sb.AppendLine();
+
+        // The Configure door: a framework hands over a configuration surface, and its expressions
+        // join this mapper's store — where the implicit maps the surface customized read them.
+        sb.AppendLine($"{indent}    /// <summary>Applies a configuration surface's expressions to this mapper's store.</summary>");
+        sb.AppendLine($"{indent}    void {MapperInterfaceType}.Configure(global::ShiftMapper.ShiftMapperConfigurationSurface surface) =>");
+        sb.AppendLine($"{indent}        ApplyConfiguration(surface);");
     }
 
     /// <summary>

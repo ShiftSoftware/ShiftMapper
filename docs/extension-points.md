@@ -256,6 +256,14 @@ never written by hand:
 | `ShiftMapperDeclaredOpenMap` | open generic `CreateMap(typeof(W<>), typeof(WDto<>))` |
 | `ShiftMapperDeclaredSharedPack` | `o.ShareConversions<T>()` in a registration — the pack every referencing project's registrations get |
 | `ShiftMapperDeclaredSharedMapper` | `o.ShareMapper<T>()` in a registration — the mapper class every referencing project takes under `MapperDiscovery.LocalAndRegistered` |
+| `ShiftMapperDeclaredIgnore` | `IgnoreMember(...)` in a pack or mapper class — the declaring type (unbound when generic), the member, the role |
+
+Since contract **3**: a `ShiftMapperDeclaredMap` may carry `Implicit = true` (declared by a
+`ShiftMapperDeclaresMap` marker rather than a `CreateMap`; a consumer's own declaration replaces it
+silently) and `ConfiguredBy` (the type whose configuration surface customized it); a
+`ShiftMapperDeclaredConvention` may carry `ElementFill` (the `ForEachElement()` entries). The
+implicit maps of an assembly are declared by its generated `ImplicitMapper` class, an empty public
+`ShiftMapperBase`, so they travel like any package mapper's — see the README's *Implicit maps* section.
 
 And one more, on every assembly the generator ran over: `ShiftMapperGenerated` names the
 assembly's generated mapper, which is what `AddShiftMapper` registers and `Mapper` builds.
@@ -686,7 +694,7 @@ same ShiftMapper.
 Your package was built against a different ShiftMapper than the application uses. The assembly is
 refused whole, so the application also gets SM0028 for each of your types it asked for — two
 messages for one cause, and the SM0033 is the one to act on. State the ShiftMapper version your
-package needs, and do not bump it lightly. The current contract version is 2.
+package needs, and do not bump it lightly. The current contract version is 3.
 
 ### The ones you cause but do not see
 

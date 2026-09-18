@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 
 namespace ShiftMapper;
 
@@ -262,6 +262,45 @@ public sealed class ShiftMapperDeclaredMapAttribute : Attribute
 
     /// <inheritdoc cref="Prefixes"/>
     public string[]? Postfixes { get; set; }
+
+    /// <summary>
+    /// True for a map declared by a <see cref="ShiftMapperDeclaresMapAttribute"/> marker rather than
+    /// a <c>CreateMap</c>. A consuming project's own declaration of the pair replaces it silently
+    /// (SM0047), where it would replace an explicit package map with a warning (SM0027).
+    /// </summary>
+    public bool Implicit { get; set; }
+
+    /// <summary>
+    /// The type whose configuration surface customized this implicit map, when one did — what the
+    /// consuming generated code names so a map used before that type ran can have it constructed.
+    /// </summary>
+    public Type? ConfiguredBy { get; set; }
+}
+
+/// <summary>
+/// One <c>IgnoreMember</c> rule a pack or mapper declared: a member that is never mapped on any map
+/// whose source or destination declares, inherits or implements it. Entirely shape.
+/// </summary>
+[AttributeUsage(AttributeTargets.Assembly, AllowMultiple = true, Inherited = false)]
+public sealed class ShiftMapperDeclaredIgnoreAttribute : Attribute
+{
+    public ShiftMapperDeclaredIgnoreAttribute(Type declaredBy, Type declaring, string member, int role)
+    {
+        DeclaredBy = declaredBy;
+        Declaring = declaring;
+        Member = member;
+        Role = role;
+    }
+
+    public Type DeclaredBy { get; }
+
+    /// <summary>The type that declares the member; an open generic is written unbound.</summary>
+    public Type Declaring { get; }
+
+    public string Member { get; }
+
+    /// <summary>0 Both, 1 Source, 2 Destination — <see cref="MemberRole"/>.</summary>
+    public int Role { get; }
 }
 
 /// <summary>
@@ -428,6 +467,12 @@ public sealed class ShiftMapperDeclaredConventionAttribute : Attribute
 
     /// <summary>0 Read, 1 Write, 2 Both.</summary>
     public int Direction { get; set; } = 2;
+
+    /// <summary>
+    /// The <c>ForEachElement()</c> entries, spelled like <see cref="Fill"/> but with paths relative to
+    /// the source collection's element. Present only when the rule claims collections too.
+    /// </summary>
+    public string[]? ElementFill { get; set; }
 }
 
 /// <summary>

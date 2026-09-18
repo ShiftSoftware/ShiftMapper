@@ -74,4 +74,40 @@ public abstract class ShiftMapperConversions
     /// only: the generator reads the chain and the call does nothing.
     /// </summary>
     protected MemberConventionExpression<TMember> CreateMemberConvention<TMember>() => new();
+
+    /// <summary>
+    /// Declares that a member is never mapped — not read as a source, not written as a
+    /// destination, or neither — on EVERY map whose source or destination type declares it,
+    /// inherits it, or implements the interface that declares it.
+    ///
+    /// <code>
+    /// IgnoreMember&lt;EntityBase&gt;(e =&gt; e.Id, MemberRole.Destination);      // never written from a request
+    /// IgnoreMember&lt;ITaggable&gt;(e =&gt; e.Tags, MemberRole.Destination);      // owned by a pipeline
+    /// IgnoreMember(typeof(Entity&lt;&gt;), "ReloadAfterSave");                  // an open generic base: by name
+    /// </code>
+    ///
+    /// <para>This is a framework's way of saying "this member is mine" ONCE, as code in a pack,
+    /// instead of an attribute on every type or an <c>Ignore</c> on every map. An ignored
+    /// destination member is treated exactly as <c>opt.Ignore()</c> would treat it — omitted, and
+    /// not reported as unmapped; an ignored source member is simply not a candidate. Compile-time
+    /// only, like the rest of the declaration API; it reaches maps by the same distance rule a
+    /// conversion does.</para>
+    /// </summary>
+    protected void IgnoreMember<TDeclaring>(Expression<Func<TDeclaring, object?>> member, MemberRole role = MemberRole.Both)
+    {
+        _ = member;
+        _ = role;
+    }
+
+    /// <inheritdoc cref="IgnoreMember{TDeclaring}(Expression{Func{TDeclaring, object}}, MemberRole)"/>
+    /// <param name="declaring">The type that declares the member — an open generic (<c>typeof(Entity&lt;&gt;)</c>) is allowed.</param>
+    /// <param name="member">The member's name.</param>
+    /// <param name="role">Which side of a map the rule applies to.</param>
+    protected void IgnoreMember(Type declaring, string member, MemberRole role = MemberRole.Both)
+    {
+        _ = declaring;
+        _ = member;
+        _ = role;
+    }
+
 }

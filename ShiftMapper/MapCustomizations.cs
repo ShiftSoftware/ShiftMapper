@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Threading;
@@ -423,19 +423,33 @@ public sealed class MapCustomizations
     /// and a tree that arrived from an included mapper is still, as far as reuse goes, part of the
     /// mapper that included it.</para>
     /// </summary>
-    internal void MergeFrom(MapCustomizations included)
+    internal void MergeFrom(MapCustomizations included) => MergeFrom(included, overriding: false);
+
+    /// <summary>
+    /// The same fold, with <paramref name="overriding"/> saying whether the INCOMING registrations
+    /// win. False for an included mapper or pack (what is already here wins, as above); true for a
+    /// configuration surface, whose lambda is the customization of an implicit map and must be
+    /// found by the generated code that was baked expecting it.
+    /// </summary>
+    internal void MergeFrom(MapCustomizations included, bool overriding)
     {
         foreach (KeyValuePair<CustomizationKey, LambdaExpression> entry in included._values)
         {
-            if (!_values.ContainsKey(entry.Key))
+            if (overriding || !_values.ContainsKey(entry.Key))
+            {
                 _values[entry.Key] = entry.Value;
+
+                if (overriding)
+                    _instanceCompiled?.TryRemove(entry.Key, out _);
+            }
         }
 
         foreach (KeyValuePair<CustomizationKey, Delegate> entry in included._conditions)
         {
-            if (!_conditions.ContainsKey(entry.Key))
+            if (overriding || !_conditions.ContainsKey(entry.Key))
                 _conditions[entry.Key] = entry.Value;
         }
+
 
         foreach (KeyValuePair<Type, Dictionary<(Type Source, Type Destination), TypeConversion>> scope
                  in included._typeConversions)
@@ -833,6 +847,36 @@ public sealed class MapCustomizations
     /// The property was never customized. That means the generated code and this store disagree,
     /// which can only happen if a stale generated file is being compiled against newer source.
     /// </exception>
+    /// <summary>
+    /// Asked to construct, or find, the type that configures a pair through a configuration
+    /// surface — set by the mapper when it has a service provider. Returns true when the type was
+    /// reached, which is expected to have applied its surface to this store by then.
+    /// </summary>
+    internal Func<Type, bool>? ConfiguratorPull { get; set; }
+
+    /// <summary>
+    /// <see cref="Value{TSource, TDestination, TProperty}(string)"/> for a member a CONFIGURATION
+    /// SURFACE customized. The generated code names the type whose lambda did it, so that when the
+    /// map is used before that type has run in this scope — a service mapping the pair directly —
+    /// the store can have it constructed, and failing that say exactly what to do.
+    /// </summary>
+    public Func<TSource, TProperty> Value<TSource, TDestination, TProperty>(string member, Type configuredBy)
+    {
+        CustomizationKey key = new(typeof(TSource), typeof(TDestination), member);
+
+        if (!_values.ContainsKey(key) && (ConfiguratorPull is null || !ConfiguratorPull(configuredBy) || !_values.ContainsKey(key)))
+        {
+            throw new InvalidOperationException(
+                $"ShiftMapper: '{typeof(TDestination).Name}.{member}' is customized by the Mapping(...) configuration " +
+                $"written in '{configuredBy.Name}', which has not been applied in this scope. Resolve " +
+                $"'{configuredBy.Name}' before mapping '{typeof(TSource).Name}' to '{typeof(TDestination).Name}' " +
+                "directly, register an IShiftMapperConfiguratorResolver that reaches it, or move the " +
+                "customization into a mapper class, which needs no such step.");
+        }
+
+        return Value<TSource, TDestination, TProperty>(member);
+    }
+
     public Func<TSource, TProperty> Value<TSource, TDestination, TProperty>(string member)
     {
         CustomizationKey key = new(typeof(TSource), typeof(TDestination), member);

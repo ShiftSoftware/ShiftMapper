@@ -113,4 +113,13 @@ public interface IMapper
     /// </summary>
     /// <exception cref="System.ArgumentNullException">Either argument is null.</exception>
     bool CanMap(System.Type source, System.Type destination);
+
+    /// <summary>
+    /// Applies a CONFIGURATION SURFACE — the expressions a framework's <c>Mapping(m =&gt; …)</c>
+    /// lambda registered on a <see cref="ShiftMapperConfigurationSurface"/> — to every generated
+    /// mapper this one dispatches to, so the implicit maps the lambda customized read them at map
+    /// time. The framework calls it right after running the lambda; the generator has already baked
+    /// the lambda's shape into those maps at build time.
+    /// </summary>
+    void Configure(ShiftMapperConfigurationSurface surface);
 }

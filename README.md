@@ -1,4 +1,4 @@
-﻿# ShiftMapper
+# ShiftMapper
 
 A compile-time object mapper for .NET.
 
@@ -909,6 +909,148 @@ is written down: its mappers are invisible, and asking for one of its packs is a
 package built against a different ShiftMapper be refused whole (**SM0033**) instead of half-read.
 See [docs/extension-points.md](docs/extension-points.md).
 
+### Implicit maps: a framework's base type declares maps for whoever closes it
+
+A framework whose base class is closed once per entity — a repository, an endpoint — knows which pairs
+every application maps. Instead of asking each application to write those pairs down again, the
+framework marks its base type **once**, in its own package:
+
+```csharp
+// in the framework — the application's author never sees this attribute
+[ShiftMapperDeclaresMap("TEntity", "TView", Reverse = true, Nested = 10, Flattening = DeclaredOption.False,
+                        Rules = typeof(PlatformConversions))]
+[ShiftMapperDeclaresMap("TEntity", "TList", Nested = 10, Flattening = DeclaredOption.False,
+                        Rules = typeof(PlatformConversions))]
+public abstract class Repository<TEntity, TList, TView> { … }
+
+// on an attribute class, "this" is the type the attribute is applied to
+[ShiftMapperDeclaresMap("this", "TView", Reverse = true, Nested = 10)]
+public sealed class EndpointAttribute<TList, TView> : Attribute { … }
+```
+
+and an application writes the thing it was going to write anyway:
+
+```csharp
+public class InvoiceRepository : Repository<Invoice, InvoiceListDto, InvoiceDto> { }
+```
+
+The generator compiling the application reads the marker off the base type's metadata, substitutes
+the closing type's arguments, and declares `Invoice → InvoiceDto`, `InvoiceDto → Invoice` and
+`Invoice → InvoiceListDto` in the application's generated mapper — exactly as if a mapper class had
+written `CreateMap` for each. **The maps are ordinary maps**: `mapper.MapToInvoiceDto(invoice)`,
+`db.Invoices.ProjectTo<InvoiceListDto>(mapper)`, the `IMapper` door, a referencing project's mapper —
+all of it works with nothing else written, because the maps are declared by a generated
+`ImplicitMapper` class that travels in the assembly's metadata like any package mapper's.
+
+Four things make an implicit map different from one you declared:
+
+- **Anything explicit wins.** A `CreateMap` for the pair, anywhere the project can see, replaces the
+  implicit map in full — and the build says so with an informational note (**SM0047**), because
+  replacing a framework's map is the customization path, not an accident. The other pairs the marker
+  declared stay implicit.
+- **It nests.** `Nested = n` declares implicit maps for the class-typed members below it, `n` levels
+  deep, so `InvoiceDto.Lines` maps through `InvoiceLine → InvoiceLineDto` with nothing written. A
+  nested pair that already has a map is used as it is, customizations included — which is how a child is
+  customized once for every parent that nests it. A member a `ForMember` or a member convention claims
+  is not nested; a cycle stops with a note (**SM0048**).
+- **It takes the marker's rules.** `Rules = typeof(Pack)` gives the implicit maps that pack at the
+  level a mapper class's own `AddConversions` would — nearer than the registration's packs.
+- **It can be configured where the framework's user configures everything else** — see the next section.
+
+A marker that names nothing concrete on a closing type (a type parameter that does not exist, a
+closing type that is itself generic) declares nothing and says so (**SM0053**).
+
+### Configuration surfaces: customizing an implicit map in the repository
+
+A framework can hand its user an object with one `MapExpression` per implicit map, and the user writes
+ShiftMapper's own vocabulary against it — in the repository, or wherever the framework runs the lambda:
+
+```csharp
+// in the framework
+public sealed class RepositoryMapping<TEntity, TList, TView> : ShiftMapperConfigurationSurface
+{
+    public MapExpression<TEntity, TView>   View   { get; } = …   // Map<TEntity, TView>()
+    public MapExpression<TView, TEntity>   Entity { get; } = …
+    public MapExpression<TEntity, TList>   List   { get; } = …
+}
+
+// in the application's repository
+public InvoiceRepository(DB db, IHashIdService hashIds) : base(db, o => o.Mapping(m =>
+{
+    m.List.ForMember(d => d.Total, opt => opt.MapFrom(e => e.Lines.Sum(l => l.Price)));   // projects
+    m.Entity.ForMember(e => e.Number, opt => opt.Ignore())
+            .AfterMap((dto, entity) => entity.Touch());
+    m.View.ForMember(d => d.PublicKey, opt => opt.MapFrom(e => hashIds.Encode(e.Id)));    // a captured service is fine
+    m.Nested(2);                                                                          // cap nesting for this repository
+}))
+{ }
+```
+
+It is the same split as a package mapper: the generator reads the lambda at **build time** for its
+shape — which members are customized or ignored, whether there is a hook — exactly as it reads a
+mapper class's constructor, with every diagnostic; the lambda runs at **run time** wherever the
+framework runs it, its expressions land in the surface's store, and the framework hands the surface
+to the mapper with `IMapper.Configure(surface)`. The rules that follow:
+
+- The lambda must be inline and unconditional (**SM0035**), like every declaration.
+- **One type per pair** may configure it (**SM0050**, an error): the map is one map.
+- **A mapper class declaring the pair wins**, and the lambda's lines for that pair are reported dead
+  (**SM0051**). A lambda configuring a pair nothing declares is reported too (**SM0052**).
+- A customized map used before its configuring type has run in the scope — a service mapping the pair
+  directly — is pulled in: the mapper asks the container for the configuring type (or an
+  `IShiftMapperConfiguratorResolver`, when the framework registers one), whose construction applies the
+  surface. Failing that, the message names the type and the two ways out.
+
+### Member rules a framework states once: `IgnoreMember`
+
+A framework owns some members of every entity — a key its save pipeline assigns, a flag a request sets,
+a collection a pipeline attaches. A pack says so **once**, as code, and every map whose source or
+destination type declares, inherits or implements the member honours it:
+
+```csharp
+public class PlatformConversions : ShiftMapperConversions
+{
+    public PlatformConversions()
+    {
+        IgnoreMember<EntityBase>(e => e.Id, MemberRole.Destination);      // never written from a request
+        IgnoreMember<ITaggable>(e => e.Tags, MemberRole.Destination);     // owned by a pipeline
+        IgnoreMember(typeof(Entity<>), "ReloadAfterSave");                // an open generic base, by name
+    }
+}
+```
+
+An ignored destination member is treated exactly as `opt.Ignore()` would treat it — omitted, and not
+reported; an ignored source member is not a candidate for anything. It reaches maps by the same
+distance rule a conversion does, and it travels in the pack's metadata.
+
+### Collections of shaped members: `ForEachElement`
+
+A member convention can claim **collections** of its member type too:
+
+```csharp
+CreateMemberConvention<SelectDto>()
+    .NameFrom<KeyAndNameAttribute>("Text")
+    .Fill(d => d.Value, "{Member}ID")                // single member: Brand = { Value = BrandID, Text = Brand.Name }
+    .FillIfPossible(d => d.Text, "{Member}.{NameOf}")
+    .ForEachElement()                                // collection: Departments = Departments.Select(x => { Value = x.ID, Text = x.Name })
+        .Fill(d => d.Value, "ID")
+        .FillIfPossible(d => d.Text, "{NameOf}");
+```
+
+Paths after `ForEachElement()` are relative to the **element** of the name-matched source collection,
+and the result is inline on both backends — in memory a builder over the collection, in the projection
+`Select(...).ToList()` a provider turns into a correlated sub-select. Read direction only: writing a
+collection of shaped values back is a reconciliation, and the write map reports the member (SM0002)
+rather than guessing at one.
+
+### The update overload and nested collections
+
+`Map(source, destination)` assigns a nested collection member a **new** collection of newly mapped
+objects; nothing is matched against what the destination held. That is right for a DTO and wrong for
+rows with an identity of their own, and nothing in the types tells the two apart — so every map with a
+nested collection carries an informational note (**SM0049**) naming the members. Where they are tracked
+rows, reconcile them in an `AfterMap` or the caller and `Ignore` the member.
+
 ### Inheritance, polymorphism and open generics
 
 A table-per-hierarchy table is one table, a discriminator column, and a base type you can query
@@ -1189,7 +1331,7 @@ compare against another.
 
 ## Diagnostics
 
-Forty-one rules, `SM0001` to `SM0046` (`SM0029`, `SM0039`–`SM0041` and `SM0045` are retired). Eight
+Forty-eight rules, `SM0001` to `SM0053` (`SM0029`, `SM0039`–`SM0041` and `SM0045` are retired). Nine
 stop the build; the rest describe something that will not be mapped, or will be mapped in a way
 worth knowing about.
 
@@ -1236,6 +1378,13 @@ worth knowing about.
 | SM0043 | Info | A referenced package shared a pack or a mapper class with this project |
 | SM0044 | **Error** | A pack or mapper class shared with referencing projects is not public |
 | SM0046 | Warning | A registration line has no effect under the project's discovery mode |
+| SM0047 | Info | An implicit map is replaced by an explicit declaration of the pair |
+| SM0048 | Info | Automatic nesting stopped at a cycle; the member is left unmapped |
+| SM0049 | Info | The update overload replaces a nested collection with new objects |
+| SM0050 | **Error** | Two configuration surfaces configure the same pair |
+| SM0051 | Warning | A configuration surface is ignored because a mapper class declares the pair |
+| SM0052 | Warning | A configuration surface configures a pair nothing declares |
+| SM0053 | Warning | An implicit map marker could not be applied to a closing type |
 
 `SM0011` is an error because a null nested object in a response looks exactly like a null in the
 database. Two ways forward, both one line: declare the map, or `opt.Ignore()` the property.
@@ -1276,6 +1425,9 @@ dotnet_diagnostic.SM0001.severity = none
   `1.0` is when it has.
 - Both halves ship in one package on one version number. There is no combination of versions to
   get wrong.
+- The declaration metadata contract is **3** as of 0.3.0 (implicit maps, ignore rules and element
+  conventions travel in it). A package built with 0.2.x is refused whole by a 0.3 consumer (SM0033)
+  and the other way round; rebuild the package.
 - The published number is `ShiftMapperVersion` in the Shift Framework's
   `ShiftTemplates/ShiftFrameworkGlobalSettings.props`, and releases come from that repository's
   Azure pipeline on a `release-shiftmapper` or `release-all` tag. `Directory.Build.props` imports

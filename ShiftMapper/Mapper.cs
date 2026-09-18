@@ -54,6 +54,12 @@ public sealed class Mapper : IMapper
     private readonly IServiceProvider? _services;
 
     /// <summary>
+    /// The configuration surfaces applied so far, so a generated mapper built AFTER a Configure call
+    /// — a bare Mapper builds its generated mappers on the first map — still receives them.
+    /// </summary>
+    private readonly List<ShiftMapperConfigurationSurface> _surfaces = new();
+
+    /// <summary>
     /// A mapper with nothing registered. Every typed extension method works — its generated mapper
     /// is built on first use, parameterless — and the run-time door (<see cref="IMapper"/>)
     /// throws, since there is nothing to dispatch to. For tests and tools; an application resolves
@@ -154,6 +160,12 @@ public sealed class Mapper : IMapper
             if (_services is not null)
                 built.SetServices(_services);
 
+            lock (_surfaces)
+            {
+                foreach (ShiftMapperConfigurationSurface surface in _surfaces)
+                    built.ApplyConfiguration(surface);
+            }
+
             return built;
         });
     }
@@ -230,6 +242,28 @@ public sealed class Mapper : IMapper
             throw new ArgumentNullException(nameof(destination));
 
         return Find(source, destination) is not null;
+    }
+
+    /// <inheritdoc/>
+    void IMapper.Configure(ShiftMapperConfigurationSurface surface)
+    {
+        if (surface is null)
+            throw new ArgumentNullException(nameof(surface));
+
+        // Every generated mapper, registered or built on demand: the pair the surface customizes may
+        // be generated in the application's mapper AND in the package's, and whichever answers the
+        // map must find the expression. Remembered, too, for the ones not built yet.
+        lock (_surfaces)
+            _surfaces.Add(surface);
+
+        foreach (ShiftMapperBase mapper in _registered)
+            mapper.ApplyConfiguration(surface);
+
+        foreach (ShiftMapperBase mapper in _byType.Values)
+        {
+            if (Array.IndexOf(_registered, mapper) < 0)
+                mapper.ApplyConfiguration(surface);
+        }
     }
 
     private IMapper Owner(Type source, Type destination) =>

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Linq.Expressions;
 
 namespace ShiftMapper;
@@ -175,6 +175,55 @@ public sealed class MemberConventionExpression<TMember>
     public MemberConventionExpression<TMember> Direction(MappingDirection direction)
     {
         _ = direction;
+        return this;
+    }
+
+    /// <summary>
+    /// Makes the rule claim COLLECTIONS of the member type too — <c>List&lt;SelectDto&gt;</c>,
+    /// <c>SelectDto[]</c>, <c>IEnumerable&lt;SelectDto&gt;</c> — filling each element from the
+    /// matching element of the source collection the map would have matched by name.
+    ///
+    /// <code>
+    /// CreateMemberConvention&lt;SelectDto&gt;()
+    ///     .NameFrom&lt;KeyAndNameAttribute&gt;("Text")
+    ///     .Fill(d =&gt; d.Value, "{Member}ID")                // single:     Brand = { Value = BrandID, Text = Brand.Name }
+    ///     .FillIfPossible(d =&gt; d.Text, "{Member}.{NameOf}")
+    ///     .ForEachElement()                                // collection: Departments = Departments.Select(x =&gt; { Value = x.ID, Text = x.Name })
+    ///         .Fill(d =&gt; d.Value, "ID")
+    ///         .FillIfPossible(d =&gt; d.Text, "{NameOf}");
+    /// </code>
+    ///
+    /// <para>Paths after this call are relative to the ELEMENT of the source collection, so
+    /// <c>{Member}</c> has no meaning in them and <c>{NameOf}</c> names the element type's own
+    /// nominated member. Read direction only: a collection of shaped values written back is a
+    /// reconciliation, not an assignment, and belongs in an <c>AfterMap</c> or the caller.</para>
+    /// </summary>
+    public ElementConventionExpression<TMember> ForEachElement() => new();
+}
+
+/// <summary>
+/// The element half of a member convention, from <see cref="MemberConventionExpression{TMember}.ForEachElement"/>.
+/// Compile-time only, like the rule it belongs to.
+/// </summary>
+public sealed class ElementConventionExpression<TMember>
+{
+    internal ElementConventionExpression()
+    {
+    }
+
+    /// <summary>How to fill one member of each element, from a path relative to the source element.</summary>
+    public ElementConventionExpression<TMember> Fill<TValue>(Expression<Func<TMember, TValue>> target, string path)
+    {
+        _ = target;
+        _ = path;
+        return this;
+    }
+
+    /// <summary>A <see cref="Fill"/> that is dropped when its path does not resolve on the element type.</summary>
+    public ElementConventionExpression<TMember> FillIfPossible<TValue>(Expression<Func<TMember, TValue>> target, string path)
+    {
+        _ = target;
+        _ = path;
         return this;
     }
 }

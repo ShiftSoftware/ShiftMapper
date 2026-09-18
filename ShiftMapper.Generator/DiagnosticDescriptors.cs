@@ -912,6 +912,100 @@ internal static class DiagnosticDescriptors
                      "default, every mapper class the project can see is generated already. The " +
                      "discovery mode is one setting for the whole project.");
 
+    /// <summary>
+    /// SM0047 — a map a framework's marker declared IMPLICITLY for a closing type is replaced by a
+    /// <c>CreateMap</c> for the same pair. Informational: that is the customization path, and the
+    /// note is here so the replacement is visible in the build rather than silent.
+    /// </summary>
+    public static readonly DiagnosticDescriptor ImplicitMapReplaced = new(
+        id: "SM0047",
+        title: "An implicit map is replaced by an explicit declaration",
+        messageFormat: "ShiftMapper: {0}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Info,
+        isEnabledByDefault: true,
+        description: "A marked framework type declares maps for every type that closes it. A CreateMap " +
+                     "for the same pair, anywhere the project can see, takes the pair over in full — " +
+                     "the implicit map, and any configuration surface that customized it, no longer apply.");
+
+    /// <summary>
+    /// SM0048 — automatic nesting met a member whose pair is an ancestor of the map being built,
+    /// and left it at its default rather than map a type inside itself.
+    /// </summary>
+    public static readonly DiagnosticDescriptor ImplicitNestingCycle = new(
+        id: "SM0048",
+        title: "Automatic nesting stopped at a cycle",
+        messageFormat: "ShiftMapper: {0}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Info,
+        isEnabledByDefault: true,
+        description: "A marker's Nested depth declares implicit maps for nested members. A member whose pair " +
+                     "is already being mapped above it would nest the map inside itself, so it is left " +
+                     "unmapped; a ForMember maps it if it is wanted.");
+
+    /// <summary>
+    /// SM0049 — the update overload rebuilds every nested collection with new objects. Harmless for
+    /// a DTO; for tracked rows with an identity of their own it means duplicated or orphaned rows,
+    /// which is what the note is for.
+    /// </summary>
+    public static readonly DiagnosticDescriptor UpdateRebuildsNestedCollection = new(
+        id: "SM0049",
+        title: "The update overload replaces a nested collection with new objects",
+        messageFormat: "ShiftMapper: {0}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Info,
+        isEnabledByDefault: true,
+        description: "Map(source, destination) assigns a nested collection member a NEW collection of newly " +
+                     "mapped objects; nothing is matched against what the destination already held. Where the " +
+                     "elements are rows with their own identity, reconcile them in an AfterMap or in the caller " +
+                     "and Ignore the member.");
+
+    /// <summary>SM0050 — two types configure the same implicit map through configuration surfaces.</summary>
+    public static readonly DiagnosticDescriptor PairConfiguredTwice = new(
+        id: "SM0050",
+        title: "A pair is configured by two configuration surfaces",
+        messageFormat: "ShiftMapper: {0}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true,
+        description: "An implicit map is one map per assembly. Two Mapping(m => ...) lambdas customizing the same " +
+                     "pair from two types have nothing to choose between them; which one ran would depend on " +
+                     "construction order.");
+
+    /// <summary>SM0051 — a configuration surface customizes a pair a mapper class declares; the class wins.</summary>
+    public static readonly DiagnosticDescriptor SurfaceConfigurationIgnored = new(
+        id: "SM0051",
+        title: "A configuration surface is ignored because a mapper class declares the pair",
+        messageFormat: "ShiftMapper: {0}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "A CreateMap for a pair replaces the implicit map in full, including whatever a " +
+                     "Mapping(m => ...) lambda said about it. The lambda's lines for that pair do nothing.");
+
+    /// <summary>SM0052 — a configuration surface customizes a pair for which no map is declared at all.</summary>
+    public static readonly DiagnosticDescriptor SurfaceConfiguresNoMap = new(
+        id: "SM0052",
+        title: "A configuration surface configures a pair nothing declares",
+        messageFormat: "ShiftMapper: {0}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "A Mapping(m => ...) lambda names a pair that no marker the enclosing type closes declares, " +
+                     "and no CreateMap declares either. Nothing is generated for it, so the configuration does nothing.");
+
+    /// <summary>SM0053 — a marker could not be applied to a closing type.</summary>
+    public static readonly DiagnosticDescriptor ImplicitMarkerNotApplied = new(
+        id: "SM0053",
+        title: "An implicit map marker could not be applied",
+        messageFormat: "ShiftMapper: {0}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "A ShiftMapperDeclaresMap marker names its source and destination by the marked type's type " +
+                     "parameter names, or \"this\" for the closing type. A name that resolves to nothing " +
+                     "concrete on a closing type declares no map for it.");
+
     public static readonly ImmutableArray<DiagnosticDescriptor> All = ImmutableArray.Create(
         NoSourceProperty,
         NotConvertible,
@@ -953,6 +1047,13 @@ internal static class DiagnosticDescriptors
         MapDeclaredTwice,
         SharedPackApplied,
         SharedPackNotPublic,
-        RegistrationHasNoEffect);
+        RegistrationHasNoEffect,
+        ImplicitMapReplaced,
+        ImplicitNestingCycle,
+        UpdateRebuildsNestedCollection,
+        PairConfiguredTwice,
+        SurfaceConfigurationIgnored,
+        SurfaceConfiguresNoMap,
+        ImplicitMarkerNotApplied);
 }
 

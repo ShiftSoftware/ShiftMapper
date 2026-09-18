@@ -1,4 +1,4 @@
-﻿; Unshipped analyzer release
+; Unshipped analyzer release
 ; Rules that exist in the current build but have not been published in a release yet.
 ; https://github.com/dotnet/roslyn-analyzers/blob/main/src/Microsoft.CodeAnalysis.Analyzers/ReleaseTrackingAnalyzers.Help.md
 
@@ -47,3 +47,10 @@ SM0042 | ShiftMapper | Error | A map is declared twice with nothing to choose be
 SM0043 | ShiftMapper | Info | A referenced package shared a pack or a mapper class with this project
 SM0044 | ShiftMapper | Error | A shared pack or mapper class must be public
 SM0046 | ShiftMapper | Warning | A registration line has no effect under the project's discovery mode
+SM0047 | ShiftMapper | Info | An implicit map is replaced by an explicit declaration of the pair
+SM0048 | ShiftMapper | Info | Automatic nesting stopped at a cycle; the member is left unmapped
+SM0049 | ShiftMapper | Info | The update overload replaces a nested collection with new objects
+SM0050 | ShiftMapper | Error | Two configuration surfaces configure the same pair
+SM0051 | ShiftMapper | Warning | A configuration surface is ignored because a mapper class declares the pair
+SM0052 | ShiftMapper | Warning | A configuration surface configures a pair nothing declares
+SM0053 | ShiftMapper | Warning | An implicit map marker could not be applied to a closing type

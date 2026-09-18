@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
@@ -70,7 +70,30 @@ public abstract class ShiftMapperBase
     /// Called by <c>AddShiftMapper</c> when the mapper is created. Internal on purpose:
     /// this is the library's job, never the developer's.
     /// </summary>
-    internal void SetServices(IServiceProvider services) => _services = services;
+    internal void SetServices(IServiceProvider services)
+    {
+        _services = services;
+
+        // The pull for a customized implicit map used before its configuring type ran: ask the
+        // container for that type (or whatever an IShiftMapperConfiguratorResolver says applies its
+        // configuration). Constructing it runs the lambda, which calls IMapper.Configure, which lands
+        // in this store — so the retry that follows finds the expression.
+        _customizations.ConfiguratorPull = configurator =>
+        {
+            if (services.GetService(typeof(IShiftMapperConfiguratorResolver)) is IShiftMapperConfiguratorResolver resolver)
+                return resolver.TryApply(configurator, services);
+
+            return services.GetService(configurator) is not null;
+        };
+    }
+
+    /// <summary>
+    /// Folds a configuration surface's expressions into this mapper's store. What the surface says
+    /// WINS over what is already there: an implicit map has no customizations of its own, and the
+    /// surface is the one place its members are customized.
+    /// </summary>
+    protected internal void ApplyConfiguration(ShiftMapperConfigurationSurface surface) =>
+        _customizations.MergeFrom(surface.Customizations, overriding: true);
 
     /// <summary>
     /// The expressions handed to <c>opt.MapFrom</c>, kept so they can be used at runtime.
@@ -212,6 +235,42 @@ public abstract class ShiftMapperBase
     /// calls do nothing.</para>
     /// </summary>
     protected MemberConventionExpression<TMember> CreateMemberConvention<TMember>() => new();
+
+    /// <summary>
+    /// Declares that a member is never mapped — not read as a source, not written as a
+    /// destination, or neither — on EVERY map whose source or destination type declares it,
+    /// inherits it, or implements the interface that declares it.
+    ///
+    /// <code>
+    /// IgnoreMember&lt;EntityBase&gt;(e =&gt; e.Id, MemberRole.Destination);      // never written from a request
+    /// IgnoreMember&lt;ITaggable&gt;(e =&gt; e.Tags, MemberRole.Destination);      // owned by a pipeline
+    /// IgnoreMember(typeof(Entity&lt;&gt;), "ReloadAfterSave");                  // an open generic base: by name
+    /// </code>
+    ///
+    /// <para>This is a framework's way of saying "this member is mine" ONCE, as code in a pack,
+    /// instead of an attribute on every type or an <c>Ignore</c> on every map. An ignored
+    /// destination member is treated exactly as <c>opt.Ignore()</c> would treat it — omitted, and
+    /// not reported as unmapped; an ignored source member is simply not a candidate. Compile-time
+    /// only, like the rest of the declaration API; it reaches maps by the same distance rule a
+    /// conversion does.</para>
+    /// </summary>
+    protected void IgnoreMember<TDeclaring>(Expression<Func<TDeclaring, object?>> member, MemberRole role = MemberRole.Both)
+    {
+        _ = member;
+        _ = role;
+    }
+
+    /// <inheritdoc cref="IgnoreMember{TDeclaring}(Expression{Func{TDeclaring, object}}, MemberRole)"/>
+    /// <param name="declaring">The type that declares the member — an open generic (<c>typeof(Entity&lt;&gt;)</c>) is allowed.</param>
+    /// <param name="member">The member's name.</param>
+    /// <param name="role">Which side of a map the rule applies to.</param>
+    protected void IgnoreMember(Type declaring, string member, MemberRole role = MemberRole.Both)
+    {
+        _ = declaring;
+        _ = member;
+        _ = role;
+    }
+
 
     /// <summary>
     /// Gives this mapper the rules of a <see cref="ShiftMapperConversions"/> pack. Call it from your

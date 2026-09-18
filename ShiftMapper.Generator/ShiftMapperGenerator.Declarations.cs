@@ -30,7 +30,7 @@ namespace ShiftMapper.Generator;
 public sealed partial class ShiftMapperGenerator
 {
     /// <summary>The declaration format version this generator writes and reads.</summary>
-    internal const int DeclarationContract = 2;
+    internal const int DeclarationContract = 3;
 
     private const string DeclarationNamespace = "ShiftMapper";
 
@@ -82,9 +82,13 @@ public sealed partial class ShiftMapperGenerator
         var openMaps = ImmutableArray.CreateBuilder<(string, string)>();
         var conventions = ImmutableArray.CreateBuilder<DeclaredConventionModel>();
         var composed = ImmutableArray.CreateBuilder<string>();
+        var ignores = ImmutableArray.CreateBuilder<DeclaredIgnoreModel>();
 
         INamedTypeSymbol? conventionExpression =
             semanticModel.Compilation.GetTypeByMetadataName(MemberConventionMetadataName);
+
+        INamedTypeSymbol? elementExpression =
+            semanticModel.Compilation.GetTypeByMetadataName(ElementConventionMetadataName);
 
         foreach (InvocationExpressionSyntax invocation in
                  OwnInvocations(classDeclaration))
@@ -144,13 +148,24 @@ public sealed partial class ShiftMapperGenerator
                 continue;
             }
 
+            // ---- IgnoreMember<T>(x => x.Member, role) / IgnoreMember(typeof(T<>), "Member", role)
+            if (ReadIgnoreRule(semanticModel, invocation, declaringBase, cancellationToken) is { } ignoreRule)
+            {
+                // Written UNBOUND (`Entity<>`), so an open generic base is as nameable as any other type:
+                // only its containing chain has to be visible, not its type parameters.
+                if (IsNameable(ignoreRule.Declaring.IsGenericType ? ignoreRule.Declaring.ConstructUnboundGenericType() : ignoreRule.Declaring))
+                    ignores.Add(new DeclaredIgnoreModel(Unbound(FullName(ignoreRule.Declaring)), ignoreRule.Member, ignoreRule.Role));
+
+                continue;
+            }
+
             // ---- CreateMemberConvention<T>() ... a member-shaped rule, all of it shape.
             if (conventionExpression is not null
                 && GetCreateMemberConventionName(semanticModel, invocation, declaringBase, cancellationToken)
                     is { } conventionName)
             {
                 if (MemberConventions.Read(
-                        semanticModel, invocation, conventionName, conventionExpression, cancellationToken)
+                        semanticModel, invocation, conventionName, conventionExpression, cancellationToken, elementExpression)
                     is { } read
                     && IsNameable(read.MemberType)
                     && (read.NameOfAttribute is null || IsNameable(read.NameOfAttribute))
@@ -166,7 +181,12 @@ public sealed partial class ShiftMapperGenerator
                         read.NameOfAttribute is null ? null : FullName(read.NameOfAttribute),
                         read.NameOfProperty,
                         read.DestinationFilters.Select(FullName).ToImmutableArray(),
-                        read.Direction));
+                        read.Direction)
+                    {
+                        ElementFill = read.ElementFill
+                            .Select(entry => (entry.Optional ? "?" : "") + entry.Target + "=" + entry.Path)
+                            .ToImmutableArray(),
+                    });
                 }
 
                 continue;
@@ -224,7 +244,35 @@ public sealed partial class ShiftMapperGenerator
             conventions.ToImmutable(),
             composed.ToImmutable(),
             defaults,
-            isFirstPart);
+            isFirstPart,
+            ignores.ToImmutable());
+    }
+
+    /// <summary>
+    /// The IMPLICIT maps of this compilation as a declaration of the generated implicit mapper — so
+    /// a referencing project reads them from metadata exactly as it reads a package mapper's — or
+    /// null when nothing here declares one. The maps come from the generated model, because only
+    /// the full build knows which nested pairs the markers' depth produced.
+    /// </summary>
+    internal static DeclarationModel? ImplicitDeclaration(Compilation compilation, CancellationToken cancellationToken)
+    {
+        MapperClassModel? generated = ReadGenerated(compilation, cancellationToken);
+
+        if (generated is null || !generated.HasImplicitMaps)
+            return null;
+
+        return new DeclarationModel(
+            ImplicitMapperNameOf(compilation),
+            isPack: false,
+            generated.ImplicitDeclarations,
+            ImmutableArray<DeclaredConversionModel>.Empty,
+            ImmutableArray<(string, string)>.Empty,
+            ImmutableArray<DeclaredConventionModel>.Empty,
+            // The rules packs the markers named, so a consumer applies them at the implicit scope's
+            // level — what an AddConversions in the class's own constructor would have written.
+            generated.ImplicitPacks,
+            DeclaredDefaults.None,
+            isFirstPart: true);
     }
 
     /// <summary>
@@ -253,7 +301,8 @@ public sealed partial class ShiftMapperGenerator
                     }
                 }
 
-                return named.TypeArguments.All(IsNameable);
+                // An unbound generic (`Entity<>`) is written as such; its type parameters are not arguments.
+                return named.IsUnboundGenericType || named.TypeArguments.All(IsNameable);
 
             default:
                 return type.TypeKind == TypeKind.Error ? false : true;
@@ -310,6 +359,7 @@ public sealed partial class ShiftMapperGenerator
         ClassDefaults defaults,
         ConversionTable conversions,
         List<MemberConventions.Convention> memberConventions,
+        List<IgnoreRule> ignoreRules,
         Func<Dictionary<string, Refinements>> lookup,
         List<string> declaredProblems,
         LocationInfo? location)
@@ -338,7 +388,10 @@ public sealed partial class ShiftMapperGenerator
                 conversions: conversions,
                 memberConventions: memberConventions,
                 declaredProblems: declaredProblems,
-                declaredBy: declaredBy);
+                declaredBy: declaredBy,
+                ignoreRules: ignoreRules,
+                isImplicit: map.IsImplicit,
+                configuredBy: map.ConfiguredBy);
         }
     }
 
@@ -452,6 +505,15 @@ public sealed partial class ShiftMapperGenerator
                         $"typeof({declaringType}), typeof({composed}))]");
                 }
 
+                foreach (DeclaredIgnoreModel ignore in part.Ignores
+                             .OrderBy(i => i.Declaring, System.StringComparer.Ordinal)
+                             .ThenBy(i => i.Member, System.StringComparer.Ordinal))
+                {
+                    sb.AppendLine(
+                        $"[assembly: global::{DeclarationNamespace}.ShiftMapperDeclaredIgnore(" +
+                        $"typeof({declaringType}), typeof({ignore.Declaring}), {Literal(ignore.Member)}, {ignore.Role})]");
+                }
+
                 // Sorted, so the file does not change when declarations are reordered.
                 foreach (DeclaredMapModel map in part.Maps
                              .OrderBy(m => m.Source, System.StringComparer.Ordinal)
@@ -497,6 +559,8 @@ public sealed partial class ShiftMapperGenerator
 
                     if (convention.Direction != 2)
                         sb.Append($", Direction = {convention.Direction}");
+
+                    AppendStringArray(sb, "ElementFill", convention.ElementFill);
 
                     sb.AppendLine(")]");
                 }
@@ -581,6 +645,11 @@ public sealed partial class ShiftMapperGenerator
         AppendOption(sb, "CaseSensitive", map.CaseSensitive);
         AppendOption(sb, "AllowNullCollections", map.AllowNullCollections);
         AppendOption(sb, "Flattening", map.Flattening);
+
+        AppendFlag(sb, "Implicit", map.IsImplicit);
+
+        if (map.ConfiguredBy is not null)
+            sb.Append($", ConfiguredBy = typeof({map.ConfiguredBy})");
 
         sb.AppendLine(")]");
 

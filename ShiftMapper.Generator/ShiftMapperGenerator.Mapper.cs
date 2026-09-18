@@ -119,7 +119,14 @@ public sealed partial class ShiftMapperGenerator
                 break;
         }
 
-        if (local.Count == 0 && packaged.Count == 0)
+        // IMPLICIT MAPS: the pairs this compilation's types declare by closing a marked framework
+        // type, and what its configuration surfaces say about them. Read before the emptiness test:
+        // a project with no mapper class of its own and one repository still has a mapper to generate.
+        var implicitProblems = new List<PositionedProblem>();
+        List<ImplicitSource> implicitSources = ReadImplicitSources(compilation, implicitProblems, cancellationToken);
+        SurfaceConfigurations surfaces = ReadSurfaces(compilation, cancellationToken);
+
+        if (local.Count == 0 && packaged.Count == 0 && implicitSources.Count == 0 && surfaces.Count == 0)
             return null;
 
         // THE SET. Its "own" scope is the base class itself — a scope with no declarations — so
@@ -148,7 +155,28 @@ public sealed partial class ShiftMapperGenerator
             AddPack(set, shared.Pack, set.ReferencedPacks, cancellationToken);
         }
 
-        MapperClassModel built = BuildMapperCore(compilation, set, ownPart: null, isPrimaryPart: true, location: null, cancellationToken);
+        if (implicitSources.Count > 0)
+        {
+            set.Implicit.AddRange(implicitSources);
+
+            // The scope the implicit maps are declared by. Its rules packs sit where a mapper class's own
+            // AddConversions would — nearer than the registration's — so the framework's rules answer
+            // for the framework's maps before anything the application registered.
+            set.ImplicitScope = new DeclarationScope(
+                baseClass, ImmutableArray<Microsoft.CodeAnalysis.CSharp.Syntax.ClassDeclarationSyntax>.Empty,
+                isPack: false, name: ImplicitMapperNameOf(compilation));
+
+            foreach (ImplicitSource source in implicitSources)
+            {
+                if (source.Rules is { } rules)
+                    AddPack(set, rules, set.ImplicitScope.Packs, cancellationToken);
+            }
+        }
+
+        set.Surfaces = surfaces;
+
+        MapperClassModel built = BuildMapperCore(
+            compilation, set, ownPart: null, isPrimaryPart: true, location: null, cancellationToken, implicitProblems);
 
         string ns = GeneratedNamespaceOf(compilation);
 
@@ -165,6 +193,19 @@ public sealed partial class ShiftMapperGenerator
                 composition.Add(name);
         }
 
+        // The implicit mapper and the rules packs its maps take: constructed on first use like every
+        // other composed type, so a pack's CreateConversion registrations reach the store.
+        if (built.HasImplicitMaps)
+        {
+            composition.Add(ImplicitMapperNameOf(compilation));
+
+            foreach (string pack in built.ImplicitPacks)
+            {
+                if (!composition.Contains(pack))
+                    composition.Add(pack);
+            }
+        }
+
         return new MapperClassModel(
             namespaceName: ns,
             containingTypes: ImmutableArray<string>.Empty,
@@ -178,7 +219,14 @@ public sealed partial class ShiftMapperGenerator
             declaredProblems: built.DeclaredProblems,
             queryRegistrations: built.QueryRegistrations,
             composition: composition.ToImmutableArray(),
-            localMappers: local.Select(FullName).ToImmutableArray());
+            // The implicit mapper is LOCAL: its maps were built here, from this project's types, and
+            // are reported in full at the declarations that closed the marker.
+            localMappers: built.HasImplicitMaps
+                ? local.Select(FullName).Append(ImplicitMapperNameOf(compilation)).ToImmutableArray()
+                : local.Select(FullName).ToImmutableArray(),
+            implicitProblems: built.ImplicitProblems,
+            implicitDeclarations: built.ImplicitDeclarations,
+            implicitPacks: built.ImplicitPacks);
     }
 
     /// <summary>A package mapper class the generated mapper can construct and name: a concrete, non-generic mapper this compilation can see.</summary>

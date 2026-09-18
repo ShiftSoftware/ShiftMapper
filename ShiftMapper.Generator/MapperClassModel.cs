@@ -1,4 +1,4 @@
-﻿using System.Collections.Immutable;
+using System.Collections.Immutable;
 
 namespace ShiftMapper.Generator;
 
@@ -27,11 +27,26 @@ internal sealed class MapperClassModel
         ImmutableArray<string> queryRegistrations = default,
         ImmutableArray<PositionedProblem> declarationProblems = default,
         ImmutableArray<string> composition = default,
-        ImmutableArray<string> localMappers = default)
+        ImmutableArray<string> localMappers = default,
+        ImmutableArray<PositionedProblem> implicitProblems = default,
+        ImmutableArray<DeclaredMapModel> implicitDeclarations = default,
+        ImmutableArray<string> implicitPacks = default)
     {
         Composition = composition.IsDefault
             ? ImmutableArray<string>.Empty
             : composition;
+
+        ImplicitProblems = implicitProblems.IsDefault
+            ? ImmutableArray<PositionedProblem>.Empty
+            : implicitProblems;
+
+        ImplicitDeclarations = implicitDeclarations.IsDefault
+            ? ImmutableArray<DeclaredMapModel>.Empty
+            : implicitDeclarations;
+
+        ImplicitPacks = implicitPacks.IsDefault
+            ? ImmutableArray<string>.Empty
+            : implicitPacks;
 
         LocalMappers = localMappers.IsDefault
             ? ImmutableArray<string>.Empty
@@ -94,6 +109,18 @@ internal sealed class MapperClassModel
     /// the compilation.
     /// </summary>
     public ImmutableArray<string> LocalMappers { get; }
+
+    /// <summary>Problems about implicit maps and configuration surfaces, each knowing where it happened (SM0035, SM0047–SM0053).</summary>
+    public ImmutableArray<PositionedProblem> ImplicitProblems { get; }
+
+    /// <summary>The implicit maps as declarations, for the assembly's metadata — declared by the generated implicit mapper.</summary>
+    public ImmutableArray<DeclaredMapModel> ImplicitDeclarations { get; }
+
+    /// <summary>The rules packs the markers named, fully qualified: what the implicit mapper composes.</summary>
+    public ImmutableArray<string> ImplicitPacks { get; }
+
+    /// <summary>Whether this compilation declares any implicit map, and so gets an implicit mapper class.</summary>
+    public bool HasImplicitMaps => !ImplicitDeclarations.IsEmpty;
 
     /// <summary>Every map the generated mapper holds, before merging.</summary>
     public ImmutableArray<MapModel> Maps { get; }

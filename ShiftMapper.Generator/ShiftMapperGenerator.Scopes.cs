@@ -28,12 +28,25 @@ public sealed partial class ShiftMapperGenerator
     internal sealed class DeclarationScope
     {
         public DeclarationScope(INamedTypeSymbol type, ImmutableArray<ClassDeclarationSyntax> parts, bool isPack)
+            : this(type, parts, isPack, name: null)
+        {
+        }
+
+        /// <param name="name">
+        /// A name other than the type's own — the IMPLICIT scope, which stands for a generated class
+        /// that does not exist in this compilation and so has no symbol of its own to be named by.
+        /// </param>
+        public DeclarationScope(INamedTypeSymbol type, ImmutableArray<ClassDeclarationSyntax> parts, bool isPack, string? name)
         {
             Type = type;
             Parts = parts;
             IsPack = isPack;
-            Name = FullName(type);
+            Name = name ?? FullName(type);
+            IsImplicit = name is not null;
         }
+
+        /// <summary>The scope implicit maps are declared by: no declarations of its own, only the marker's rules pack.</summary>
+        public bool IsImplicit { get; }
 
         public INamedTypeSymbol Type { get; }
 
@@ -88,6 +101,18 @@ public sealed partial class ShiftMapperGenerator
 
         /// <summary>Mappers and packs with no syntax, whose declarations are read from metadata.</summary>
         public List<INamedTypeSymbol> Metadata { get; } = new();
+
+        /// <summary>The implicit maps this compilation's types declare by closing a marked generic type.</summary>
+        public List<ImplicitSource> Implicit { get; } = new();
+
+        /// <summary>What the configuration surfaces of this compilation said about implicit maps.</summary>
+        public SurfaceConfigurations Surfaces { get; set; } = new();
+
+        /// <summary>
+        /// The scope the implicit maps are declared by — the generated <c>ImplicitMapper</c>, with the
+        /// markers' rules packs at its second level. Null when nothing declares an implicit map.
+        /// </summary>
+        public DeclarationScope? ImplicitScope { get; set; }
 
         /// <summary>The scopes maps are read from: the mapper itself and everything it includes.</summary>
         public IEnumerable<DeclarationScope> MapScopes
@@ -312,6 +337,218 @@ public sealed partial class ShiftMapperGenerator
             yield return set.GlobalPacks.Select(FullName).ToList();
             yield return set.ReferencedPacks.Select(FullName).ToList();
         }
+    }
+
+    /// <summary>One <c>IgnoreMember</c> rule: a member never mapped on any map whose type declares, inherits or implements it.</summary>
+    internal sealed class IgnoreRule
+    {
+        public IgnoreRule(INamedTypeSymbol declaring, string member, int role)
+        {
+            Declaring = declaring.OriginalDefinition;
+            Member = member;
+            Role = role;
+        }
+
+        /// <summary>The declaring type's ORIGINAL DEFINITION, so <c>Entity&lt;Brand&gt;</c> matches a rule for <c>Entity&lt;&gt;</c>.</summary>
+        public INamedTypeSymbol Declaring { get; }
+
+        public string Member { get; }
+
+        /// <summary>0 Both, 1 Source, 2 Destination.</summary>
+        public int Role { get; }
+
+        public bool AppliesToSource => Role is 0 or 1;
+
+        public bool AppliesToDestination => Role is 0 or 2;
+
+        /// <summary>Whether this rule covers <paramref name="property"/> as it appears on <paramref name="type"/>.</summary>
+        public bool Covers(ITypeSymbol type, IPropertySymbol property, bool asSource)
+        {
+            if (asSource ? !AppliesToSource : !AppliesToDestination)
+                return false;
+
+            if (!string.Equals(property.Name, Member, StringComparison.Ordinal))
+                return false;
+
+            if (Declaring.TypeKind == TypeKind.Interface)
+            {
+                return type.AllInterfaces.Any(i => SymbolEqualityComparer.Default.Equals(i.OriginalDefinition, Declaring));
+            }
+
+            for (ITypeSymbol? walk = type; walk is not null; walk = walk.BaseType)
+            {
+                if (SymbolEqualityComparer.Default.Equals(walk.OriginalDefinition, Declaring))
+                    return true;
+            }
+
+            return false;
+        }
+    }
+
+    /// <summary>The ignore rules every scope declared, by scope, chained the same way as conversions.</summary>
+    internal sealed class IgnoreScopes
+    {
+        private readonly Dictionary<string, List<IgnoreRule>> _byScope = new(StringComparer.Ordinal);
+
+        public void Add(string scope, IgnoreRule rule)
+        {
+            if (!_byScope.TryGetValue(scope, out List<IgnoreRule> rules))
+                _byScope[scope] = rules = new List<IgnoreRule>();
+
+            rules.Add(rule);
+        }
+
+        public bool IsEmpty => _byScope.Count == 0;
+
+        public List<IgnoreRule> ChainFor(DeclarationSet set, DeclarationScope declaring)
+        {
+            var chain = new List<IgnoreRule>();
+
+            if (_byScope.Count == 0)
+                return chain;
+
+            foreach (IReadOnlyList<string> scopes in ConversionScopes.Levels(set, declaring))
+            {
+                foreach (string scope in scopes)
+                {
+                    if (_byScope.TryGetValue(scope, out List<IgnoreRule> rules))
+                        chain.AddRange(rules);
+                }
+            }
+
+            return chain;
+        }
+    }
+
+    /// <summary>Whether any rule in the chain covers the property on this type, in this role.</summary>
+    private static bool IsIgnoredByRule(List<IgnoreRule> rules, ITypeSymbol type, IPropertySymbol property, bool asSource)
+    {
+        foreach (IgnoreRule rule in rules)
+        {
+            if (rule.Covers(type, property, asSource))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Reads every <c>IgnoreMember</c> written in a scope's source — a pack's or a mapper class's
+    /// constructor — and records it against that scope.
+    /// </summary>
+    private static void ReadIgnoreRules(
+        Compilation compilation,
+        DeclarationSet set,
+        INamedTypeSymbol baseClass,
+        INamedTypeSymbol? packBase,
+        IgnoreScopes ignores,
+        CancellationToken cancellationToken)
+    {
+        foreach (DeclarationScope scope in set.AllScopes)
+        {
+            INamedTypeSymbol? declaringBase = scope.IsPack ? packBase : baseClass;
+
+            if (declaringBase is null)
+                continue;
+
+            foreach (ClassDeclarationSyntax part in scope.Parts)
+            {
+                SemanticModel model = compilation.GetSemanticModel(part.SyntaxTree);
+
+                foreach (InvocationExpressionSyntax invocation in OwnInvocations(part))
+                {
+                    if (ReadIgnoreRule(model, invocation, declaringBase, cancellationToken) is { } rule)
+                        ignores.Add(scope.Name, rule);
+                }
+            }
+        }
+    }
+
+    /// <summary>One <c>IgnoreMember</c> call, in either spelling, or null.</summary>
+    private static IgnoreRule? ReadIgnoreRule(
+        SemanticModel model,
+        InvocationExpressionSyntax invocation,
+        INamedTypeSymbol declaringBase,
+        CancellationToken cancellationToken)
+    {
+        SimpleNameSyntax? name = invocation.Expression switch
+        {
+            MemberAccessExpressionSyntax { Name: { } simple } => simple,
+            SimpleNameSyntax simple => simple,
+            _ => null,
+        };
+
+        if (name is null || name.Identifier.ValueText != "IgnoreMember")
+            return null;
+
+        if (!IsDeclaredOn(model, invocation, declaringBase, cancellationToken))
+            return null;
+
+        int role = invocation.ArgumentList.Arguments.Count > (name is GenericNameSyntax ? 1 : 2)
+                   && model.GetConstantValue(invocation.ArgumentList.Arguments[name is GenericNameSyntax ? 1 : 2].Expression, cancellationToken)
+                       is { HasValue: true, Value: int declaredRole }
+            ? declaredRole
+            : 0;
+
+        // IgnoreMember<TDeclaring>(x => x.Member, role)
+        if (name is GenericNameSyntax { TypeArgumentList.Arguments.Count: 1 } generic)
+        {
+            if (model.GetSymbolInfo(generic.TypeArgumentList.Arguments[0], cancellationToken).Symbol is not INamedTypeSymbol declaring
+                || invocation.ArgumentList.Arguments.Count < 1
+                || SelectorMemberName(invocation.ArgumentList.Arguments[0].Expression) is not { } member)
+            {
+                return null;
+            }
+
+            return new IgnoreRule(declaring, member, role);
+        }
+
+        // IgnoreMember(typeof(Declaring<>), "Member", role)
+        if (invocation.ArgumentList.Arguments.Count >= 2
+            && invocation.ArgumentList.Arguments[0].Expression is TypeOfExpressionSyntax typeOf
+            && model.GetSymbolInfo(typeOf.Type, cancellationToken).Symbol is INamedTypeSymbol byType
+            && model.GetConstantValue(invocation.ArgumentList.Arguments[1].Expression, cancellationToken)
+                is { HasValue: true, Value: string byName })
+        {
+            return new IgnoreRule(byType, byName, role);
+        }
+
+        return null;
+    }
+
+    /// <summary>The member a <c>x =&gt; x.Member</c> selector names, looking through a boxing cast, brackets and <c>!</c>.</summary>
+    private static string? SelectorMemberName(ExpressionSyntax expression)
+    {
+        SyntaxNode body = expression switch
+        {
+            SimpleLambdaExpressionSyntax simple => simple.Body,
+            ParenthesizedLambdaExpressionSyntax parenthesized => parenthesized.Body,
+            _ => expression,
+        };
+
+        for (bool peeled = true; peeled;)
+        {
+            switch (body)
+            {
+                case CastExpressionSyntax cast:
+                    body = cast.Expression;
+                    break;
+
+                case ParenthesizedExpressionSyntax parenthesised:
+                    body = parenthesised.Expression;
+                    break;
+
+                case PostfixUnaryExpressionSyntax { RawKind: (int)Microsoft.CodeAnalysis.CSharp.SyntaxKind.SuppressNullableWarningExpression } suppressed:
+                    body = suppressed.Operand;
+                    break;
+
+                default:
+                    peeled = false;
+                    break;
+            }
+        }
+
+        return body is MemberAccessExpressionSyntax access ? access.Name.Identifier.ValueText : null;
     }
 
     /// <summary>The member conventions every scope declared, by scope, chained the same way.</summary>

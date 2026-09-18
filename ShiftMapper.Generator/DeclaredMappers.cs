@@ -45,6 +45,8 @@ internal static class DeclaredMappers
 
     private const string ConventionAttribute = "ShiftMapper.ShiftMapperDeclaredConventionAttribute";
 
+    private const string IgnoreAttribute = "ShiftMapper.ShiftMapperDeclaredIgnoreAttribute";
+
     /// <summary>One declared map, recovered and ready for <c>BuildMapModel</c>.</summary>
     internal sealed class RecoveredMap
     {
@@ -66,8 +68,12 @@ internal static class DeclaredMappers
             bool convertsWithExpression,
             bool hasBeforeMap,
             bool hasAfterMap,
-            bool hasAllMembersCondition)
+            bool hasAllMembersCondition,
+            bool isImplicit = false,
+            string? configuredBy = null)
         {
+            IsImplicit = isImplicit;
+            ConfiguredBy = configuredBy;
             DeclaredBy = declaredBy;
             Source = source;
             Destination = destination;
@@ -124,6 +130,12 @@ internal static class DeclaredMappers
         public bool HasAfterMap { get; }
 
         public bool HasAllMembersCondition { get; }
+
+        /// <summary>Declared by a marker in the package, not a <c>CreateMap</c>.</summary>
+        public bool IsImplicit { get; }
+
+        /// <summary>The type whose configuration surface customized it, fully qualified, or null.</summary>
+        public string? ConfiguredBy { get; }
     }
 
     /// <summary>Everything one set of referenced mappers and packs declared.</summary>
@@ -209,6 +221,7 @@ internal static class DeclaredMappers
         IReadOnlyCollection<INamedTypeSymbol> types,
         ShiftMapperGenerator.ConversionScopes conversions,
         ShiftMapperGenerator.ConventionScopes conventions,
+        ShiftMapperGenerator.IgnoreScopes ignores,
         List<string> problems)
     {
         var recovered = new Recovered();
@@ -229,6 +242,7 @@ internal static class DeclaredMappers
         INamedTypeSymbol? conversionMarker = compilation.GetTypeByMetadataName(ConversionAttribute);
         INamedTypeSymbol? openMarker = compilation.GetTypeByMetadataName(OpenMapAttribute);
         INamedTypeSymbol? conventionMarker = compilation.GetTypeByMetadataName(ConventionAttribute);
+        INamedTypeSymbol? ignoreMarker = compilation.GetTypeByMetadataName(IgnoreAttribute);
         INamedTypeSymbol? contractMarker = compilation.GetTypeByMetadataName(ContractAttribute);
 
         // A WORKLIST rather than one pass: a mapper composes other mappers and packs, and those may
@@ -323,6 +337,19 @@ internal static class DeclaredMappers
                     else if (Same(kind, conventionMarker))
                     {
                         ReadConvention(attribute, conventions);
+                        Note(attribute, recovered);
+                    }
+                    else if (Same(kind, ignoreMarker))
+                    {
+                        if (attribute.ConstructorArguments.Length == 4
+                            && attribute.ConstructorArguments[0].Value is INamedTypeSymbol ignoreDeclaredBy
+                            && attribute.ConstructorArguments[1].Value is INamedTypeSymbol declaring
+                            && attribute.ConstructorArguments[2].Value is string member
+                            && attribute.ConstructorArguments[3].Value is int role)
+                        {
+                            ignores.Add(Key(ignoreDeclaredBy), new ShiftMapperGenerator.IgnoreRule(declaring, member, role));
+                        }
+
                         Note(attribute, recovered);
                     }
                 }
@@ -481,8 +508,9 @@ internal static class DeclaredMappers
             Named(attribute, "ConvertsWithExpression") as bool? ?? false,
             Named(attribute, "HasBeforeMap") as bool? ?? false,
             Named(attribute, "HasAfterMap") as bool? ?? false,
-            Named(attribute, "HasAllMembersCondition") as bool? ?? false));
-
+            Named(attribute, "HasAllMembersCondition") as bool? ?? false,
+            isImplicit: Named(attribute, "Implicit") as bool? ?? false,
+            configuredBy: Named(attribute, "ConfiguredBy") is INamedTypeSymbol configurator ? FullName(configurator) : null));
     }
 
     private static void ReadConversion(
@@ -550,7 +578,20 @@ internal static class DeclaredMappers
                 fill.Add((entry.Substring(0, split), entry.Substring(split + 1), optional));
         }
 
-        if (fill.Count == 0)
+        var elementFill = new List<(string, string, bool)>();
+
+        foreach (string raw in StringsOf(attribute, "ElementFill"))
+        {
+            bool optional = raw.StartsWith("?", StringComparison.Ordinal);
+            string entry = optional ? raw.Substring(1) : raw;
+
+            int split = entry.IndexOf('=');
+
+            if (split > 0)
+                elementFill.Add((entry.Substring(0, split), entry.Substring(split + 1), optional));
+        }
+
+        if (fill.Count == 0 && elementFill.Count == 0)
             return;
 
         var destinations = ImmutableArray.CreateBuilder<ITypeSymbol>();
@@ -573,7 +614,8 @@ internal static class DeclaredMappers
             Named(attribute, "NameOfAttribute") as INamedTypeSymbol,
             Named(attribute, "NameOfProperty") as string,
             destinations.ToImmutable(),
-            Named(attribute, "Direction") as int? ?? 2));
+            Named(attribute, "Direction") as int? ?? 2,
+            elementFill));
     }
 
     private static IEnumerable<string> StringsOf(AttributeData attribute, string name)

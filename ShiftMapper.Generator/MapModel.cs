@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 
@@ -51,10 +51,14 @@ internal sealed class MapModel
         ImmutableArray<string> projectionRefusals = default,
         ImmutableArray<string> nestedProjectionRefusals = default,
         bool isOpenGenericClosure = false,
-        string declaredBy = "")
+        string declaredBy = "",
+        bool isImplicit = false,
+        string? configuredBy = null)
     {
         DeclaredBy = declaredBy;
         IsOpenGenericClosure = isOpenGenericClosure;
+        IsImplicit = isImplicit;
+        ConfiguredBy = configuredBy;
 
         NestedProjectionRefusals = nestedProjectionRefusals.IsDefault
             ? ImmutableArray<string>.Empty
@@ -476,6 +480,18 @@ internal sealed class MapModel
     public string Key => SourceType + "->" + DestinationType;
 
     /// <summary>
+    /// Declared by a <c>ShiftMapperDeclaresMap</c> marker rather than a <c>CreateMap</c>. The lowest
+    /// priority declaration of its pair: anything explicit replaces it.
+    /// </summary>
+    public bool IsImplicit { get; }
+
+    /// <summary>
+    /// The type whose configuration surface customized this implicit map, fully qualified, or null.
+    /// The generated lookup names it so a map used before that type has run can have it constructed.
+    /// </summary>
+    public string? ConfiguredBy { get; }
+
+    /// <summary>
     /// The mapper class whose constructor DECLARED this map, fully qualified — local or from a
     /// referenced package.
     ///
@@ -503,7 +519,7 @@ internal sealed class MapModel
             // CARRIED, like every other field. The resolve pass rebuilds a model to settle its
             // nested members; anything it forgets to copy is silently lost, which is what happened
             // to this one the first time and is why the sample was the test that caught it.
-            AsConcreteRejected, ProjectionRefusals, NestedProjectionRefusals, IsOpenGenericClosure, DeclaredBy);
+            AsConcreteRejected, ProjectionRefusals, NestedProjectionRefusals, IsOpenGenericClosure, DeclaredBy, IsImplicit, ConfiguredBy);
 
     /// <summary>
     /// The same map with a constructor argument's nested value settled, produced by the resolve
@@ -524,7 +540,7 @@ internal sealed class MapModel
             // CARRIED, like every other field. The resolve pass rebuilds a model to settle its
             // nested members; anything it forgets to copy is silently lost, which is what happened
             // to this one the first time and is why the sample was the test that caught it.
-            AsConcreteRejected, ProjectionRefusals, NestedProjectionRefusals, IsOpenGenericClosure, DeclaredBy);
+            AsConcreteRejected, ProjectionRefusals, NestedProjectionRefusals, IsOpenGenericClosure, DeclaredBy, IsImplicit, ConfiguredBy);
 
     /// <summary>
     /// The same map, told that something it nests cannot be projected.
@@ -541,5 +557,5 @@ internal sealed class MapModel
             Constructor, ConstructionProblems, ConstructsWithFactory, ConditionedMembers,
             RefusedConditions, ConvertsWithExpression, HasBeforeMap, HasAfterMap, DeadConfiguration,
             FlattenedMembers, AmbiguousFlattening, UnresolvedBases, IncludedDerived, AsConcrete,
-            AsConcreteRejected, ProjectionRefusals, nestedProjectionRefusals, IsOpenGenericClosure, DeclaredBy);
+            AsConcreteRejected, ProjectionRefusals, nestedProjectionRefusals, IsOpenGenericClosure, DeclaredBy, IsImplicit, ConfiguredBy);
 }

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.Immutable;
@@ -223,6 +223,14 @@ public sealed partial class ShiftMapperAnalyzer : DiagnosticAnalyzer
                 ReportDeclaredProblem(reporter, problem, location: null);
         }
 
+        // SM0035 (in a surface lambda), SM0047–SM0053 — everything about implicit maps and the
+        // surfaces that configure them, each at the declaration it is about.
+        foreach (PositionedProblem problem in generated.ImplicitProblems)
+        {
+            if (saidAlready.Add(problem.Problem + "@" + (problem.Location?.ToString() ?? string.Empty)))
+                ReportDeclaredProblem(reporter, problem.Problem, problem.Location);
+        }
+
         // The merge, WITH a reporter this time: the per-class pass reads the same graph silently.
         ImmutableArray<MapModel> merged = ShiftMapperGenerator.MergeAndResolve(new[] { generated }, reporter);
 
@@ -237,6 +245,11 @@ public sealed partial class ShiftMapperAnalyzer : DiagnosticAnalyzer
             trees);
 
         ReportSkippedProperties(filtered, merged, only: map => !local.Contains(map.DeclaredBy));
+
+        // THE IMPLICIT MAPS BUILT HERE are local — declared by this project's types — but no mapper
+        // class declares them, so the per-class pass never sees them. They are reported in full,
+        // here, at the repository or attribute that closed the marker.
+        ReportSkippedProperties(reporter, merged, only: map => map.IsImplicit && local.Contains(map.DeclaredBy));
     }
 
     /// <summary>
@@ -260,7 +273,14 @@ public sealed partial class ShiftMapperAnalyzer : DiagnosticAnalyzer
             "SM0032" => DiagnosticDescriptors.DeclaredConversionMalformed,
             "SM0033" => DiagnosticDescriptors.DeclaredContractMismatch,
             "SM0034" => DiagnosticDescriptors.MemberConventionFailed,
+            "SM0035" => DiagnosticDescriptors.DeclarationNotBakeable,
             "SM0038" => DiagnosticDescriptors.MemberConventionIsEmpty,
+            "SM0047" => DiagnosticDescriptors.ImplicitMapReplaced,
+            "SM0048" => DiagnosticDescriptors.ImplicitNestingCycle,
+            "SM0050" => DiagnosticDescriptors.PairConfiguredTwice,
+            "SM0051" => DiagnosticDescriptors.SurfaceConfigurationIgnored,
+            "SM0052" => DiagnosticDescriptors.SurfaceConfiguresNoMap,
+            "SM0053" => DiagnosticDescriptors.ImplicitMarkerNotApplied,
             _ => null,
         };
 
@@ -613,6 +633,26 @@ public sealed partial class ShiftMapperAnalyzer : DiagnosticAnalyzer
             }
 
             ReportConversions(report, map, location);
+
+            // SM0049 — the update overload rebuilds every nested COLLECTION from scratch. One note
+            // per map, listing the members, and only where there is an update overload to speak of.
+            if (!map.IsDestinationValueType && !map.ConvertsWithExpression)
+            {
+                string[] rebuilt = map.NestedProperties
+                    .Where(nested => nested.IsCollection && nested.CanSetAfterConstruction)
+                    .Select(nested => "'" + nested.Destination + "'")
+                    .ToArray();
+
+                if (rebuilt.Length > 0)
+                {
+                    report.Report(
+                        DiagnosticDescriptors.UpdateRebuildsNestedCollection,
+                        location,
+                        $"the update overload of '{map.SourceName}' to '{map.DestinationName}' replaces " +
+                        $"{string.Join(", ", rebuilt)} with new objects; if those are rows with an identity of their " +
+                        "own, reconcile them in an AfterMap or the caller and Ignore the member");
+                }
+            }
         }
     }
 

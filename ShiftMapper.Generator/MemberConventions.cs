@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
@@ -34,7 +34,8 @@ internal static class MemberConventions
             INamedTypeSymbol? nameOfAttribute,
             string? nameOfProperty,
             ImmutableArray<ITypeSymbol> destinationFilters,
-            int direction)
+            int direction,
+            List<(string Target, string Path, bool Optional)>? elementFill = null)
         {
             MemberType = memberType;
             Fill = fill;
@@ -42,7 +43,15 @@ internal static class MemberConventions
             NameOfProperty = nameOfProperty;
             DestinationFilters = destinationFilters;
             Direction = direction;
+            ElementFill = elementFill ?? new List<(string, string, bool)>();
         }
+
+        /// <summary>
+        /// The <c>ForEachElement()</c> entries — how to fill one element of a COLLECTION of the member
+        /// type, with paths relative to the source collection's element. Empty when the rule claims
+        /// no collections.
+        /// </summary>
+        public List<(string Target, string Path, bool Optional)> ElementFill { get; }
 
         public ITypeSymbol MemberType { get; }
 
@@ -120,7 +129,8 @@ internal static class MemberConventions
         InvocationExpressionSyntax invocation,
         GenericNameSyntax createConvention,
         INamedTypeSymbol conventionExpression,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        INamedTypeSymbol? elementExpression = null)
     {
         if (semanticModel.GetSymbolInfo(createConvention.TypeArgumentList.Arguments[0], cancellationToken).Symbol
                 is not ITypeSymbol memberType)
@@ -129,6 +139,7 @@ internal static class MemberConventions
         }
 
         var fill = new List<(string, string, bool)>();
+        var elementFill = new List<(string, string, bool)>();
         var destinations = ImmutableArray.CreateBuilder<ITypeSymbol>();
 
         INamedTypeSymbol? nameOfAttribute = null;
@@ -152,6 +163,22 @@ internal static class MemberConventions
                 }
 
                 break;
+            }
+
+            // After ForEachElement() the chain continues on the ELEMENT expression, whose Fill and
+            // FillIfPossible are the element entries — the same shape, resolved on the element.
+            if (elementExpression is not null
+                && IsDeclaredOnConvention(semanticModel, call, elementExpression, cancellationToken))
+            {
+                if (access.Name.Identifier.ValueText is "Fill" or "FillIfPossible"
+                    && call.ArgumentList.Arguments.Count == 2
+                    && MemberName(semanticModel, call.ArgumentList.Arguments[0].Expression, cancellationToken) is { } elementTarget
+                    && Literal(semanticModel, call.ArgumentList.Arguments[1].Expression, cancellationToken) is { } elementPath)
+                {
+                    elementFill.Add((elementTarget, elementPath, access.Name.Identifier.ValueText == "FillIfPossible"));
+                }
+
+                continue;
             }
 
             if (!IsDeclaredOnConvention(semanticModel, call, conventionExpression, cancellationToken))
@@ -211,7 +238,7 @@ internal static class MemberConventions
         // Whether an empty rule is worth reporting is the CALLER's question — it is the one that
         // can say so (SM0038) — so this no longer decides it by returning nothing.
         return new Convention(
-            memberType, fill, nameOfAttribute, nameOfProperty, destinations.ToImmutable(), direction);
+            memberType, fill, nameOfAttribute, nameOfProperty, destinations.ToImmutable(), direction, elementFill);
     }
 
     private static bool IsDeclaredOnConvention(

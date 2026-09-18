@@ -49,7 +49,7 @@
       repository sits beside ShiftTemplates - that is the version the pipeline publishes. The value
       here is only the fallback for a standalone clone, where nothing consumes the package.
     -->
-    <ShiftMapperVersion Condition="'$(ShiftMapperVersion)' == ''">0.2.0</ShiftMapperVersion>
+    <ShiftMapperVersion Condition="'$(ShiftMapperVersion)' == ''">0.3.0</ShiftMapperVersion>
     <Version>$(ShiftMapperVersion)</Version>
 
     <!--
