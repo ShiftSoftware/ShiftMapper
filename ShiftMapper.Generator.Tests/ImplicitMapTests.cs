@@ -248,6 +248,57 @@ public class ImplicitMapTests
         run.None("SM0042");
     }
 
+    /// <summary>
+    /// A child customized once, in a mapper class, is used inside every parent that nests it — and ITS
+    /// children still nest implicitly: nothing about customizing InvoiceLine → InvoiceLineDto says the
+    /// pairs below it are declared, so the marker declares them, to its depth.
+    /// </summary>
+    [Fact]
+    public void The_pairs_below_an_explicit_child_map_still_nest_implicitly()
+    {
+        GeneratorRun run = GeneratorHarness.RunWithPackage(
+            Framework,
+            """
+            using System;
+            using System.Collections.Generic;
+            using ShiftMapper;
+            using Framework;
+
+            namespace App
+            {
+                public class Invoice { public long Id { get; set; } public List<InvoiceLine> Lines { get; set; } = new(); }
+                public class InvoiceLine { public long Id { get; set; } public string Description { get; set; } = ""; public Product Product { get; set; } = new(); }
+                public class Product { public long Id { get; set; } public string Name { get; set; } = ""; }
+
+                public class InvoiceDto { public long Id { get; set; } public List<InvoiceLineDto> Lines { get; set; } = new(); }
+                public class InvoiceLineDto { public long Id { get; set; } public string Description { get; set; } = ""; public ProductDto Product { get; set; } = new(); }
+                public class ProductDto { public long Id { get; set; } public string Name { get; set; } = ""; }
+                public class InvoiceListDto { public string Id { get; set; } = ""; }
+
+                public class InvoiceRepository : Repository<Invoice, InvoiceListDto, InvoiceDto> { }
+
+                public class LineMapper : ShiftMapperBase
+                {
+                    public LineMapper() =>
+                        CreateMap<InvoiceLine, InvoiceLineDto>()
+                            .ForMember(d => d.Description, opt => opt.MapFrom(l => l.Description.Trim()));
+                }
+            }
+            """);
+
+        run.Compiles()
+           // The parent nests the CLASS's map for the line...
+           .Emits("Lines = global::ShiftMapper.ValueConverter.ToListOrEmpty<global::App.InvoiceLine, global::App.InvoiceLineDto>(source.Lines, item => MapToInvoiceLineDto(item))")
+           // ...which keeps its customization...
+           .Emits("Customizations.Value<global::App.InvoiceLine, global::App.InvoiceLineDto, string>(\"Description\"))(source)")
+           // ...and whose own child, Product → ProductDto, is declared implicitly below it.
+           .Emits("Product = MapToProductDto(source.Product)")
+           .Emits("public global::App.ProductDto MapToProductDto(global::App.Product source)");
+
+        run.None("SM0011");
+        Assert.Contains("ShiftMapperDeclaredMap(typeof(global::ShiftMapper.Generated.ShiftMapperSnippet.ImplicitMapper), typeof(global::App.Product), typeof(global::App.ProductDto)", run.Metadata);
+    }
+
     [Fact]
     public void Flattening_is_off_when_the_marker_says_so()
     {

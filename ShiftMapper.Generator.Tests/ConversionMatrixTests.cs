@@ -142,6 +142,31 @@ public class ConversionMatrixTests
         run.Compiles().Emits($"Value = {Converter}.ToInvariantString(source.Value),");
     }
 
+    /// <summary>
+    /// The QUERY spelling keeps an absent value absent too. <c>Nullable&lt;T&gt;.ToString()</c> is "" for
+    /// null, and a provider translates it as <c>COALESCE(CONVERT(...), '')</c> — so a null key would arrive
+    /// as empty text where the in-memory twin keeps null. The projection tests the value first.
+    /// </summary>
+    [Fact]
+    public void To_text_from_a_nullable_keeps_null_in_the_query_too()
+    {
+        GeneratorRun run = Pair("int?", "string");
+
+        run.Compiles()
+           .Emits("Value = (source.Value.HasValue ? source.Value.Value.ToString() : null),")
+           .DoesNotEmit("Value = source.Value.ToString(),");
+
+        Assert.Empty(run.Ids());
+    }
+
+    [Fact]
+    public void To_text_from_a_required_value_needs_no_test_in_the_query()
+    {
+        GeneratorRun run = Pair("int", "string");
+
+        run.Compiles().Emits("Value = source.Value.ToString(),");
+    }
+
     // -----------------------------------------------------------------
     // FROM TEXT. The mirror of the above, and the ONE direction that can fail
     // on data rather than on types — hence SM0009 on every row.
@@ -241,10 +266,8 @@ public class ConversionMatrixTests
     // direction.
     [InlineData("string", "char[]")]
     [InlineData("char[]", "string")]
-    // A dictionary of OBJECTS: the values would have to be mapped, and mapping does not run
-    // through the conversion table. (A dictionary of values is step 2b and maps — see
-    // DictionaryConversionTests.)
-    [InlineData("Dictionary<string, Child>", "Dictionary<string, ChildDto>")]
+    // A dictionary of OBJECTS is not refused here: its values are MAPPED, as a nested member —
+    // see DictionaryConversionTests and NestedMappingTests. (A dictionary of values is step 2b.)
     // A collection shape we can read but not build.
     [InlineData("List<int>", "Stack<int>")]
     public void Refused_as_Sm0002(string source, string destination)

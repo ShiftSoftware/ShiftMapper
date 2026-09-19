@@ -160,6 +160,14 @@ List<BrandDto> list = brands.Map<List<BrandDto>>(mapper); // extension
 The source is any `IEnumerable<T>`; the destination is one of those four. A shape nothing builds
 throws a message naming the four, rather than guessing.
 
+### Dictionaries of mapped objects
+
+A `Dictionary<string, Setting>` fills a `Dictionary<string, SettingDto>` the way a list of objects fills
+a list of DTOs: the keys carried across as they are (they have to be the same type), each value through
+the pair's map — which has to exist, as for any nested object (**SM0011**). **In memory only.** A
+projection cannot map a value inside a dictionary, so the member is left out of it and the map says so,
+the same way it says it for a conversion without a query form (**SM0030**); `Map` is unaffected.
+
 ### Null collections
 
 One decision that had to be made rather than inherited: **a null source collection becomes an
@@ -423,6 +431,11 @@ Two placeholders, and no more. `{Member}` is the destination member's own name, 
 `source.BrandId`. `{NameOf}` is **the indirection that makes one rule serve types nobody listed**: it
 means "the member this type nominates in its own attribute", so an entity calling its display member
 `Title` is served by the same rule as one calling it `Name`.
+
+A NULLABLE value filling text is tested first in the query — `x.HasValue ? x.Value.ToString() : null` —
+because `Nullable<T>.ToString()` is `""` for null and a provider translates it as
+`COALESCE(CONVERT(...), '')`: an absent key would arrive as empty text, where the in-memory twin keeps it
+absent. Both spellings say the same thing; a null stays null.
 
 **It resolves to TEXT at compile time, which is why it reaches the projection.** The same rule as an
 `AfterMap` works in memory and cannot appear in a list query at all — which is why frameworks that
@@ -992,8 +1005,10 @@ Four things make an implicit map different from one you declared:
 - **It nests.** `Nested = n` declares implicit maps for the class-typed members below it, `n` levels
   deep, so `InvoiceDto.Lines` maps through `InvoiceLine → InvoiceLineDto` with nothing written. A
   nested pair that already has a map is used as it is, customizations included — which is how a child is
-  customized once for every parent that nests it. A member a `ForMember` or a member convention claims
-  is not nested; a cycle stops with a note (**SM0048**).
+  customized once for every parent that nests it — and the pairs BELOW that map are still declared
+  implicitly, to the same depth: customizing a child does not mean declaring its children. A member a
+  `ForMember` or a member convention claims is not nested; a cycle stops with a note (**SM0048**). A
+  dictionary of mapped objects nests too (in memory only — see below).
 - **It takes the marker's rules.** `Rules = typeof(Pack)` gives the implicit maps that pack at the
   level a mapper class's own `AddConversions` would — nearer than the registration's packs. The same
   pack is also at the FURTHEST level of every other map in a project that closes the marker, as a pack a
@@ -1042,9 +1057,12 @@ to the mapper with `IMapper.Configure(surface)`. The rules that follow:
 - **A mapper class declaring the pair wins**, and the lambda's lines for that pair are reported dead
   (**SM0051**). A lambda configuring a pair nothing declares is reported too (**SM0052**).
 - A customized map used before its configuring type has run in the scope — a service mapping the pair
-  directly — is pulled in: the mapper asks the container for the configuring type (or an
+  directly, or PROJECTING it — is pulled in: the mapper asks the container for the configuring type (or an
   `IShiftMapperConfiguratorResolver`, when the framework registers one), whose construction applies the
-  surface. Failing that, the message names the type and the two ways out.
+  surface; a projection pulls before it is composed, so it carries the customized members too. Failing
+  that, the message names the type and the two ways out.
+- One statement per member reads as naturally as one chain and means the same: every `m.View` in the
+  lambda is the same handle, and what each statement says about the pair is merged.
 
 ### Member rules a framework states once: `IgnoreMember`
 

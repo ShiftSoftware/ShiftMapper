@@ -27,9 +27,11 @@ internal sealed class NestedProperty
         string destinationCollectionType,
         bool sourceIsNullable,
         bool canSetAfterConstruction,
-        bool isRequired = false)
+        bool isRequired = false,
+        string? dictionaryKeyType = null)
     {
         IsRequired = isRequired;
+        DictionaryKeyType = dictionaryKeyType;
         Destination = destination;
         Source = source;
         SourceElementType = sourceElementType;
@@ -104,6 +106,15 @@ internal sealed class NestedProperty
 
     /// <summary>True when this is a collection of objects rather than a single one.</summary>
     public bool IsCollection => CollectionBuilder is not null;
+
+    /// <summary>
+    /// The key type of a dictionary member, fully qualified, or null. A dictionary of mapped
+    /// objects is mapped in MEMORY ONLY: its values go through the nested map one by one and its
+    /// keys are carried across; the projection leaves the member out.
+    /// </summary>
+    public string? DictionaryKeyType { get; }
+
+    public bool IsDictionary => DictionaryKeyType is not null;
 
     /// <summary>The pair a CreateMap must exist for, in the same spelling <c>MapModel.Key</c> uses.</summary>
     public string Key => SourceElementType + "->" + DestinationElementType;

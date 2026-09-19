@@ -131,8 +131,14 @@ public sealed partial class ShiftMapperGenerator
         {
             if (_byPair.TryGetValue(pairKey, out SurfaceEntry? existing))
             {
+                // The SAME configurator again: another `m.View.ForMember(...)` statement of the same lambda,
+                // or the same lambda read twice (a partial type, two files). One configuration, merged —
+                // member by member, so a statement per member reads as naturally as one chain.
                 if (SymbolEqualityComparer.Default.Equals(existing.Configurator, entry.Configurator))
-                    return;   // the same lambda read twice (a partial type, two files) is one configuration
+                {
+                    _byPair[pairKey] = new SurfaceEntry(Merge(existing.Refinements, entry.Refinements), existing.Configurator, existing.Location);
+                    return;
+                }
 
                 Problems.Add(new PositionedProblem(
                     $"SM0050|'{sourceName}' to '{destinationName}' is configured by both " +
@@ -148,6 +154,41 @@ public sealed partial class ShiftMapperGenerator
         }
 
         internal bool TryGet(string pairKey, out SurfaceEntry entry) => _byPair.TryGetValue(pairKey, out entry!);
+
+        /// <summary>Two readings of one pair's configuration as one: the members of both, each once; a flag set by either.</summary>
+        private static Refinements Merge(Refinements first, Refinements second)
+        {
+            var customized = first.Customized.ToList();
+
+            foreach (CustomProperty custom in second.Customized)
+            {
+                if (!customized.Any(known => known.Name == custom.Name))
+                    customized.Add(custom);
+            }
+
+            var unconvertible = first.Unconvertible.ToList();
+
+            foreach (UnmappedProperty unmapped in second.Unconvertible)
+            {
+                if (!unconvertible.Any(known => known.PropertyName == unmapped.PropertyName))
+                    unconvertible.Add(unmapped);
+            }
+
+            return new Refinements(
+                first.Ignored.Union(second.Ignored).ToImmutableArray(),
+                customized.ToImmutableArray(),
+                unconvertible.ToImmutableArray(),
+                first.Conditioned.Union(second.Conditioned).ToImmutableArray(),
+                first.ConstructsWithFactory || second.ConstructsWithFactory,
+                first.ConvertsWithExpression || second.ConvertsWithExpression,
+                first.HasBeforeMap || second.HasBeforeMap,
+                first.HasAfterMap || second.HasAfterMap,
+                first.HasAllMembersCondition || second.HasAllMembersCondition,
+                first.IncludedBases.Union(second.IncludedBases).ToImmutableArray(),
+                first.IncludedDerived.Length > 0 ? first.IncludedDerived : second.IncludedDerived,
+                first.AsConcrete ?? second.AsConcrete,
+                first.AsConcreteRejected ?? second.AsConcreteRejected);
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -304,6 +345,32 @@ public sealed partial class ShiftMapperGenerator
 
             return null;
         }
+    }
+
+    /// <summary>
+    /// The symbol a fully qualified display name (<c>global::Ns.Outer.Inner</c>) came from, or null — for the
+    /// nested pairs a MapModel keeps as strings. A nested type is tried with each dot turned into the '+' its
+    /// metadata name uses, innermost first; a generic or otherwise unnameable type stays null.
+    /// </summary>
+    private static INamedTypeSymbol? ResolveDisplayName(Compilation compilation, string displayName)
+    {
+        string name = displayName.StartsWith("global::", StringComparison.Ordinal) ? displayName.Substring(8) : displayName;
+
+        if (name.IndexOf('<') >= 0)
+            return null;
+
+        if (compilation.GetTypeByMetadataName(name) is { } direct)
+            return direct;
+
+        for (int dot = name.LastIndexOf('.'); dot > 0; dot = name.LastIndexOf('.', dot - 1))
+        {
+            name = name.Substring(0, dot) + "+" + name.Substring(dot + 1);
+
+            if (compilation.GetTypeByMetadataName(name) is { } nested)
+                return nested;
+        }
+
+        return null;
     }
 
     /// <summary>A marker name resolved against the closing: a type parameter's argument, or the closing type itself.</summary>
@@ -525,6 +592,16 @@ public sealed partial class ShiftMapperGenerator
 
         foreach (ImplicitSource root in set.Implicit)
         {
+            // The depth the closing type asked for with m.Nested(n) — or, when the pair is configured
+            // from ANOTHER type (an entity configuring the repository that closes the marker over it),
+            // the depth that configurator asked for. The marker's own depth otherwise.
+            int cap = set.Surfaces.NestedByConfigurator.TryGetValue(FullName(root.ClosingType), out int asked)
+                ? asked
+                : set.Surfaces.TryGet(root.Key, out SurfaceEntry configured)
+                  && set.Surfaces.NestedByConfigurator.TryGetValue(FullName(configured.Configurator), out int askedByConfigurator)
+                    ? askedByConfigurator
+                    : root.Nested;
+
             if (explicitByKey.TryGetValue(root.Key, out MapModel replaced))
             {
                 problems.Add(new PositionedProblem(
@@ -532,15 +609,13 @@ public sealed partial class ShiftMapperGenerator
                     $"'{root.ClosingType.Name}' is replaced by the one in '{ShortName(replaced.DeclaredBy)}'",
                     root.Location));
 
+                // The map is the class's; the pairs BELOW it are still the marker's to declare.
+                Below(replaced, root, depth: 0, cap, ImmutableHashSet<string>.Empty.Add(root.Key));
                 continue;
             }
 
             if (seen.Contains(root.Key))
                 continue;   // an open generic closure, or a pair already reached from another root
-
-            int cap = set.Surfaces.NestedByConfigurator.TryGetValue(FullName(root.ClosingType), out int asked)
-                ? asked
-                : root.Nested;
 
             Build(root.Source, root.Destination, root, depth: 0, cap, path: ImmutableHashSet<string>.Empty);
         }
@@ -628,9 +703,16 @@ public sealed partial class ShiftMapperGenerator
                     continue;
                 }
 
-                // Declared somewhere — by a mapper class, a package, or another root: used as it is.
+                // Declared somewhere — by a mapper class, a package, or another root: used as it is. An
+                // EXPLICIT one — a child customized once for every parent — still gets implicit maps for
+                // the pairs below it; nothing about customizing a child says its own children are declared.
                 if (seen.Contains(nestedKey))
+                {
+                    if (explicitByKey.TryGetValue(nestedKey, out MapModel declared) && depth + 1 <= cap)
+                        Below(declared, root, depth + 1, cap, below.Add(nestedKey));
+
                     continue;
+                }
 
                 if (depth + 1 > cap)
                 {
@@ -645,6 +727,35 @@ public sealed partial class ShiftMapperGenerator
                 }
 
                 Build(nestedSource, nestedDestination, root, depth + 1, cap, below);
+            }
+        }
+
+        // The nested pairs of an EXPLICIT map reached through nesting, declared implicitly where nothing
+        // declares them. The map's own analysis already settled which members nest (a customized member does
+        // not), so its nested properties are the list; their types come back from the names it kept.
+        void Below(MapModel declared, ImplicitSource root, int depth, int cap, ImmutableHashSet<string> path)
+        {
+            foreach (NestedProperty nested in declared.NestedProperties)
+            {
+                if (path.Contains(nested.Key) || depth + 1 > cap)
+                    continue;
+
+                if (seen.Contains(nested.Key))
+                {
+                    if (explicitByKey.TryGetValue(nested.Key, out MapModel deeper))
+                        Below(deeper, root, depth + 1, cap, path.Add(nested.Key));
+
+                    continue;
+                }
+
+                if (ResolveDisplayName(compilation, nested.SourceElementType) is not INamedTypeSymbol nestedSource
+                    || ResolveDisplayName(compilation, nested.DestinationElementType) is not INamedTypeSymbol nestedDestination
+                    || nestedDestination.TypeKind == TypeKind.Interface || nestedDestination.IsAbstract)
+                {
+                    continue;   // left to the explicit map's own SM0011, which names the pair
+                }
+
+                Build(nestedSource, nestedDestination, root, depth + 1, cap, path);
             }
         }
 

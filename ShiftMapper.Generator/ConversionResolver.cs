@@ -263,7 +263,13 @@ internal static class ConversionResolver
                     ConversionRisk.None,
                     // SQL decides the text format, so this is not the invariant-culture
                     // guarantee its in-memory twin makes — it is the database's own CONVERT.
-                    queryTemplate: "{0}.ToString()")
+                    // A NULLABLE source is tested first: Nullable<T>.ToString() is "" for null, and a
+                    // provider translates it as COALESCE(CONVERT(...), '') — an absent value would
+                    // arrive as empty text, where the in-memory twin keeps it absent. The test keeps
+                    // both spellings saying the same thing: null stays null.
+                    queryTemplate: sourceIsNullableValue
+                        ? "({0}.HasValue ? {0}.Value.ToString() : null)"
+                        : "{0}.ToString()")
                 : null;
         }
 
@@ -350,6 +356,9 @@ internal static class ConversionResolver
     /// Returns null when the pair is not object-to-object, in which case the caller reports
     /// SM0002 exactly as before.
     /// </summary>
+    /// <summary>The builder name a dictionary pair carries — <see cref="ValueConverter.ToDictionary{TSourceKey, TSourceValue, TDestinationKey, TDestinationValue}"/>, with or without the OrEmpty suffix.</summary>
+    public const string DictionaryBuilder = "ToDictionary";
+
     public static ComplexPair? DescribeComplex(
         Compilation compilation,
         ITypeSymbol sourceType,
@@ -358,6 +367,18 @@ internal static class ConversionResolver
         // A single object on both sides.
         if (IsMappableObject(sourceType) && IsMappableObject(destinationType))
             return new ComplexPair(sourceType, destinationType, builder: null);
+
+        // A DICTIONARY on both sides whose VALUES are objects and whose keys are the same type —
+        // a JSON column of named settings, say. The values map through their own map, the keys
+        // are carried across as they are. Memory only: a projection cannot map a value inside a
+        // dictionary, so the member is left out of it and the map says so (SM0030).
+        if (GetDictionaryShape(compilation, destinationType) is var (destinationKey, destinationValue)
+            && GetPairTypes(compilation, sourceType) is var (sourceKey, sourceValue)
+            && SymbolEqualityComparer.Default.Equals(sourceKey, destinationKey)
+            && IsMappableObject(sourceValue) && IsMappableObject(destinationValue))
+        {
+            return new ComplexPair(sourceValue, destinationValue, DictionaryBuilder, destinationKey);
+        }
 
         // A collection on both sides, whose ELEMENTS are objects. The shape is settled by the
         // same helpers a collection of ints uses, so `List<Product>` fills an
@@ -1401,12 +1422,16 @@ internal enum ConversionRisk
 /// </summary>
 internal sealed class ComplexPair
 {
-    public ComplexPair(ITypeSymbol source, ITypeSymbol destination, string? builder)
+    public ComplexPair(ITypeSymbol source, ITypeSymbol destination, string? builder, ITypeSymbol? dictionaryKey = null)
     {
         Source = source;
         Destination = destination;
         Builder = builder;
+        DictionaryKey = dictionaryKey;
     }
+
+    /// <summary>The key type of a dictionary pair — carried across unchanged — or null for an object or a collection.</summary>
+    public ITypeSymbol? DictionaryKey { get; }
 
     /// <summary>The object type on the source side — the ELEMENT type for a collection.</summary>
     public ITypeSymbol Source { get; }

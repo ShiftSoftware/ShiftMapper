@@ -281,4 +281,63 @@ public class NestedMappingTests
         Assert.Empty(run.Ids());
         run.Compiles().Emits("Product = MapToProductDto(source.Product)");
     }
+
+    /// <summary>
+    /// A DICTIONARY OF MAPPED OBJECTS — a JSON column of named settings — maps its values through the
+    /// child map with the keys carried across, in memory. Nothing a provider could translate, so the
+    /// projection leaves the member out and the map says so the way it says it for any conversion
+    /// without a query form (SM0030); Map is unaffected.
+    /// </summary>
+    [Fact]
+    public void A_dictionary_of_mapped_objects_maps_its_values_in_memory_only()
+    {
+        GeneratorRun run = GeneratorHarness.Run(
+            Graph +
+            $$"""
+
+            public class Source { public string Name { get; set; } = ""; public Dictionary<string, Child>? Settings { get; set; } }
+            public class Destination { public string Name { get; set; } = ""; public Dictionary<string, ChildDto>? Settings { get; set; } }
+
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+                    CreateMap<Source, Destination>();
+                    CreateMap<Child, ChildDto>();
+                }
+            }
+
+            public static class Probe
+            {
+                public static string Run()
+                {
+                    var mapper = new Mapper();
+
+                    Destination mapped = mapper.MapToDestination(new Source
+                    {
+                        Name = "s",
+                        Settings = new() { ["a"] = new Child { Id = 1 }, ["b"] = new Child { Id = 2 } },
+                    });
+
+                    Destination empty = mapper.MapToDestination(new Source { Name = "e" });
+
+                    var parts = new List<string>();
+                    foreach (var kv in mapped.Settings!)
+                        parts.Add(kv.Key + "=" + kv.Value.Id);
+
+                    return string.Join(",", parts) + "|" + empty.Settings!.Count;
+                }
+            }
+            """);
+
+        run.Compiles()
+           .Emits("Settings = global::ShiftMapper.ValueConverter.ToDictionaryOrEmpty<string, global::Child, string, global::ChildDto>(source.Settings, key => key, item => MapToChildDto(item))")
+           .DoesNotEmit("NestedBinding(\"Settings\"");
+
+        Assert.Contains("'Dictionary<string, Child>?' to 'Dictionary<string, ChildDto>?'", run.Single("SM0030").GetMessage());
+        run.None("SM0002");
+        run.None("SM0011");
+
+        Assert.Equal("a=1,b=2|0", run.Load().GetType("Probe")!.GetMethod("Run")!.Invoke(null, null));
+    }
 }

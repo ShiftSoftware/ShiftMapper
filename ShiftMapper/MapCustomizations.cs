@@ -923,6 +923,42 @@ public sealed class MapCustomizations
         return Value<TSource, TDestination, TProperty>(member);
     }
 
+    /// <summary>
+    /// The projection's counterpart of <see cref="Value{TSource, TDestination, TProperty}(string, Type)"/>:
+    /// before <c>Compose</c> reads the store for a map a CONFIGURATION SURFACE customized, the type
+    /// whose lambda did it is pulled, so a projection used first in a scope carries the customized
+    /// members rather than quietly leaving them out. Returns the template it is given, unchanged;
+    /// the generated code wraps the template in it.
+    /// </summary>
+    /// <param name="configuredBy">The type whose <c>Mapping(...)</c> lambda customizes the pair.</param>
+    /// <param name="members">The members it customizes — what has to be in the store.</param>
+    /// <param name="template">The generated projection, returned as it is.</param>
+    public Expression<Func<TSource, TDestination>> Configured<TSource, TDestination>(
+        Type configuredBy,
+        string[] members,
+        Expression<Func<TSource, TDestination>> template)
+    {
+        if (configuredBy is null)
+            throw new ArgumentNullException(nameof(configuredBy));
+
+        foreach (string member in members ?? Array.Empty<string>())
+        {
+            CustomizationKey key = new(typeof(TSource), typeof(TDestination), member);
+
+            if (!_values.ContainsKey(key) && (ConfiguratorPull is null || !ConfiguratorPull(configuredBy) || !_values.ContainsKey(key)))
+            {
+                throw new InvalidOperationException(
+                    $"ShiftMapper: '{typeof(TDestination).Name}.{member}' is customized by the Mapping(...) configuration " +
+                    $"written in '{configuredBy.Name}', which has not been applied in this scope. Resolve " +
+                    $"'{configuredBy.Name}' before projecting '{typeof(TSource).Name}' to '{typeof(TDestination).Name}' " +
+                    "directly, register an IShiftMapperConfiguratorResolver that reaches it, or move the " +
+                    "customization into a mapper class, which needs no such step.");
+            }
+        }
+
+        return template;
+    }
+
     public Func<TSource, TProperty> Value<TSource, TDestination, TProperty>(string member)
     {
         CustomizationKey key = new(typeof(TSource), typeof(TDestination), member);

@@ -2631,7 +2631,9 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         List<string> conventionProblems = declaredProblems ?? new List<string>();
         // ONE MAP'S WORTH of global-conversion usage. Cleared here so the refusals collected below
         // describe THIS map rather than everything the mapper has resolved so far.
-        ConversionTable globals = conversions ?? ConversionTable.Empty;
+        // A table of its own when nothing was registered, never the shared Empty: the usage log
+        // below is written to.
+        ConversionTable globals = conversions ?? new ConversionTable();
 
         globals.ClearUsage();
         // ONE PLACE where "what the developer asked for" becomes "what the generated code does".
@@ -2650,9 +2652,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         // table's usage log rather than carried out of the analysis: a conversion can be reached
         // from a plain member, a flattened path, a collection element, a dictionary value or a
         // constructor argument, and every one of those goes through the same lookup.
-        ImmutableArray<string> projectionRefusals = globals.IsEmpty
-            ? ImmutableArray<string>.Empty
-            : globals.UsedWithoutQueryForm.ToImmutableArray();
+        ImmutableArray<string> projectionRefusals = globals.UsedWithoutQueryForm.ToImmutableArray();
 
         return new MapModel(
             sourceType: sourceType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
@@ -3570,6 +3570,14 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                             nestedSource, nestedDestination, destinationProperty.Name));
                     }
 
+                    // A dictionary of mapped objects has no query form: the member is left out of the
+                    // projection, and the map is told so the same way a memory-only conversion tells it.
+                    if (complex.DictionaryKey is not null)
+                    {
+                        globals.NoteUsedWithoutQueryForm(
+                            "'" + ShortTypeName(sourceProperty.Type) + "' to '" + ShortTypeName(destinationProperty.Type) + "'");
+                    }
+
                     nested.Add(new NestedProperty(
                         destination: destinationProperty.Name,
                         source: sourceProperty.Name,
@@ -3580,7 +3588,8 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                         destinationCollectionType: destinationProperty.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
                         sourceIsNullable: sourceProperty.NullableAnnotation == NullableAnnotation.Annotated,
                         canSetAfterConstruction: !setter.IsInitOnly,
-                        isRequired: isRequired));
+                        isRequired: isRequired,
+                        dictionaryKeyType: complex.DictionaryKey?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)));
                     continue;
                 }
 
@@ -4133,6 +4142,12 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         // the mapper has been read, so the resolve pass settles it.
         if (ConversionResolver.DescribeComplex(compilation, sourceProperty.Type, parameter.Type) is { } complex)
         {
+            if (complex.DictionaryKey is not null)
+            {
+                globals.NoteUsedWithoutQueryForm(
+                    "'" + ShortTypeName(sourceProperty.Type) + "' to '" + ShortTypeName(parameter.Type) + "'");
+            }
+
             return new ConstructorArgument(
                 parameter.Name,
                 parameterType,
@@ -4148,6 +4163,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                     collectionBuilder: complex.Builder,
                     destinationCollectionType: parameterType,
                     sourceIsNullable: sourceProperty.NullableAnnotation == NullableAnnotation.Annotated,
+                    dictionaryKeyType: complex.DictionaryKey?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
                     canSetAfterConstruction: false));
         }
 
@@ -5963,6 +5979,14 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                 ? nested.CollectionBuilder
                 : nested.CollectionBuilder + "OrEmpty";
 
+            // A dictionary: the keys carried across, each value through the nested map.
+            if (nested.DictionaryKeyType is { } key)
+            {
+                return $"global::ShiftMapper.ValueConverter.{builder}" +
+                       $"<{key}, {nested.SourceElementType}, {key}, {nested.DestinationElementType}>" +
+                       $"({access}, key => key, item => {call}(item))";
+            }
+
             return $"global::ShiftMapper.ValueConverter.{builder}" +
                    $"<{nested.SourceElementType}, {nested.DestinationElementType}>" +
                    $"({access}, item => {call}(item))";
@@ -6200,6 +6224,20 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         // a race here can do is build it twice and keep one.
         sb.AppendLine($"{indent}    private {type} {name} =>");
         sb.AppendLine($"{indent}        {field} ??= Customizations.Compose<{map.SourceType}, {map.DestinationType}>(");
+
+        // A member a CONFIGURATION SURFACE customized has its expression in the store only once the
+        // configuring type has run. Compose reads the store, so before it does the configuring type
+        // is pulled — the same pull the create method's Value(member, configuredBy) makes — for every
+        // such member; otherwise a projection used first in a scope would quietly leave them out.
+        bool pullsConfigurator = map.ConfiguredBy is not null && !map.CustomProperties.IsEmpty;
+
+        if (pullsConfigurator)
+        {
+            string members = string.Join(", ", map.CustomProperties.Select(custom => $"\"{custom.Name}\""));
+
+            sb.AppendLine($"{indent}            Customizations.Configured<{map.SourceType}, {map.DestinationType}>(typeof({map.ConfiguredBy}), new[] {{ {members} }},");
+        }
+
         sb.Append($"{indent}            source => new {map.DestinationType}{ProjectedConstructorArguments(map, $"{indent}            ")}");
 
         // A destination whose every value arrives through the constructor needs no initializer,
@@ -6228,6 +6266,9 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
 
             sb.Append($"{indent}            }}");
         }
+
+        if (pullsConfigurator)
+            sb.Append(")");
 
         // The conversions for any MapFromSource on this map. Written as one-parameter lambdas the
         // generated file itself compiles, so Compose can splice one onto the developer's own tree
@@ -6281,6 +6322,10 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
 
         foreach (NestedProperty nested in map.NestedProperties)
         {
+            // Memory only: nothing a provider could translate, so the projection leaves it out.
+            if (nested.IsDictionary)
+                continue;
+
             sb.AppendLine(",");
             sb.Append($"{indent}            {NestedBindingExpression(nested)}");
         }

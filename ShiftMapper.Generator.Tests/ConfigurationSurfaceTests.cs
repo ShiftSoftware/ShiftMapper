@@ -141,6 +141,43 @@ public class ConfigurationSurfaceTests
         run.None("SM0052");
     }
 
+    /// <summary>
+    /// ONE STATEMENT PER MEMBER reads as naturally as one chain, and means the same: every `m.View`
+    /// access in the lambda is the same handle, and what each statement says about the pair is merged
+    /// — not the first statement kept and the rest lost.
+    /// </summary>
+    [Fact]
+    public void Several_statements_over_one_handle_are_one_configuration()
+    {
+        GeneratorRun run = Run($$"""
+
+            namespace App
+            {
+                public class InvoiceRepository : Repository<Invoice, InvoiceListDto, InvoiceDto>
+                {
+                    public InvoiceRepository() : base(o => o.Mapping(m =>
+                    {
+                        m.View.ForMember(d => d.Secret, opt => opt.Ignore());
+                        m.View.ForMember(d => d.Number, opt => opt.MapFrom(e => "#" + e.Number));
+                        m.Entity.ForMember(e => e.Secret, opt => opt.Ignore());
+                        m.Entity.AfterMap((dto, entity) => entity.Number = entity.Number.Trim());
+                        m.List.ForMember(d => d.Total, opt => opt.MapFrom(e => e.Lines.Count));
+                    }))
+                    {
+                    }
+                }
+            }
+            """);
+
+        run.Compiles()
+           .DoesNotEmit("Secret = source.Secret,")
+           .Emits("Customizations.Value<global::App.Invoice, global::App.InvoiceDto, string>(\"Number\", typeof(global::App.InvoiceRepository)))(source)")
+           .Emits("Customizations.RunAfter(source, destination);");
+
+        run.None("SM0001");
+        run.None("SM0050");
+    }
+
     [Fact]
     public void The_configuration_applies_once_the_framework_hands_the_surface_to_the_mapper()
     {
@@ -241,6 +278,49 @@ public class ConfigurationSurfaceTests
         Assembly assembly = run.Load();
 
         Assert.Equal("2", assembly.GetType("Probe")!.GetMethod("Run")!.Invoke(null, null));
+    }
+
+    /// <summary>
+    /// The PROJECTION does the same pull. Compose reads the store when the projection is first built,
+    /// so a ProjectTo used first in a scope — a report service, a list endpoint — would otherwise leave
+    /// the customized members out in silence; instead the configuring type is pulled before the read.
+    /// </summary>
+    [Fact]
+    public void A_projection_used_first_pulls_the_configurator_too()
+    {
+        GeneratorRun run = Run(ConfiguredRepository +
+            """
+            public static class Probe
+            {
+                public static string Run()
+                {
+                    var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+                    Microsoft.Extensions.DependencyInjection.ShiftMapperServiceCollectionExtensions.AddShiftMapper(services);
+
+                    Microsoft.Extensions.DependencyInjection.ServiceCollectionServiceExtensions.AddScoped(services, provider =>
+                    {
+                        var repository = new App.InvoiceRepository();
+                        var mapper = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<ShiftMapper.IMapper>(provider);
+                        mapper.Configure(repository.Options.Surface!);
+                        return repository;
+                    });
+
+                    using var scope = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.CreateScope(
+                        Microsoft.Extensions.DependencyInjection.ServiceCollectionContainerBuilderExtensions.BuildServiceProvider(services));
+
+                    var door = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<ShiftMapper.IMapper>(scope.ServiceProvider);
+
+                    var rows = System.Linq.Queryable.AsQueryable(new[] { new App.Invoice { Lines = { new(), new(), new() } } });
+
+                    return System.Linq.Enumerable.Single(door.ProjectTo<App.Invoice, App.InvoiceListDto>(rows)).Total.ToString();
+                }
+            }
+            """);
+
+        run.Compiles()
+           .Emits("Customizations.Configured<global::App.Invoice, global::App.InvoiceListDto>(typeof(global::App.InvoiceRepository), new[] { \"Total\" },");
+
+        Assert.Equal("3", run.Load().GetType("Probe")!.GetMethod("Run")!.Invoke(null, null));
     }
 
     [Fact]

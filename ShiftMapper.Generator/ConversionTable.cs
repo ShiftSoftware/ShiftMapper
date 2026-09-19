@@ -27,6 +27,7 @@ namespace ShiftMapper.Generator;
 internal sealed class ConversionTable
 {
     /// <summary>The table for a mapper that declared none, so callers need no null checks.</summary>
+    /// <summary>A table with nothing in it, for READING only: a map writes its usage log into the table it is given, so one it may write to is always its own.</summary>
     public static readonly ConversionTable Empty = new();
 
     private readonly List<Entry> _entries = new();
@@ -43,7 +44,20 @@ internal sealed class ConversionTable
     /// them would mean a new field on five data structures. Recording it where the lookup happens
     /// catches all of them by construction, including any added later.</para>
     /// </summary>
-    public void ClearUsage() => _used.Clear();
+    public void ClearUsage()
+    {
+        _used.Clear();
+        _memoryOnly.Clear();
+    }
+
+    /// <summary>
+    /// Members this map fills in memory and cannot in a query, worded as the same pair SM0030
+    /// prints for a conversion — a dictionary of mapped objects. Cleared per map with the rest.
+    /// </summary>
+    private readonly List<string> _memoryOnly = new();
+
+    /// <summary>Records a member the projection has to leave out, so the map reports it as it would a conversion without a query form.</summary>
+    public void NoteUsedWithoutQueryForm(string described) => _memoryOnly.Add(described);
 
     /// <summary>
     /// The registrations this map used that have no query form — the reason it cannot be
@@ -54,6 +68,12 @@ internal sealed class ConversionTable
         get
         {
             var seen = new HashSet<string>();
+
+            foreach (string described in _memoryOnly)
+            {
+                if (seen.Add(described))
+                    yield return described;
+            }
 
             foreach (Entry entry in _used)
             {

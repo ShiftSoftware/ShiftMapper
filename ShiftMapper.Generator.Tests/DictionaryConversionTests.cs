@@ -156,17 +156,18 @@ public class DictionaryConversionTests
 
     /// <summary>
     /// A dictionary of OBJECTS is not a conversion at all: filling it means MAPPING each value,
-    /// and mapping does not run through this table. Half converting it — a fresh dictionary
-    /// holding the entity's own Child instances — is precisely the outcome the simple-element
-    /// test exists to prevent, so it stays SM0002 until nested mapping reaches dictionaries.
+    /// and mapping does not run through this table. It is a NESTED member instead — the values go
+    /// through the pair's map, which has to exist (SM0011 when it does not), and the projection
+    /// leaves the member out (SM0030). Never half converted: a fresh dictionary holding the
+    /// entity's own Child instances is precisely the outcome the simple-element test prevents.
     /// </summary>
     [Fact]
-    public void A_dictionary_of_objects_is_still_SM0002()
+    public void A_dictionary_of_objects_is_nested_and_needs_the_value_map()
     {
         GeneratorRun run = Pair("Dictionary<string, Child>", "Dictionary<string, ChildDto>");
 
-        Assert.Equal(new[] { "SM0002" }, run.Ids());
-        run.Compiles().DoesNotEmit("Value =");
+        Assert.Equal(new[] { "SM0011", "SM0030" }, run.Ids());
+        run.Compiles().DoesNotEmit("Value = global::ShiftMapper.ValueConverter.ToDictionary<string, global::Child, string, global::ChildDto>(source.Value, static k => k");
     }
 
     /// <summary>

@@ -5,7 +5,11 @@
 ; level of every map in a project that closes the marker; a member convention's later entry for a
 ; target already filled is a fallback; a shaped member whose required entry reads a nullable source
 ; member is null when that member is; a conversion declared with the two-argument memory form is called
-; with the mapping (ConversionWithMapping); AddShiftMapper(Assembly) is not read as a registration.
+; with the mapping (ConversionWithMapping); AddShiftMapper(Assembly) is not read as a registration; a dictionary
+; of mapped objects nests in memory (SM0030 on the projection, SM0011 without the value map); the pairs below an
+; explicit child map are declared implicitly; several statements over one configuration surface handle merge;
+; a projection pulls its configuring type before it is composed (Customizations.Configured); a nullable value
+; filling text is tested first in the query spelling (null stays null instead of becoming '').
 
 ### New Rules
 

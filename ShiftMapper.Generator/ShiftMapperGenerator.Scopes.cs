@@ -304,8 +304,10 @@ public sealed partial class ShiftMapperGenerator
         /// </summary>
         public ConversionTable ChainFor(DeclarationSet set, DeclarationScope declaring)
         {
+            // A table of its own even when nothing is declared: the map that takes it writes its
+            // usage log, and a shared instance would carry one compilation's notes into another.
             if (IsEmpty)
-                return ConversionTable.Empty;
+                return new ConversionTable();
 
             var chain = new ConversionTable();
             int level = 0;
