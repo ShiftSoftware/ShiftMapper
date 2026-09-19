@@ -423,6 +423,13 @@ public sealed class ShiftMapperDeclaredConversionAttribute : Attribute
     /// lambda captured state and could not be lifted.
     /// </summary>
     public string? MemoryCall { get; set; }
+
+    /// <summary>
+    /// True when the memory form takes the property pair being mapped as its second argument
+    /// (the <c>Func&lt;TSource, string, TDestination&gt;</c> overload of <c>CreateConversion</c>),
+    /// so a consuming generator calls <c>ConversionWithMapping</c> and passes it.
+    /// </summary>
+    public bool TakesMapping { get; set; }
 }
 
 /// <summary>

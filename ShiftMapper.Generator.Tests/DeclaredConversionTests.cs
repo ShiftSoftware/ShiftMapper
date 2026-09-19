@@ -221,6 +221,78 @@ public class DeclaredConversionTests
     /// contributes nothing. That is a problem with an owner and a fix, and the message says so
     /// rather than mapping nothing in silence.
     /// </summary>
+    /// <summary>
+    /// The two-argument form travels: the package's metadata says the conversion takes the mapping,
+    /// and the application's generated code passes it — through a member convention's reverse too,
+    /// where the mapping is the path into the shaped member.
+    /// </summary>
+    [Fact]
+    public void A_packages_conversion_that_takes_the_mapping_is_handed_it_in_the_application()
+    {
+        GeneratorRun run = GeneratorHarness.RunWithPackage(
+            """
+            using ShiftMapper;
+            using System;
+
+            namespace Framework;
+
+            public class SelectDto { public string Value { get; set; } = ""; }
+
+            public class StrictPack : ShiftMapperConversions
+            {
+                public StrictPack() =>
+                    CreateConversion<string, long>(
+                        (text, mapping) => text.Length == 0 ? throw new InvalidOperationException(mapping) : long.Parse(text),
+                        text => long.Parse(text));
+            }
+
+            public class SelectPack : ShiftMapperConversions
+            {
+                public SelectPack() =>
+                    CreateMemberConvention<SelectDto>().Fill(d => d.Value, "{Member}ID");
+            }
+            """,
+            """
+            using ShiftMapper;
+            using Framework;
+
+            public class Order { public long CustomerID { get; set; } public long Number { get; set; } }
+            public class OrderDto { public SelectDto Customer { get; set; } = new(); public string Number { get; set; } = ""; }
+
+            public class AppMapper : ShiftMapperBase
+            {
+                public AppMapper()
+                {
+                    AddConversions<StrictPack>();
+                    AddConversions<SelectPack>();
+                    CreateMap<OrderDto, Order>();
+                }
+            }
+            """);
+
+        run.Compiles()
+           .Emits("Customizations.ConversionWithMapping<string, long>(typeof(global::Framework.StrictPack))(source.Number, \"OrderDto.Number -> Order.Number\")")
+           .Emits("Customizations.ConversionWithMapping<string, long>(typeof(global::Framework.StrictPack))((source.Customer is null ? default(string)! : source.Customer.Value), \"OrderDto.Customer.Value -> Order.CustomerID\")");
+    }
+
+    [Fact]
+    public void The_two_argument_form_is_written_to_the_metadata()
+    {
+        GeneratorRun run = GeneratorHarness.Run(
+            """
+            using ShiftMapper;
+            using System;
+
+            public class StrictPack : ShiftMapperConversions
+            {
+                public StrictPack() =>
+                    CreateConversion<string, long>((text, mapping) => long.Parse(text));
+            }
+            """);
+
+        Assert.Contains("ShiftMapperDeclaredConversion(typeof(global::StrictPack), typeof(string), typeof(long), HasQueryForm = false, TakesMapping = true)", run.Metadata);
+    }
+
     [Fact]
     public void A_package_built_without_the_generator_is_reported()
     {

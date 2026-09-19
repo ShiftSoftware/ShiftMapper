@@ -261,13 +261,18 @@ internal sealed class DeclaredConversionModel
         string source,
         string destination,
         bool hasQueryForm,
-        string? memoryCall)
+        string? memoryCall,
+        bool takesMapping = false)
     {
         Source = source;
         Destination = destination;
         HasQueryForm = hasQueryForm;
         MemoryCall = memoryCall;
+        TakesMapping = takesMapping;
     }
+
+    /// <summary>The memory form takes the property pair being mapped as its second argument.</summary>
+    public bool TakesMapping { get; }
 
     public string Source { get; }
 

@@ -461,6 +461,24 @@ reported.
 `NameFrom` is only needed by a path that uses `{NameOf}`. A rule that fills nothing but an id needs
 neither it nor the attribute.
 
+**A second entry for the same target is a fallback.** The first entry that resolves fills a target;
+a later one for the same target is tried only when the earlier did not — so a framework whose types
+nominate a display member by attribute, and otherwise call it `Name`, writes one rule:
+
+```csharp
+.FillIfPossible(d => d.Text, "{Member}.{NameOf}")   // the nominated member, where there is one
+.FillIfPossible(d => d.Text, "{Member}.Name")       // else Name, where there is one
+```
+
+**No key, no value.** A required entry read from a NULLABLE member of the source — an optional
+foreign key, `long? BrandId` — leaves the whole shaped member null when that key is null, in memory
+and in the projection, rather than building a select around an absent key. A required key (a plain
+`long`) is not tested.
+
+```csharp
+CountryOfOrigin = (source.CountryOfOriginId is null ? default(SelectDto)! : new SelectDto { … }),
+```
+
 **It composes with everything else.** Each value goes through the ordinary conversion table, so a
 global conversion applies inside a shaped member — which is how hash ids reach a select DTO without
 either rule mentioning the other. Declared in a pack it crosses an assembly like everything else,
@@ -692,6 +710,22 @@ public class AppMapper : ShiftMapperBase
 }
 ```
 
+**A conversion may take the mapping.** The two-argument form is handed the property pair being
+converted, as the built-in parsers are — `"ProductDto.Brand.Value -> Product.BrandID"` — for the
+conversion that REFUSES a value and has to say which field it refused:
+
+```csharp
+CreateConversion<string, long>(
+    memory: (text, mapping) => text.Length == 0 ? throw new BlankKeyException(mapping) : long.Parse(text),
+    query:  text => Convert.ToInt64(text));
+```
+
+**What a failed conversion throws is its own type.** Every parse in `ValueConverter` throws
+`ShiftMapperConversionException` — a `FormatException`, so a catch for one still catches it — carrying
+the value, the target type, the mapping, and `SourceMember`, the member of the source the value was
+read from (`Brand` for the mapping above). A framework answering a bad request field with a 400 reads
+those; nothing has to be parsed out of the message.
+
 **A rule reaches the maps of the class that wrote it, and no further.** It does not leak into the
 maps another class declares, in this project or in one that references it. That is what makes a
 package safe to reference: it cannot change how YOUR `long`s render. A rule several classes should
@@ -781,6 +815,13 @@ holding every map the assembly can see — read from the assembly's own metadata
 named; and `Mapper`, the one object application code injects, together with `IMapper` for
 library code. Both resolve to the same instance. Mapper classes are not registered: the generated
 mapper builds them from the provider on first use.
+
+**A framework registers on behalf of what it scanned** with `AddShiftMapper(assembly)`: the named
+assembly's generated mapper, into the same registry, so a host that hands its data assembly to the
+framework's own registration has that assembly's maps registered without writing the call itself.
+Lifetime only, no packs — a pack added here could reach the store but never the generated code — and
+the generator does not read it as a registration of the calling project. An assembly with no generated
+mapper registers nothing and is not an error.
 
 ### Choosing which classes are taken
 
@@ -954,7 +995,11 @@ Four things make an implicit map different from one you declared:
   customized once for every parent that nests it. A member a `ForMember` or a member convention claims
   is not nested; a cycle stops with a note (**SM0048**).
 - **It takes the marker's rules.** `Rules = typeof(Pack)` gives the implicit maps that pack at the
-  level a mapper class's own `AddConversions` would — nearer than the registration's packs.
+  level a mapper class's own `AddConversions` would — nearer than the registration's packs. The same
+  pack is also at the FURTHEST level of every other map in a project that closes the marker, as a pack a
+  referenced package shared would be: the `CreateMap` a mapper class writes to replace an implicit map
+  replaces the map, not the framework's rules for the pair, and anything the class writes nearer still
+  wins.
 - **It can be configured where the framework's user configures everything else** — see the next section.
 
 A marker that names nothing concrete on a closing type (a type parameter that does not exist, a
@@ -1194,6 +1239,7 @@ public interface IMapper
     TDestination Map<TSource, TDestination>(TSource source, TDestination destination);
     IQueryable<TDestination> ProjectTo<TSource, TDestination>(IQueryable<TSource> source);
     bool CanMap(Type source, Type destination);
+    void Configure(ShiftMapperConfigurationSurface surface);
 }
 ```
 
@@ -1225,7 +1271,8 @@ Worth knowing:
   assignability — so an EF proxy maps through its base. The update overload needs the exact
   declared pair, because the destination you passed in is the object being written to.
 - **A `Mapper` built outside a container has no run-time door** unless it was built with
-  `Mapper.Create(assembly)`: there is nothing registered to dispatch to, and it says so.
+  `Mapper.Create(assembly)`: there is nothing registered to dispatch to, and a `Map` says so.
+  `CanMap` is a question, and answers it: false.
 
 ### What it deliberately refuses
 

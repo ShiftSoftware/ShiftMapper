@@ -343,7 +343,8 @@ internal sealed class ConversionTable
             bool hasQueryForm,
             string? memoryCall = null,
             string? queryAccess = null,
-            string? declaringAssembly = null)
+            string? declaringAssembly = null,
+            bool takesMapping = false)
         {
             Scope = scope;
             Level = level;
@@ -353,7 +354,14 @@ internal sealed class ConversionTable
             MemoryCall = memoryCall;
             QueryAccess = queryAccess;
             DeclaringAssembly = declaringAssembly;
+            TakesMapping = takesMapping;
         }
+
+        /// <summary>
+        /// The memory form takes the property pair being mapped as its second argument, so the
+        /// generated call passes it: <c>ConversionWithMapping&lt;S, D&gt;(typeof(scope))(value, "A.B -&gt; C.D")</c>.
+        /// </summary>
+        public bool TakesMapping { get; }
 
         /// <summary>
         /// The mapper or pack that declared it, fully qualified with <c>global::</c> — what the
@@ -366,7 +374,7 @@ internal sealed class ConversionTable
 
         /// <summary>Same entry, placed at another level — for assembling a chain.</summary>
         public Entry AtLevel(int level) =>
-            new(Scope, level, Source, Destination, HasQueryForm, MemoryCall, QueryAccess, DeclaringAssembly);
+            new(Scope, level, Source, Destination, HasQueryForm, MemoryCall, QueryAccess, DeclaringAssembly, TakesMapping);
 
         /// <summary>
         /// The referenced assembly this came from, or null when it was declared in source.

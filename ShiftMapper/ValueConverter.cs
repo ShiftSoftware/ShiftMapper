@@ -703,19 +703,21 @@ public static class ValueConverter
     /// <summary>
     /// The one message every failed conversion produces.
     ///
-    /// It is a <see cref="FormatException"/> whatever actually went wrong — a malformed
-    /// number, a value too large for the type, a name that is not a member of the enum — so
-    /// there is a single type to catch around a mapping call. The real exception is kept as
-    /// the inner one for anybody who needs to tell those cases apart.
+    /// It is a <see cref="ShiftMapperConversionException"/> — a <see cref="FormatException"/> —
+    /// whatever actually went wrong — a malformed number, a value too large for the type, a
+    /// name that is not a member of the enum — so there is a single type to catch around a
+    /// mapping call. The real exception is kept as the inner one for anybody who needs to tell
+    /// those cases apart, and the value, the target type and the mapping travel as properties
+    /// for anybody who needs to answer with them.
     ///
-    /// The offending text is quoted and TRUNCATED. An exception message can end up in a log
-    /// aggregator, and a runaway 2 MB column value in a message string helps nobody.
+    /// The offending text is quoted and TRUNCATED in the message. An exception message can end
+    /// up in a log aggregator, and a runaway 2 MB column value in a message string helps nobody.
     /// </summary>
-    private static FormatException ConversionFailed(string value, Type target, string mapping, Exception inner) =>
+    private static ShiftMapperConversionException ConversionFailed(string value, Type target, string mapping, Exception inner) =>
         new($"ShiftMapper: cannot convert \"{Truncate(value)}\" to {target.Name} while mapping {mapping}. " +
             $"See the inner {inner.GetType().Name} for the underlying reason. Either correct the source " +
             "data, or give the destination property a type ShiftMapper does not have to parse into.",
-            inner);
+            value, target, mapping, inner);
 
     /// <summary>
     /// Caps quoted values in exception messages at a length a human can read.

@@ -164,10 +164,16 @@ internal static class ConversionResolver
             // THE SCOPE IS WRITTEN INTO THE CALL. The table resolved WHICH declaring mapper or
             // pack answers — nearest first — and the runtime looks in exactly that scope, so the
             // two halves cannot disagree about which registration runs.
+            // A conversion that takes the MAPPING is handed it as a literal — the same pair the
+            // built-in parsers get, so its message can name the property the way theirs do.
+            string mappingLiteral = "\"" + mapping.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+
             return new ValueConversion(
                 template: registered.MemoryCall is { } call
                     ? $"{call}({{0}})"
-                    : $"Customizations.Conversion<{source}, {destination}>(typeof({registered.Scope}))({{0}})",
+                    : registered.TakesMapping
+                        ? $"Customizations.ConversionWithMapping<{source}, {destination}>(typeof({registered.Scope}))({{0}}, {mappingLiteral})"
+                        : $"Customizations.Conversion<{source}, {destination}>(typeof({registered.Scope}))({{0}})",
                 risk: ConversionRisk.None,
                 note: null,
                 // A MARKER, not a call. The projection is an expression tree EF reads, and the

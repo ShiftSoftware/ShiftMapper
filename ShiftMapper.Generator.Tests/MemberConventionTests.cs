@@ -129,6 +129,115 @@ public class MemberConventionTests
     }
 
     /// <summary>
+    /// NO KEY, NO VALUE. A shaped member whose required entry reads a NULLABLE member of the source
+    /// — an optional foreign key — is left null when that key is null, in both spellings, rather
+    /// than built around an absent key: a select whose Value is null is not "no selection", it is
+    /// a selection that cannot be sent back. A required key (plain <c>long</c>) gets no test.
+    /// </summary>
+    [Fact]
+    public void A_nullable_key_that_is_null_leaves_the_shaped_member_null()
+    {
+        GeneratorRun run = Run($$"""
+            public class Shipment
+            {
+                public long Id { get; set; }
+                public long? BrandId { get; set; }
+                public Brand? Brand { get; set; }
+            }
+
+            public class ShipmentDto
+            {
+                public string Id { get; set; } = "";
+                public SelectDTO? Brand { get; set; }
+            }
+
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+            {{Convention}}
+                    CreateMap<Shipment, ShipmentDto>();
+                    CreateMap<Product, ProductListDto>();
+                }
+            }
+
+            public static class Probe
+            {
+                public static string Run()
+                {
+                    var mapper = new Mapper();
+
+                    ShipmentDto without = mapper.MapToShipmentDto(new Shipment { Id = 1 });
+                    ShipmentDto with = mapper.MapToShipmentDto(new Shipment { Id = 2, BrandId = 5, Brand = new Brand { Id = 5, Name = "Acme" } });
+
+                    return (without.Brand is null ? "null" : without.Brand.Value) + "|" + with.Brand!.Value + ":" + with.Brand.Text;
+                }
+            }
+            """);
+
+        run.Compiles()
+           // In memory: the key is tested, the member is default when it is null.
+           .Emits("Brand = (source.BrandId is null ? default(global::SelectDTO)! : new global::SelectDTO {")
+           // In the query: the same test in the spelling an expression tree can hold.
+           .Emits("Brand = (source.BrandId == null ? default(global::SelectDTO) : new global::SelectDTO {")
+           // A REQUIRED key is not tested: Product.BrandId is a plain long.
+           .Emits("Brand = new global::SelectDTO { Value = global::ShiftMapper.ValueConverter.ToInvariantString(source.BrandId)");
+
+        Assert.Equal("null|5:Acme", run.Load().GetType("Probe")!.GetMethod("Run")!.Invoke(null, null));
+    }
+
+    /// <summary>
+    /// A SECOND entry for a target already filled is a fallback: the nominated member where the
+    /// type nominates one, a conventional <c>Name</c> where it does not — one rule, both cases, and
+    /// never two initializers for one member.
+    /// </summary>
+    [Fact]
+    public void A_later_entry_for_the_same_target_is_a_fallback()
+    {
+        GeneratorRun run = Run($$"""
+            public class Supplier { public long Id { get; set; } public string Name { get; set; } = ""; }   // no [KeyAndName]
+
+            public class Shipment
+            {
+                public long Id { get; set; }
+                public long BrandId { get; set; }
+                public Brand Brand { get; set; } = new();
+                public long SupplierId { get; set; }
+                public Supplier Supplier { get; set; } = new();
+            }
+
+            public class ShipmentDto
+            {
+                public string Id { get; set; } = "";
+                public SelectDTO Brand { get; set; } = new();
+                public SelectDTO Supplier { get; set; } = new();
+            }
+
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+                    CreateMemberConvention<SelectDTO>()
+                        .NameFrom<KeyAndNameAttribute>("Text")
+                        .Fill(d => d.Value, "{Member}ID")
+                        .FillIfPossible(d => d.Text, "{Member}.{NameOf}")
+                        .FillIfPossible(d => d.Text, "{Member}.Name");
+
+                    CreateMap<Shipment, ShipmentDto>();
+                }
+            }
+            """);
+
+        run.Compiles()
+           // Brand nominates Name through the attribute: the first entry resolves and the second is skipped.
+           .Emits("Brand = new global::SelectDTO { Value = global::ShiftMapper.ValueConverter.ToInvariantString(source.BrandId), Text = (source.Brand is null ? default(string)! : source.Brand.Name) }")
+           // Supplier nominates nothing: the first entry drops, the fallback reads Name.
+           .Emits("Supplier = new global::SelectDTO { Value = global::ShiftMapper.ValueConverter.ToInvariantString(source.SupplierId), Text = (source.Supplier is null ? default(string)! : source.Supplier.Name) }");
+
+        run.None("SM0034");
+    }
+
+    /// <summary>
     /// And the <c>!</c> goes on NAVIGATIONS ONLY, not on the value at the end of the path — nothing
     /// is dereferenced there, so suppressing anything would be noise.
     /// </summary>

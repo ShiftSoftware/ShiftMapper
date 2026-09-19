@@ -546,7 +546,8 @@ internal static class DeclaredMappers
             // conversion declared in its own source. There is never a query member to name: that
             // expression is a lambda the declaring constructor registers.
             memoryCall: Named(attribute, "MemoryCall") as string,
-            declaringAssembly: declaringAssembly);
+            declaringAssembly: declaringAssembly,
+            takesMapping: Named(attribute, "TakesMapping") as bool? ?? false);
     }
 
     /// <summary>

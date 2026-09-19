@@ -1074,7 +1074,7 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                         || invocation.ArgumentList.Arguments.Any(
                             argument => argument.NameColon?.Name.Identifier.ValueText == "query");
 
-                    conversions.Add(scope.Name, source, destination, hasQuery);
+                    conversions.Add(scope.Name, source, destination, hasQuery, ConversionTakesMapping(model, invocation, cancellationToken));
                 }
             }
         }
@@ -2859,8 +2859,20 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
         var memory = new List<string>();
         var query = new List<string>();
 
+        // The KEYS the shaped value stands for: every required entry read straight off a nullable
+        // member. Collected so the member can be left absent when they are — see below.
+        var memoryKeys = new List<string>();
+        var queryKeys = new List<string>();
+
+        // A target filled once is filled: a later entry for the same target is its FALLBACK, tried
+        // only when the earlier one did not resolve — `Text` from the nominated member, else from `Name`.
+        var filled = new HashSet<string>(StringComparer.Ordinal);
+
         foreach ((string target, string path, bool optional) in convention.Fill)
         {
+            if (filled.Contains(target))
+                continue;
+
             IPropertySymbol? targetMember = shaped.GetMembers(target)
                 .OfType<IPropertySymbol>()
                 .FirstOrDefault(member =>
@@ -2929,6 +2941,17 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
 
             memory.Add(target + " = " + conversion.Apply(resolved.MemoryAccess));
             query.Add(target + " = " + conversion.ApplyQuery(resolved.QueryAccess));
+            filled.Add(target);
+
+            // A required entry read from a nullable member of the source itself — `long? BrandID`,
+            // not a path through a navigation, whose own guard already answers for it.
+            if (!optional
+                && resolved.Type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T }
+                && string.Equals(resolved.MemoryAccess, resolved.QueryAccess, StringComparison.Ordinal))
+            {
+                memoryKeys.Add(resolved.MemoryAccess + " is null");
+                queryKeys.Add(resolved.QueryAccess + " == null");
+            }
         }
 
         if (memory.Count == 0)
@@ -2936,11 +2959,25 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
 
         string type = shaped.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
 
+        string memoryInit = "new " + type + " { " + string.Join(", ", memory) + " }";
+        string queryInit = "new " + type + " { " + string.Join(", ", query) + " }";
+
+        // NO KEY, NO VALUE. A shaped member built from a required entry that is null — a nullable
+        // foreign key with nothing in it — is left null rather than built around an absent key: a
+        // select whose Value is null is not "no selection", it is a selection that cannot be sent
+        // back. The test is on the key alone, in both spellings; a provider translates the
+        // conditional as it does any other, and the optional entries follow the key.
+        if (memoryKeys.Count > 0)
+        {
+            memoryInit = "(" + string.Join(" || ", memoryKeys) + " ? default(" + type + ")! : " + memoryInit + ")";
+            queryInit = "(" + string.Join(" || ", queryKeys) + " ? default(" + type + ") : " + queryInit + ")";
+        }
+
         return new PropertyPair(
             destination: destinationProperty.Name,
             source: destinationProperty.Name,
-            sourceAccess: "new " + type + " { " + string.Join(", ", memory) + " }",
-            querySourceAccess: "new " + type + " { " + string.Join(", ", query) + " }");
+            sourceAccess: memoryInit,
+            querySourceAccess: queryInit);
     }
 
     /// <summary>

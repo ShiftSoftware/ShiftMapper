@@ -211,6 +211,26 @@ public abstract class ShiftMapperBase
     }
 
     /// <summary>
+    /// <see cref="CreateConversion{TSource, TDestination}(Func{TSource, TDestination}, Expression{Func{TSource, TDestination}})"/>
+    /// for a conversion that needs to know WHAT it is converting: the second argument is the
+    /// property pair being mapped, as the generator writes it — <c>"ProductDto.Sku -&gt; Product.Sku"</c>,
+    /// or <c>"ProductDto.Brand.Value -&gt; Product.BrandID"</c> from inside a shaped member.
+    ///
+    /// <para>For the conversion that REFUSES. A framework that turns blank text into an error
+    /// rather than a default has to say which field was blank, and the value alone cannot tell it;
+    /// the mapping can. The query form is the same as ever — a database has no message to write.</para>
+    /// </summary>
+    protected void CreateConversion<TSource, TDestination>(
+        Func<TSource, string, TDestination> memory,
+        Expression<Func<TSource, TDestination>>? query = null)
+    {
+        if (memory is null)
+            throw new ArgumentNullException(nameof(memory));
+
+        _customizations.RegisterConversion(DeclaringType, typeof(TSource), typeof(TDestination), memory, query);
+    }
+
+    /// <summary>
     /// Declares a MEMBER-SHAPED rule: how to fill any destination member of
     /// <typeparamref name="TMember"/>, from source members the destination member's own NAME picks
     /// out.

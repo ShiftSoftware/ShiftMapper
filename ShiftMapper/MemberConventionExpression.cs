@@ -112,6 +112,10 @@ public sealed class MemberConventionExpression<TMember>
     ///
     /// <para>If EVERY entry drops out there is nothing left to build, and the member is reported
     /// unmapped like any other.</para>
+    ///
+    /// <para>A SECOND entry for the same target is a FALLBACK: tried only when the first did not
+    /// resolve. So <c>.FillIfPossible(d =&gt; d.Text, "{Member}.{NameOf}").FillIfPossible(d =&gt; d.Text, "{Member}.Name")</c>
+    /// reads the nominated member where the type nominates one and <c>Name</c> where it does not.</para>
     /// </summary>
     public MemberConventionExpression<TMember> FillIfPossible<TValue>(
         Expression<Func<TMember, TValue>> target,

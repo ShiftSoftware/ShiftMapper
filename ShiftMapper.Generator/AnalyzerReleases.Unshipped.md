@@ -1,6 +1,11 @@
 ; Unshipped analyzer release
 ; Rules that exist in the current build but have not been published in a release yet.
 ; https://github.com/dotnet/roslyn-analyzers/blob/main/src/Microsoft.CodeAnalysis.Analyzers/ReleaseTrackingAnalyzers.Help.md
+; 0.3.0 also changes generated CODE without a new rule: a marker's Rules pack is applied at the furthest
+; level of every map in a project that closes the marker; a member convention's later entry for a
+; target already filled is a fallback; a shaped member whose required entry reads a nullable source
+; member is null when that member is; a conversion declared with the two-argument memory form is called
+; with the mapping (ConversionWithMapping); AddShiftMapper(Assembly) is not read as a registration.
 
 ### New Rules
 

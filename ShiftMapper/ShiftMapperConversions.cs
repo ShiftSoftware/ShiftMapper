@@ -69,6 +69,21 @@ public abstract class ShiftMapperConversions
     }
 
     /// <summary>
+    /// The same, for a conversion that needs to know WHAT it is converting — the second argument
+    /// is the property pair being mapped, <c>"ProductDto.Brand.Value -&gt; Product.BrandID"</c>.
+    /// See <see cref="ShiftMapperBase.CreateConversion{TSource, TDestination}(Func{TSource, string, TDestination}, Expression{Func{TSource, TDestination}})"/>.
+    /// </summary>
+    protected void CreateConversion<TSource, TDestination>(
+        Func<TSource, string, TDestination> memory,
+        Expression<Func<TSource, TDestination>>? query = null)
+    {
+        if (memory is null)
+            throw new ArgumentNullException(nameof(memory));
+
+        _customizations.RegisterConversion(GetType(), typeof(TSource), typeof(TDestination), memory, query);
+    }
+
+    /// <summary>
     /// Declares a MEMBER-SHAPED rule. The same call as
     /// <see cref="ShiftMapperBase.CreateMemberConvention{TMember}"/>, and like it compile-time
     /// only: the generator reads the chain and the call does nothing.

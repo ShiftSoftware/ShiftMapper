@@ -91,6 +91,34 @@ public static class ShiftMapperServiceCollectionExtensions
         return Register(services, configure, registering);
     }
 
+    /// <summary>
+    /// Registers the generated mapper of a NAMED assembly — for a framework that registers on
+    /// behalf of the assemblies it scans, so that a host which hands its data assembly to the
+    /// framework's own registration has that assembly's maps registered without writing this
+    /// call itself. The same registry, the same <see cref="Mapper"/> over everything registered,
+    /// the same no-op on a repeat; an assembly that carries no generated mapper registers
+    /// nothing of its own and is not an error.
+    ///
+    /// <para>Lifetime only, no packs: a pack added here could reach the named assembly's store
+    /// at run time but never its generated code, which was compiled elsewhere — and a store that
+    /// disagrees with the code is the one state this library is arranged never to be in. A pack
+    /// for that assembly's maps belongs in a registration written IN that assembly, or in a
+    /// mapper class there. The generator does not read this overload as a registration of the
+    /// calling project.</para>
+    /// </summary>
+    /// <param name="assembly">The assembly whose generated mapper to register.</param>
+    /// <param name="lifetime">The lifetime of that generated mapper.</param>
+    public static IServiceCollection AddShiftMapper(
+        this IServiceCollection services,
+        Assembly assembly,
+        ServiceLifetime lifetime = ServiceLifetime.Scoped)
+    {
+        if (assembly is null)
+            throw new ArgumentNullException(nameof(assembly));
+
+        return Register(services, options => options.Lifetime = lifetime, assembly);
+    }
+
     private static IServiceCollection Register(
         IServiceCollection services,
         Action<ShiftMapperOptions> configure,

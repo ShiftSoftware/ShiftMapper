@@ -197,6 +197,57 @@ public class ImplicitMapTests
            .Emits("Customizations.Conversion<long, string>(typeof(global::Framework.PlatformConversions))(source.Id)");
     }
 
+    /// <summary>
+    /// The map a mapper class writes to REPLACE an implicit one replaces the map, not the framework's
+    /// rules for the pair: the marker's pack is at the furthest level of EVERY map in a project that
+    /// closes the marker, so the hash-id conversion still shapes the explicit map's ids — and a rule
+    /// the class writes nearer still wins, as nearer always does.
+    /// </summary>
+    [Fact]
+    public void The_markers_rules_pack_reaches_an_explicit_map_that_replaces_an_implicit_one()
+    {
+        GeneratorRun run = GeneratorHarness.RunWithPackage(
+            Framework,
+            Application +
+            """
+            namespace App
+            {
+                public class InvoiceMapper : ShiftMapper.ShiftMapperBase
+                {
+                    public InvoiceMapper() =>
+                        CreateMap<Invoice, InvoiceListDto>()
+                            .ForMember(d => d.Number, opt => opt.MapFrom(i => "#" + i.Number));
+                }
+
+                public class LineListDto
+                {
+                    public string Id { get; set; } = "";
+                    public string Description { get; set; } = "";
+                }
+
+                public class LineMapper : ShiftMapper.ShiftMapperBase
+                {
+                    public LineMapper()
+                    {
+                        CreateConversion<long, string>(id => "L" + id, id => "L" + id);
+                        CreateMap<InvoiceLine, LineListDto>();
+                    }
+                }
+            }
+            """);
+
+        run.Compiles()
+           // The explicit list map: Number from the class, Id through the marker's pack.
+           .Emits("Customizations.Value<global::App.Invoice, global::App.InvoiceListDto, string>(\"Number\"))(source)")
+           .Emits("Customizations.Conversion<long, string>(typeof(global::Framework.PlatformConversions))(source.Id)")
+           // A class that writes its own rule keeps it, on a pair no marker declares: nearer wins.
+           .Emits("Customizations.Conversion<long, string>(typeof(global::App.LineMapper))(source.Id)");
+
+        // Stated where the maps are declared, not reported as a clash: one pack, two levels.
+        run.None("SM0031");
+        run.None("SM0042");
+    }
+
     [Fact]
     public void Flattening_is_off_when_the_marker_says_so()
     {

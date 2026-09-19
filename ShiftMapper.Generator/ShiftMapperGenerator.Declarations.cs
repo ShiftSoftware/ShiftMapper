@@ -217,7 +217,8 @@ public sealed partial class ShiftMapperGenerator
                     // runtime lookup — which is character for character what it emits for a
                     // conversion declared in its OWN source, so a package is never worse off than a
                     // project.
-                    memoryCall: null));
+                    memoryCall: null,
+                    takesMapping: ConversionTakesMapping(semanticModel, invocation, cancellationToken)));
             }
         }
 
@@ -337,6 +338,19 @@ public sealed partial class ShiftMapperGenerator
 
         return IsDeclaredOn(semanticModel, invocation, baseClass, cancellationToken) ? name : null;
     }
+
+    /// <summary>
+    /// Whether a <c>CreateConversion</c> call bound to the overload whose memory form takes the
+    /// mapping — a <c>Func</c> of THREE type arguments rather than two. Read from the bound method,
+    /// not the argument: a method group or a lambda with two parameters both bind there.
+    /// </summary>
+    private static bool ConversionTakesMapping(
+        SemanticModel semanticModel,
+        InvocationExpressionSyntax invocation,
+        CancellationToken cancellationToken) =>
+        semanticModel.GetSymbolInfo(invocation, cancellationToken).Symbol is IMethodSymbol method
+        && method.Parameters.Length > 0
+        && method.Parameters[0].Type is INamedTypeSymbol { TypeArguments.Length: 3 };
 
     /// <summary>
     /// Turns what a package DECLARED back into ordinary <see cref="MapModel"/>s — the maps of ONE
@@ -532,6 +546,9 @@ public sealed partial class ShiftMapperGenerator
 
                     if (conversion.MemoryCall is not null)
                         sb.Append($", MemoryCall = {Literal(conversion.MemoryCall)}");
+
+                    if (conversion.TakesMapping)
+                        sb.Append(", TakesMapping = true");
 
                     sb.AppendLine(")]");
                 }

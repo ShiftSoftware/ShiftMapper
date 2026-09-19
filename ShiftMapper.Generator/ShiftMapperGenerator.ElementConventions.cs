@@ -148,8 +148,14 @@ public sealed partial class ShiftMapperGenerator
         var memory = new List<string>();
         var query = new List<string>();
 
+        // As for the member itself: a later entry for a target already filled is its fallback.
+        var filled = new HashSet<string>(StringComparer.Ordinal);
+
         foreach ((string target, string path, bool optional) in convention.ElementFill)
         {
+            if (filled.Contains(target))
+                continue;
+
             IPropertySymbol? targetMember = shaped.GetMembers(target)
                 .OfType<IPropertySymbol>()
                 .FirstOrDefault(member =>
@@ -211,6 +217,7 @@ public sealed partial class ShiftMapperGenerator
 
             memory.Add(target + " = " + conversion.Apply(resolved.MemoryAccess.Replace("{0}", "item")));
             query.Add(target + " = " + conversion.ApplyQuery(resolved.QueryAccess.Replace("{0}", "item")));
+            filled.Add(target);
         }
 
         if (memory.Count == 0)

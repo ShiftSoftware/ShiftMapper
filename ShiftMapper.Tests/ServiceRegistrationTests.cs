@@ -89,6 +89,38 @@ public class ServiceRegistrationTests
         Assert.Contains("AddShiftMapper()", error.Message);
     }
 
+    /// <summary>
+    /// A framework registering on behalf of the assemblies it scanned names the assembly. Same
+    /// registry, same Mapper, and a repeat — by name or by the calling-assembly form — is a no-op.
+    /// </summary>
+    [Fact]
+    public void An_assembly_can_be_registered_by_name()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IInvoiceNumbering, InvoiceNumbering>();
+        services.AddShiftMapper(typeof(ServiceRegistrationTests).Assembly);
+        services.AddShiftMapper(typeof(ServiceRegistrationTests).Assembly);
+        services.AddShiftMapper();
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        Assert.Single(services, d => d.ServiceType == Mapper.GeneratedIn(typeof(ServiceRegistrationTests).Assembly));
+        Assert.Equal("IQ/0001", provider.GetRequiredService<IMapper>().Map<Invoice, InvoiceDto>(new Invoice { Number = "0001" }).Number);
+    }
+
+    /// <summary>An assembly with no generated mapper registers nothing of its own, and is not an error.</summary>
+    [Fact]
+    public void An_assembly_without_a_generated_mapper_registers_nothing()
+    {
+        var services = new ServiceCollection();
+        services.AddShiftMapper(typeof(object).Assembly);
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        Assert.NotNull(provider.GetRequiredService<Mapper>());
+        Assert.False(provider.GetRequiredService<IMapper>().CanMap(typeof(Invoice), typeof(InvoiceDto)));
+    }
+
     /// <summary>Everything the generated methods do works the same on a mapper resolved from DI.</summary>
     [Fact]
     public void A_mapper_from_DI_maps()

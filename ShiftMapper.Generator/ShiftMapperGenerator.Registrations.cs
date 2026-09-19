@@ -242,6 +242,19 @@ public sealed partial class ShiftMapperGenerator
         RegistrationModel model,
         CancellationToken cancellationToken)
     {
+        // AddShiftMapper(assembly): a registration made on behalf of ANOTHER assembly — a framework
+        // registering what it scanned. It says nothing about this project's generated mapper, so it
+        // is not a registration of this project: no packs are read from it and no shared pack is
+        // applied because of it.
+        if (method.Parameters.Any(parameter => parameter.Type is INamedTypeSymbol
+                {
+                    Name: "Assembly",
+                    ContainingNamespace: { Name: "Reflection", ContainingNamespace: { Name: "System", ContainingNamespace.IsGlobalNamespace: true } },
+                }))
+        {
+            return;
+        }
+
         LocationInfo? site = LocationInfo.CreateFrom(invocation);
         int callNumber = model.Calls++;
         model.CallSites.Add(site);

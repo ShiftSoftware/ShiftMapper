@@ -646,6 +646,61 @@ public class GlobalConversionTests
     }
 
     /// <summary>A mapper that registers none is completely unaffected.</summary>
+    /// <summary>
+    /// A CONVERSION THAT KNOWS WHAT IT IS CONVERTING. The two-argument form is handed the property
+    /// pair as a literal — the same one the built-in parsers get — so a rule that refuses a value
+    /// can say which field it refused, which is the whole reason a framework writes one.
+    /// </summary>
+    [Fact]
+    public void A_conversion_may_take_the_mapping_and_is_handed_it_as_a_literal()
+    {
+        GeneratorRun run = Run(
+            $$"""
+            public class Shipment { public long BrandId { get; set; } }
+
+            public class ShipmentDto { public string BrandId { get; set; } = ""; }
+
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper()
+                {
+                    CreateConversion<string, long>(
+                        (text, mapping) => text.Length == 0
+                            ? throw new InvalidOperationException("blank at " + mapping)
+                            : long.Parse(text),
+                        text => long.Parse(text));
+
+                    CreateMap<ShipmentDto, Shipment>();
+                }
+            }
+
+            public static class Probe
+            {
+                public static string Run()
+                {
+                    var mapper = new Mapper();
+
+                    long filled = mapper.MapToShipment(new ShipmentDto { BrandId = "7" }).BrandId;
+
+                    try
+                    {
+                        mapper.MapToShipment(new ShipmentDto());
+                        return "no throw";
+                    }
+                    catch (InvalidOperationException e)
+                    {
+                        return filled + "|" + e.Message;
+                    }
+                }
+            }
+            """);
+
+        run.Compiles()
+           .Emits("Customizations.ConversionWithMapping<string, long>(typeof(global::TestMapper))(source.BrandId, \"ShipmentDto.BrandId -> Shipment.BrandId\")");
+
+        Assert.Equal("7|blank at ShipmentDto.BrandId -> Shipment.BrandId", run.Load().GetType("Probe")!.GetMethod("Run")!.Invoke(null, null));
+    }
+
     [Fact]
     public void A_mapper_without_conversions_is_unchanged()
     {

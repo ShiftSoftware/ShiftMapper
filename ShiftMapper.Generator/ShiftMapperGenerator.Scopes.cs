@@ -264,8 +264,8 @@ public sealed partial class ShiftMapperGenerator
     {
         private readonly Dictionary<string, List<ConversionTable.Entry>> _byScope = new(StringComparer.Ordinal);
 
-        public void Add(string scope, ITypeSymbol source, ITypeSymbol destination, bool hasQueryForm) =>
-            Put(new ConversionTable.Entry(scope, 0, source, destination, hasQueryForm));
+        public void Add(string scope, ITypeSymbol source, ITypeSymbol destination, bool hasQueryForm, bool takesMapping = false) =>
+            Put(new ConversionTable.Entry(scope, 0, source, destination, hasQueryForm, takesMapping: takesMapping));
 
         public void AddDeclared(
             string scope,
@@ -273,8 +273,9 @@ public sealed partial class ShiftMapperGenerator
             ITypeSymbol destination,
             bool hasQueryForm,
             string? memoryCall,
-            string declaringAssembly) =>
-            Put(new ConversionTable.Entry(scope, 0, source, destination, hasQueryForm, memoryCall, null, declaringAssembly));
+            string declaringAssembly,
+            bool takesMapping = false) =>
+            Put(new ConversionTable.Entry(scope, 0, source, destination, hasQueryForm, memoryCall, null, declaringAssembly, takesMapping));
 
         private void Put(ConversionTable.Entry entry)
         {
@@ -332,10 +333,17 @@ public sealed partial class ShiftMapperGenerator
         /// </summary>
         internal static IEnumerable<IReadOnlyList<string>> Levels(DeclarationSet set, DeclarationScope declaring)
         {
-            yield return new[] { declaring.Name };
-            yield return declaring.Packs.Select(FullName).ToList();
-            yield return set.GlobalPacks.Select(FullName).ToList();
-            yield return set.ReferencedPacks.Select(FullName).ToList();
+            // A scope answers at its NEAREST level only. A pack a marker gave its implicit maps is
+            // also at the furthest level of every map; for the implicit maps that is the same pack
+            // twice, and the nearer copy is the one that counts.
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+
+            yield return Once(new[] { declaring.Name });
+            yield return Once(declaring.Packs.Select(FullName));
+            yield return Once(set.GlobalPacks.Select(FullName));
+            yield return Once(set.ReferencedPacks.Select(FullName));
+
+            IReadOnlyList<string> Once(IEnumerable<string> names) => names.Where(seen.Add).ToList();
         }
     }
 

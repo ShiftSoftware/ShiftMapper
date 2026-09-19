@@ -326,14 +326,18 @@ public class MapperInterfaceTests
     /// <summary>
     /// A Mapper built with nothing registered serves the typed methods — their generated mapper is
     /// built on first use — and refuses the run-time door with a message that says what to do.
+    /// <c>CanMap</c> is a question rather than a demand, and answers it: nothing registered, nothing
+    /// mappable — so a library asking before it maps gets false, not an exception.
     /// </summary>
     [Fact]
     public void A_mapper_with_nothing_registered_refuses_the_runtime_door_and_says_why()
     {
         IMapper bare = new Mapper();
 
+        Assert.False(bare.CanMap(typeof(Brand), typeof(BrandDto)));
+
         InvalidOperationException error = Assert.Throws<InvalidOperationException>(
-            () => bare.CanMap(typeof(Brand), typeof(BrandDto)));
+            () => bare.Map<Brand, BrandDto>(new Brand()));
 
         Assert.Contains("no registered generated mapper", error.Message);
         Assert.Contains("AddShiftMapper()", error.Message);

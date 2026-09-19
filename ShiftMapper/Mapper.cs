@@ -241,7 +241,9 @@ public sealed class Mapper : IMapper
         if (destination is null)
             throw new ArgumentNullException(nameof(destination));
 
-        return Find(source, destination) is not null;
+        // A question, so it answers: a mapper with nothing registered can map nothing. A Map call
+        // on the same mapper still throws with the one-line fix, since that is a demand.
+        return _registered.Length > 0 && Find(source, destination) is not null;
     }
 
     /// <inheritdoc/>

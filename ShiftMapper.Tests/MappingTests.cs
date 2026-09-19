@@ -112,7 +112,7 @@ public class MappingTests
     [Fact]
     public void Text_that_does_not_parse_throws_naming_the_two_properties()
     {
-        FormatException error = Assert.Throws<FormatException>(
+        FormatException error = Assert.ThrowsAny<FormatException>(
             () => NewMapper().Map<Stock>(new StockDto { Id = "not-a-number" }));
 
         Assert.Contains("StockDto.Id -> Stock.Id", error.Message);

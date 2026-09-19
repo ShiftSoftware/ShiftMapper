@@ -425,6 +425,21 @@ arranged never to have.
 `GET /api/brands/files?project=true` asks for the projection anyway, to show what the refusal
 looks like at run time.
 
+### A conversion that knows what it is converting
+
+`CreateConversion<TSource, TDestination>(Func<TSource, string, TDestination> memory, …)` — the
+two-argument form — is handed the property pair being mapped, exactly the string the built-in
+parsers put in their exceptions: `"ProductDto.Brand.Value -> Product.BrandID"`. It is for the
+conversion that refuses: a framework turning blank text into an error rather than a default has to
+say which field was blank, and the value alone cannot. The metadata records it (`TakesMapping = true`
+on `ShiftMapperDeclaredConversion`), and a consumer's generated code calls
+`Customizations.ConversionWithMapping<S, D>(typeof(Pack))(value, "…")` with the pair as a literal.
+The query form is unchanged — a database has no message to write.
+
+What the built-in parsers throw is `ShiftMapperConversionException` — a `FormatException` with the
+value, the target type, the mapping and `SourceMember` as properties — so a framework answering a
+request with a 400 names the field from the exception rather than from its message.
+
 ### What travels, and how the consumer calls it
 
 The attribute carries the pair and `HasQueryForm`. Both expressions arrive from your pack's
@@ -548,6 +563,14 @@ resolve is still reported (SM0034), and the member is left unmapped rather than 
 name to the very thing the convention existed to override. If every entry drops out the member is
 reported unmapped like any other, and a convention with no readable `Fill` at all is SM0038 in the
 build that declares it.
+
+### A later entry is a fallback; an absent key is an absent value
+
+Two entries for one target read as "the first that resolves": `Text` from `{Member}.{NameOf}` where
+the type nominates a member, else from `{Member}.Name`. One rule covers a framework whose types may
+or may not carry the attribute. And a required entry read from a nullable member of the source — an
+optional foreign key — makes the whole shaped member null when the key is null, in both spellings:
+a select whose `Value` is null is not "no selection", it is one that cannot be sent back.
 
 ### The write direction is derived
 

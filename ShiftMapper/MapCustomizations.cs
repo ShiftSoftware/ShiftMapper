@@ -150,6 +150,9 @@ public sealed class MapCustomizations
     /// assignability walk, so a pair costs that search once per mapper instance.</summary>
     private Dictionary<(Type Scope, Type Source, Type Destination), Delegate>? _resolvedConversions;
 
+    /// <summary>The same cache for the two-argument form.</summary>
+    private Dictionary<(Type Scope, Type Source, Type Destination), Delegate>? _resolvedWithMapping;
+
     /// <summary>One registered type-pair conversion.</summary>
     private readonly struct TypeConversion
     {
@@ -181,6 +184,7 @@ public sealed class MapCustomizations
     {
         Bucket(scope)[(source, destination)] = new TypeConversion(memory, query);
         _resolvedConversions = null;
+        _resolvedWithMapping = null;
     }
 
     /// <summary>
@@ -278,9 +282,51 @@ public sealed class MapCustomizations
                 "than resolved from the service provider.");
         }
 
-        var typed = (Func<TSource, TDestination>)memory;
+        // A conversion registered WITH the mapping, asked for without it — generated code from a
+        // build that read the declaration answers with ConversionWithMapping, so this is a hand
+        // call or an older consumer; the conversion still runs, told nothing about where.
+        Func<TSource, TDestination> typed = memory is Func<TSource, string, TDestination> withMapping
+            ? value => withMapping(value, "")
+            : (Func<TSource, TDestination>)memory;
 
         _resolvedConversions[key] = typed;
+
+        return typed;
+    }
+
+    /// <summary>
+    /// <see cref="Conversion{TSource, TDestination}(Type)"/> for a conversion registered with the
+    /// two-argument form: the delegate that takes the value AND the property pair being mapped.
+    /// The generated code passes the pair as a literal, so the conversion's message can name it.
+    /// </summary>
+    public Func<TSource, string, TDestination> ConversionWithMapping<TSource, TDestination>(Type scope)
+    {
+        if (scope is null)
+            throw new ArgumentNullException(nameof(scope));
+
+        (Type, Type, Type) key = (scope, typeof(TSource), typeof(TDestination));
+
+        _resolvedWithMapping ??= new Dictionary<(Type, Type, Type), Delegate>();
+
+        if (_resolvedWithMapping.TryGetValue(key, out Delegate? cached))
+            return (Func<TSource, string, TDestination>)cached;
+
+        if (Registered(scope, typeof(TSource), typeof(TDestination))?.Memory is not { } memory)
+        {
+            throw new InvalidOperationException(
+                $"ShiftMapper: no conversion is registered from '{typeof(TSource).Name}' to " +
+                $"'{typeof(TDestination).Name}' by '{scope.Name}'. It was declared with " +
+                "CreateConversion when this mapper was compiled, so the declaration has been " +
+                "removed, or the mapper no longer includes the mapper or adds the pack that " +
+                "declared it.");
+        }
+
+        // Registered without the mapping and asked for with it: the same conversion, ignoring it.
+        Func<TSource, string, TDestination> typed = memory is Func<TSource, TDestination> plain
+            ? (value, _) => plain(value)
+            : (Func<TSource, string, TDestination>)memory;
+
+        _resolvedWithMapping[key] = typed;
 
         return typed;
     }

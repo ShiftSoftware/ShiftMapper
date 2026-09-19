@@ -168,8 +168,19 @@ public sealed partial class ShiftMapperGenerator
 
             foreach (ImplicitSource source in implicitSources)
             {
-                if (source.Rules is { } rules)
-                    AddPack(set, rules, set.ImplicitScope.Packs, cancellationToken);
+                if (source.Rules is not { } rules)
+                    continue;
+
+                AddPack(set, rules, set.ImplicitScope.Packs, cancellationToken);
+
+                // AND at the furthest level of every other map in this compilation, as a pack a
+                // referenced package shared would be — unless the project named it nearer itself.
+                // The map a mapper class writes to REPLACE an implicit one replaces the map, not the
+                // framework's rules for the pair: the ignore that keeps a key from being written, the
+                // convention that shapes a select, still hold, and anything the class writes for the
+                // same member still wins, because nearer always does.
+                if (!set.GlobalPacks.Any(nearer => SymbolEqualityComparer.Default.Equals(nearer, rules)))
+                    AddPack(set, rules, set.ReferencedPacks, cancellationToken);
             }
         }
 

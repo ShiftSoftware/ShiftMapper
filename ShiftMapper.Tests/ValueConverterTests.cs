@@ -136,7 +136,7 @@ public class ValueConverterTests
     [Fact]
     public void Text_that_does_not_parse_throws_naming_both_properties()
     {
-        FormatException error = Assert.Throws<FormatException>(
+        FormatException error = Assert.ThrowsAny<FormatException>(
             () => ValueConverter.Parse<int>("abc", Mapping));
 
         Assert.Contains("\"abc\"", error.Message);
@@ -152,10 +152,38 @@ public class ValueConverterTests
     [Fact]
     public void An_overflow_is_reported_as_a_format_failure_with_the_real_cause_inside()
     {
-        FormatException error = Assert.Throws<FormatException>(
+        FormatException error = Assert.ThrowsAny<FormatException>(
             () => ValueConverter.Parse<int>("99999999999999999999", Mapping));
 
         Assert.IsType<OverflowException>(error.InnerException);
+    }
+
+    /// <summary>
+    /// The failure is ITS OWN TYPE as well as a FormatException, carrying what a caller answering
+    /// with it needs — the value untruncated, the target type, the mapping, and the source member
+    /// the value was read from — so a framework turning a bad request field into a 400 names the
+    /// field without parsing the message.
+    /// </summary>
+    [Fact]
+    public void A_failed_conversion_carries_the_value_the_type_and_the_mapping()
+    {
+        ShiftMapperConversionException error = Assert.Throws<ShiftMapperConversionException>(
+            () => ValueConverter.Parse<int>("abc", "ProductDto.Brand.Value -> Product.BrandId"));
+
+        Assert.Equal("abc", error.Value);
+        Assert.Equal(typeof(int), error.TargetType);
+        Assert.Equal("ProductDto.Brand.Value -> Product.BrandId", error.Mapping);
+        Assert.Equal("Brand", error.SourceMember);
+        Assert.IsAssignableFrom<FormatException>(error);
+    }
+
+    [Fact]
+    public void The_source_member_of_a_plain_pair_is_the_property_itself()
+    {
+        ShiftMapperConversionException error = Assert.Throws<ShiftMapperConversionException>(
+            () => ValueConverter.Parse<int>("abc", "ProductDto.Sku -> Product.Sku"));
+
+        Assert.Equal("Sku", error.SourceMember);
     }
 
     /// <summary>An exception message can end up in a log aggregator; a 2 MB column value must not.</summary>
@@ -164,7 +192,7 @@ public class ValueConverterTests
     {
         string huge = new('x', 5000);
 
-        FormatException error = Assert.Throws<FormatException>(
+        FormatException error = Assert.ThrowsAny<FormatException>(
             () => ValueConverter.Parse<int>(huge, Mapping));
 
         Assert.Contains("...", error.Message);
@@ -189,7 +217,7 @@ public class ValueConverterTests
     [Fact]
     public void Text_longer_than_one_character_is_rejected_rather_than_truncated()
     {
-        Assert.Throws<FormatException>(() => ValueConverter.ParseChar("ab", Mapping));
+        Assert.ThrowsAny<FormatException>(() => ValueConverter.ParseChar("ab", Mapping));
     }
 
     /// <summary>
@@ -246,7 +274,7 @@ public class ValueConverterTests
     [Fact]
     public void A_name_the_enum_does_not_declare_throws()
     {
-        Assert.Throws<FormatException>(() => ValueConverter.ParseEnum<Weekday>("Caturday", Mapping));
+        Assert.ThrowsAny<FormatException>(() => ValueConverter.ParseEnum<Weekday>("Caturday", Mapping));
     }
 
     [Fact]
