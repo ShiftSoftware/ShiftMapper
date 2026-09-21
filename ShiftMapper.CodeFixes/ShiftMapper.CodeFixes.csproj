@@ -21,7 +21,7 @@
       The version is pinned to the analyzer's Microsoft.CodeAnalysis.CSharp. Two different Roslyn
       versions in one process is the classic way for a lightbulb to silently never appear.
     -->
-    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="4.14.0" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="5.9.0" PrivateAssets="all" />
   </ItemGroup>
 
   <ItemGroup>

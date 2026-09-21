@@ -5,9 +5,9 @@
       TFM POLICY, stated rather than implied: the runtime library targets net10.0 and nothing
       else. One target means the conversion table and the projection shapes are verified against
       one BCL and one EF Core, and every earlier target would have to be tested for the
-      conversions and the projection shapes it changes. The generator is a separate matter - it
-      MUST be netstandard2.0, because the C# compiler loads it as a plugin and the compiler itself
-      runs on netstandard2.0.
+      conversions and the projection shapes it changes. The generator is a separate matter:
+      netstandard2.0 keeps its plugin assembly compatible with compiler and IDE hosts; its
+      Microsoft.CodeAnalysis package version sets the minimum Roslyn API those hosts must provide.
     -->
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -47,7 +47,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.11" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.12" />
   </ItemGroup>
 
   <!-- ================= Carrying the generator ====================================== -->

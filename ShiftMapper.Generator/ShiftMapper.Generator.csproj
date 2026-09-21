@@ -1,8 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- Source generators MUST target netstandard2.0: the C# compiler loads this
-         assembly as a plugin, and the compiler itself runs on netstandard2.0. -->
+    <!-- netstandard2.0 keeps this plugin loadable by compiler and IDE hosts.
+         The Roslyn package version below separately sets the minimum compiler API version. -->
     <TargetFramework>netstandard2.0</TargetFramework>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
@@ -16,7 +16,7 @@
   <ItemGroup>
     <!-- Roslyn: the C# compiler API we use to read code and write new code.
          PrivateAssets="all" keeps it out of anything that references us. -->
-    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.9.0" PrivateAssets="all" />
   </ItemGroup>
 
   <ItemGroup>

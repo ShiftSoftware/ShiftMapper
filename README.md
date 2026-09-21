@@ -46,7 +46,8 @@ One package, both halves. NuGet hands the runtime types to your application and 
 generator to the compiler; there is nothing else to reference and nothing to register with the
 build.
 
-Requires **.NET 10**. See [Versioning and target frameworks](#versioning-and-target-frameworks).
+Requires **.NET 10** and a compiler/IDE with **Roslyn 5.9 or later** for the bundled generator and code fixes
+(verified with .NET SDK 10.0.401). See [Versioning and target frameworks](#versioning-and-target-frameworks).
 
 ---
 
@@ -1480,8 +1481,11 @@ dotnet_diagnostic.SM0001.severity = none
   one target means the conversion table and the projection shapes are verified against one BCL
   and one EF Core, and every additional target would need its own pass over both. If you need
   an earlier target, open an issue rather than assuming one will appear.
-- The generator targets `netstandard2.0`, as every Roslyn component must — the compiler loads
-  it as a plugin and the compiler itself runs on `netstandard2.0`. You never reference it
+- The generator and code fixes target `netstandard2.0` for loading inside compiler and IDE
+  hosts. This is separate from support for older application runtimes. Their Roslyn 5.9
+  references require compiler/IDE hosts with Roslyn 5.9 or later; `PrivateAssets="all"`
+  prevents those dependencies from flowing to consumers but does not upgrade their compiler.
+  The generator and code-fix Roslyn versions stay aligned. You never reference the generator
   directly.
 - Versions are **pre-1.0**. The declaration API — included mappers, packs, conversions, member
   conventions, registration and the metadata that carries them across a package boundary — is
