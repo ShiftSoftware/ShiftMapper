@@ -10,6 +10,13 @@
 ; explicit child map are declared implicitly; several statements over one configuration surface handle merge;
 ; a projection pulls its configuring type before it is composed (Customizations.Configured); a nullable value
 ; filling text is tested first in the query spelling (null stays null instead of becoming '').
+; 0.3.1 changes generated CODE only, with no new rule and the same metadata contract (3). A registered
+; conversion's type arguments carry the nullable annotations of the members it converts
+; (Conversion<string?, List<FileDto>?>, and the same in Splice), so a nullable member is no CS8604 in the generated
+; file; annotations do not exist at run time, so the call is the same. The query spelling of a reversed member
+; convention checks the shaped member for null the way Map does
+; ((source.Brand == null ? default(string)! : source.Brand.Value)), so reading its key is no CS8602; Map is unchanged,
+; and a projection run in memory over a DTO whose shaped member is null now gives Map's key instead of throwing.
 
 ### New Rules
 

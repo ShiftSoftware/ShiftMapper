@@ -153,8 +153,17 @@ internal static class ConversionResolver
         if (globals is { IsEmpty: false }
             && globals.Find(sourceType, destinationType) is { } registered)
         {
-            string source = FullName(sourceType);
-            string destination = FullName(destinationType);
+            // THE TYPE ARGUMENTS KEEP THE MEMBERS' NULLABILITY. The compiler checks the call against
+            // them. Written as Conversion<string, ...>, a `string?` member handed to the delegate is
+            // a CS8604 warning in the generated file, where the developer can neither fix nor
+            // suppress it. The annotations come from the two members, not from the declaration: a
+            // conversion from a referenced package is recorded with typeof(...), which cannot carry
+            // a `?`, so the members' annotations are the only ones both cases have. The code is
+            // then the same whether the conversion was declared in this project or in a package.
+            // Nullable annotations do not exist at run time, so the call finds the same
+            // registration either way.
+            string source = AnnotatedName(sourceType);
+            string destination = AnnotatedName(destinationType);
 
             // A DECLARED conversion is CALLED, a source-declared one is looked up. That is the
             // whole difference metadata buys: the generator read the method's name out of the
@@ -1379,6 +1388,18 @@ internal static class ConversionResolver
     /// </summary>
     private static string FullName(ITypeSymbol type) =>
         type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+
+    /// <summary>
+    /// <see cref="FullName"/> with the nullable reference annotation kept: <c>string?</c> where
+    /// <see cref="FullName"/> writes <c>string</c>. Used for the type arguments of a registered
+    /// conversion's call, where the compiler checks the argument against them.
+    /// </summary>
+    private static string AnnotatedName(ITypeSymbol type) =>
+        type.ToDisplayString(AnnotatedFormat);
+
+    private static readonly SymbolDisplayFormat AnnotatedFormat =
+        SymbolDisplayFormat.FullyQualifiedFormat.AddMiscellaneousOptions(
+            SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier);
 
     private static string Name(ITypeSymbol type) =>
         type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat.WithGlobalNamespaceStyle(

@@ -3054,7 +3054,12 @@ public sealed partial class ShiftMapperGenerator : IIncrementalGenerator
                 "({0}." + candidate.Name + " is null ? default(" + valueType + ")! : {0}." +
                 candidate.Name + "." + reversible.Target + ")";
 
-            string queryAccess = "{0}." + candidate.Name + "." + reversible.Target;
+            // The projection checks the shaped member for null the same way, so it gives the value
+            // Map gives and reading the key is not a CS8602 warning in the generated file. It is
+            // written `== null` because an expression tree cannot contain an `is` pattern (CS8122).
+            string queryAccess =
+                "({0}." + candidate.Name + " == null ? default(" + valueType + ")! : {0}." +
+                candidate.Name + "." + reversible.Target + ")";
 
             return new PropertyPair(
                 destination: destinationProperty.Name,

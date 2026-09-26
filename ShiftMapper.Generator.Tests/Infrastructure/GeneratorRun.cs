@@ -152,6 +152,48 @@ public static class GeneratorRunAssertions
         return run;
     }
 
+    /// <summary>
+    /// Asserts the generated files compile with nullable warnings treated as errors, which is what a
+    /// project with <c>&lt;WarningsAsErrors&gt;nullable&lt;/WarningsAsErrors&gt;</c> gets.
+    ///
+    /// <para>Only the generated files are checked. A nullable warning there is one the developer can
+    /// neither fix nor suppress, because they cannot edit the file.</para>
+    /// </summary>
+    public static GeneratorRun CompilesWithoutNullableWarnings(this GeneratorRun run)
+    {
+        run.Compiles();
+
+        Assert.NotNull(run.Compilation);
+
+        // The compiler's own switch. It expands "nullable" into every nullable warning id, so this
+        // list does not have to be kept in step with the compiler by hand.
+        var nullableAsErrors = Microsoft.CodeAnalysis.CSharp.CSharpCommandLineParser.Default
+            .Parse(new[] { "/warnaserror+:nullable" }, Environment.CurrentDirectory, sdkDirectory: null)
+            .CompilationOptions
+            .SpecificDiagnosticOptions;
+
+        Assert.NotEmpty(nullableAsErrors);
+
+        Compilation strict = run.Compilation!.WithOptions(
+            run.Compilation.Options.WithSpecificDiagnosticOptions(nullableAsErrors));
+
+        Diagnostic[] inGenerated = strict.GetDiagnostics()
+            .Where(diagnostic =>
+                diagnostic.Severity == DiagnosticSeverity.Error
+                && diagnostic.Location.SourceTree is { } tree
+                && tree.FilePath != GeneratorHarness.FileName)
+            .ToArray();
+
+        Assert.True(
+            inGenerated.Length == 0,
+            "The generated code has nullable warnings:" + Environment.NewLine +
+            string.Join(Environment.NewLine, inGenerated.Select(diagnostic => "  " + diagnostic + Environment.NewLine +
+                "    " + diagnostic.Location.SourceTree!.GetText().Lines[diagnostic.Location.GetLineSpan().StartLinePosition.Line].ToString().Trim())) +
+            Describe(run));
+
+        return run;
+    }
+
     /// <summary>Asserts a fragment appears in the generated text.</summary>
     public static GeneratorRun Emits(this GeneratorRun run, string fragment)
     {
