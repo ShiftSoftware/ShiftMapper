@@ -627,6 +627,17 @@ internal static class ConversionResolver
         if (element is null)
             return null;
 
+        // BINARY DATA IS A VALUE, NOT A LIST. A byte[] on either side is a varbinary column, a
+        // hash, a key or a protected secret. Null means "no value", and an empty array is a
+        // different value, so the null-collection policy does not apply: null stays null in
+        // memory and in the projection, whatever the map asked for. A non-null array is still
+        // copied by the builder below, so the destination never shares the source's array.
+        //
+        // Under the policy, a repository that refreshed a tracked entity with its copy map
+        // turned a NULL column into an empty array, and the next save stored 0x.
+        if (IsBinary(sourceType) || IsBinary(destinationType))
+            allowNullCollections = true;
+
         // THE TEST IS "SAME TYPE", NOT "NEEDS NO CONVERSION CODE", and the difference is the
         // whole reason this line is careful.
         //
@@ -776,6 +787,13 @@ internal static class ConversionResolver
     /// </summary>
     private static bool GuardsNullInQuery(ITypeSymbol sourceType, bool allowNullCollections) =>
         !allowNullCollections && sourceType.NullableAnnotation == NullableAnnotation.Annotated;
+
+    /// <summary>
+    /// Whether a type is binary data: a one-dimensional <c>byte[]</c>. See the comment in
+    /// <see cref="ResolveCollection"/> for why it keeps a null as null under every policy.
+    /// </summary>
+    private static bool IsBinary(ITypeSymbol type) =>
+        type is IArrayTypeSymbol { Rank: 1, ElementType.SpecialType: SpecialType.System_Byte };
 
     /// <summary>
     /// An empty collection of the shape a given builder produces, written out so a projection can

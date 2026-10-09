@@ -351,4 +351,108 @@ public class CollectionConversionTests
         run.Compiles().Emits(
             $"Value = {Linq}.ToList<string>({Linq}.Select<int, string>(source.Value, item => item.ToString())),");
     }
+
+    // -----------------------------------------------------------------
+    // BINARY DATA. A byte[] is one value (a varbinary column, a hash, a
+    // key), not a list of bytes. A null means "no value", and an empty
+    // array is a different value, so the null-collection policy does not
+    // apply: null stays null in memory and in the projection. A non-null
+    // array is still copied, so the destination never shares it.
+    // -----------------------------------------------------------------
+
+    /// <summary>
+    /// In memory: the builder without <c>OrEmpty</c>, which copies a non-null array and keeps a
+    /// null. The generated file still has no nullable warning when the destination is declared
+    /// non-nullable: <c>ToArray</c> returns a nullable array, and the generated file disables
+    /// CS8601 for that case (a non-null source gives a non-null copy).
+    /// </summary>
+    [Theory]
+    [InlineData("byte[]", "byte[]", "ToArray")]
+    [InlineData("byte[]?", "byte[]?", "ToArray")]
+    [InlineData("byte[]?", "byte[]", "ToArray")]
+    [InlineData("List<byte>", "byte[]", "ToArray")]
+    [InlineData("byte[]", "List<byte>", "ToList")]
+    [InlineData("byte[]", "IReadOnlyList<byte>", "ToList")]
+    public void A_byte_array_keeps_a_null_as_null_in_memory(string source, string destination, string method)
+    {
+        GeneratorRun run = Pair(source, destination);
+
+        Assert.Empty(run.Ids());
+        run.CompilesWithoutNullableWarnings()
+           .Emits($"Value = {Converter}.{method}(source.Value),")
+           .DoesNotEmit($"Value = {Converter}.{method}OrEmpty(");
+    }
+
+    /// <summary>
+    /// The projection reads the column as it is. Under the default policy a nullable array
+    /// would get <c>?? Array.Empty&lt;byte&gt;()</c>, and EF would turn a NULL into <c>0x</c>.
+    /// </summary>
+    [Theory]
+    [InlineData("byte[]?", "byte[]?")]
+    [InlineData("byte[]?", "byte[]")]
+    public void A_nullable_byte_array_is_not_guarded_in_a_projection(string source, string destination)
+    {
+        GeneratorRun run = Pair(source, destination);
+
+        run.Compiles()
+           .Emits("Value = source.Value,")
+           .DoesNotEmit("Value = (source.Value ??")
+           .DoesNotEmit("Empty<byte>");
+    }
+
+    /// <summary>The same rule when a nullable list of bytes fills an array.</summary>
+    [Fact]
+    public void A_nullable_byte_list_filling_a_byte_array_is_not_guarded_in_a_projection()
+    {
+        GeneratorRun run = Pair("List<byte>?", "byte[]?");
+
+        run.Compiles()
+           .Emits($"Value = {Converter}.ToArray(source.Value),")
+           .Emits($"Value = {Linq}.ToArray(source.Value),")
+           .DoesNotEmit("Empty<byte>");
+    }
+
+    /// <summary>
+    /// Only a member with a <c>byte[]</c> on one side is binary data. In the same map, every other
+    /// collection keeps the default policy: an array of another type, an array of another one-byte
+    /// type, and a list of bytes that fills a list.
+    /// </summary>
+    [Fact]
+    public void Only_the_byte_array_leaves_the_null_collection_policy()
+    {
+        GeneratorRun run = GeneratorHarness.Run(
+            """
+            using ShiftMapper;
+            using System.Collections.Generic;
+
+            public class Source
+            {
+                public byte[]? Data { get; set; }
+                public int[]? Numbers { get; set; }
+                public sbyte[]? Signed { get; set; }
+                public List<byte>? Bytes { get; set; }
+            }
+
+            public class Destination
+            {
+                public byte[]? Data { get; set; }
+                public int[]? Numbers { get; set; }
+                public sbyte[]? Signed { get; set; }
+                public List<byte>? Bytes { get; set; }
+            }
+
+            public partial class TestMapper : ShiftMapperBase
+            {
+                public TestMapper() => CreateMap<Source, Destination>();
+            }
+            """);
+
+        run.Compiles()
+           .Emits($"Data = {Converter}.ToArray(source.Data),")
+           .Emits($"Numbers = {Converter}.ToArrayOrEmpty(source.Numbers),")
+           .Emits($"Signed = {Converter}.ToArrayOrEmpty(source.Signed),")
+           .Emits($"Bytes = {Converter}.ToListOrEmpty(source.Bytes),")
+           .Emits("Data = source.Data,")
+           .Emits("Numbers = (source.Numbers ??");
+    }
 }

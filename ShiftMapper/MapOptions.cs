@@ -60,6 +60,11 @@ public sealed class MapOptions
     /// <c>Map</c> themselves, so <c>Map&lt;List&lt;BrandDto&gt;&gt;(null)</c> answers the same
     /// question the same way.
     ///
+    /// NOT TO <c>byte[]</c>. A byte array is binary data (a varbinary column, a hash, a key), one
+    /// value rather than a list of bytes, and an empty one means something different from none.
+    /// A member with <c>byte[]</c> on either side keeps a null as null under both settings, in
+    /// memory and in a projection. A non-null array is still copied, never shared.
+    ///
     /// <para><b>IN PROJECTIONS</b>, which is the half worth reading rather than assuming.</para>
     ///
     /// <c>ProjectTo</c> hands the map to EF, and EF decides what a collection materialises as.

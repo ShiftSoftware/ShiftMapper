@@ -189,6 +189,12 @@ public class TestMapper : ShiftMapperBase
             .ForMember(d => d.Total, opt => opt.MapFrom(s => s.Lines.Sum(l => l.Quantity * l.UnitPrice)))
             // A captured service, resolved once and sent as a SQL parameter.
             .ForMember(d => d.Number, opt => opt.MapFrom(s => _numbering.Prefix + s.Number));
+
+        // Binary columns under the DEFAULT null-collection policy: a byte[] is a value, so a null
+        // stays null in the copy, write and view maps and in their projections. See BinaryValueTests.
+        CreateMap<Credential, Credential>();
+        CreateMap<CredentialDto, Credential>();
+        CreateMap<Credential, CredentialDto>();
     }
 
     /// <summary>Proof that constructor injection reached this instance.</summary>

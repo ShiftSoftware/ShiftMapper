@@ -194,3 +194,20 @@ public class InvoiceLine
 
     public decimal UnitPrice { get; set; }
 }
+
+/// <summary>
+/// Binary columns. A <c>byte[]</c> is one value (a hash, a key, a protected secret), not a list
+/// of bytes, so a null in the column must stay null through every map. See BinaryValueTests.
+/// </summary>
+public class Credential
+{
+    public int Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>A nullable binary column: null means "there is no secret".</summary>
+    public byte[]? Secret { get; set; }
+
+    /// <summary>Declared non-nullable, as many entities declare their binary columns.</summary>
+    public byte[] Hash { get; set; } = default!;
+}

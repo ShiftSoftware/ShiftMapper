@@ -442,3 +442,15 @@ public class InvoiceDto
 
     public IReadOnlyList<InvoiceLineDto> Lines { get; set; } = [];
 }
+
+/// <summary>The DTO side of <see cref="Credential"/>, for the write and view maps of BinaryValueTests.</summary>
+public class CredentialDto
+{
+    public int Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+
+    public byte[]? Secret { get; set; }
+
+    public byte[] Hash { get; set; } = default!;
+}

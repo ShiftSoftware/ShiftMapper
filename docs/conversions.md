@@ -206,6 +206,8 @@ In memory the policy is one method name — `ToListOrEmpty` versus `ToList` — 
 
 Two method families rather than a `bool` parameter, because the generated line then *says* which policy is in force without a signature open beside it. The `OrEmpty` builders return non-nullable types, which is half the point: a DTO built through them has no collection property that can be null.
 
+**`byte[]` is the exception.** A byte array is binary data (a varbinary column, a hash, a key): one value, not a list of bytes, and an empty array is a different value from none. So a member with `byte[]` on either side is built as if the map allowed null collections, whatever it says: `ValueConverter.ToArray(source.Value)` in memory (a copy; a null stays null), and no guard in the projection (`source.Value`). Every other collection keeps the map's policy, including `sbyte[]` and a `List<byte>` that fills a `List<byte>`. Up to 0.3.1 the policy applied to `byte[]` too, and a copy map that refreshed a tracked entity turned a NULL binary column into `0x` at the next save.
+
 **In a projection** the policy is a real question rather than a method name, and it is answered *only where a null can actually arrive*:
 
 | Source annotation | Policy | Projection emits |

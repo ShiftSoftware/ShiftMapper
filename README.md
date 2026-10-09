@@ -185,6 +185,12 @@ Set it per map, or for a whole mapper from `ConfigureDefaults`. It covers collec
 collections of mapped objects, dictionaries, and the collection overloads above — so
 `Map<List<BrandDto>>(null)` answers the same question the same way instead of throwing.
 
+**Not `byte[]`.** A byte array is binary data — a varbinary column, a hash, a key — one value rather
+than a list of bytes, and an empty one is a different value from none. A member with `byte[]` on
+either side keeps a null as null under both settings, in memory and in projections; a non-null array
+is still copied. (Up to 0.3.1 the policy applied to it, and a NULL binary column came back as an empty
+array.)
+
 **In a projection** the answer depends on what EF can produce. A navigation collection is never
 null there, so the default is already what you get. A collection of values in a column you
 declared **nullable** is guarded, and EF turns the guard into a `COALESCE` in the SELECT list. A
