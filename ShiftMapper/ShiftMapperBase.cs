@@ -4,6 +4,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Threading;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace ShiftMapper;
@@ -91,6 +93,11 @@ public abstract class ShiftMapperBase
     /// Folds a configuration surface's expressions into this mapper's store. What the surface says
     /// WINS over what is already there: an implicit map has no customizations of its own, and the
     /// surface is the one place its members are customized.
+    ///
+    /// <para>From any thread, at any time — while other threads map through this mapper, or while
+    /// one of them is still filling it on its first map. The store takes a surface as a copy that it
+    /// publishes whole (see <see cref="MapCustomizations"/>), so nothing reads it half applied, and
+    /// no lock is held while anything but the copy runs.</para>
     /// </summary>
     protected internal void ApplyConfiguration(ShiftMapperConfigurationSurface surface) =>
         _customizations.MergeFrom(surface.Customizations, overriding: true);
@@ -134,8 +141,37 @@ public abstract class ShiftMapperBase
     /// <summary>The pack types <see cref="AddConversions{TPack}"/> recorded, in order.</summary>
     private List<Type>? _packTypes;
 
-    /// <summary>Set once the included mappers and packs have been constructed and folded in.</summary>
-    private bool _materialised;
+    /// <summary>
+    /// The lock the one-time fill runs under — <see cref="EnsureIncluded"/> — and the lock that
+    /// guards the two lists the fill walks.
+    ///
+    /// <para><b>A LOCK FOR THE FILL ONLY.</b> Every map reads <see cref="Customizations"/>, and
+    /// once the store is complete that read is one volatile flag. The lock is taken by the first
+    /// map, by any map that arrives while the first is still filling, and by nothing after that.
+    /// A mapper registered as a singleton is shared by every thread from the moment it is
+    /// resolved, so its first maps can all come at once; they wait here for the one that fills,
+    /// rather than reading a store it has only half filled.</para>
+    ///
+    /// <para><b>RE-ENTERABLE BY THE THREAD THAT HOLDS IT</b>, as a <see cref="Lock"/> is: the fill
+    /// runs constructors, and one of them may reach back into this mapper. See
+    /// <see cref="_filling"/> for what that call gets. What a constructor must not do is wait for
+    /// ANOTHER thread that maps through this mapper, since that thread is waiting for the fill —
+    /// the rule every initialise-once lock has, and one no mapper class has reason to break.</para>
+    /// </summary>
+    private readonly Lock _fill = new();
+
+    /// <summary>
+    /// Set once the included mappers and packs have been constructed and folded in — and only
+    /// then, after the last merge, so a thread that sees it set sees the whole store.
+    /// </summary>
+    private volatile bool _materialised;
+
+    /// <summary>
+    /// True while this mapper's fill is running. Read and written only under <see cref="_fill"/>,
+    /// so the one thread that can see it true is the one doing the fill, when something the fill
+    /// constructs reaches back into this mapper.
+    /// </summary>
+    private bool _filling;
 
     /// <summary>
     /// Hands the customization store the mapper CLASS it belongs to, which is what lets a
@@ -321,31 +357,41 @@ public abstract class ShiftMapperBase
     /// </summary>
     internal void IncludeMapper(Type mapper)
     {
-        _includedTypes ??= new List<Type>();
+        // Under the fill's lock, because the list is what the fill walks; the fill itself records
+        // what the generated mapper composes through here, and takes the lock again as its holder.
+        lock (_fill)
+        {
+            _includedTypes ??= new List<Type>();
 
-        // Once. A mapper the constructor includes and the registration names as well is still one
-        // include; building it twice would merge the same store twice for nothing.
-        if (_includedTypes.Contains(mapper))
-            return;
+            // Once. A mapper the constructor includes and the registration names as well is still
+            // one include; building it twice would merge the same store twice for nothing.
+            if (_includedTypes.Contains(mapper))
+                return;
 
-        _includedTypes.Add(mapper);
+            _includedTypes.Add(mapper);
 
-        // A mapper included after something has already been mapped would otherwise be ignored in
-        // silence. It cannot happen from a constructor or from AddShiftMapper, which are the only
-        // supported places, but this makes the unsupported one loud instead of subtle.
-        _materialised = false;
+            // A mapper included after something has already been mapped would otherwise be ignored
+            // in silence. It cannot happen from a constructor or from AddShiftMapper, which are the
+            // only supported places, but this makes the unsupported one loud instead of subtle: the
+            // next map fills again, and the store, shared by then, takes what that fill adds as
+            // copies rather than changing under the threads reading it.
+            _materialised = false;
+        }
     }
 
     /// <inheritdoc cref="IncludeMapper(Type)"/>
     internal void AddConversions(Type pack)
     {
-        _packTypes ??= new List<Type>();
+        lock (_fill)
+        {
+            _packTypes ??= new List<Type>();
 
-        if (_packTypes.Contains(pack))
-            return;
+            if (_packTypes.Contains(pack))
+                return;
 
-        _packTypes.Add(pack);
-        _materialised = false;
+            _packTypes.Add(pack);
+            _materialised = false;
+        }
     }
 
     /// <summary>
@@ -372,59 +418,103 @@ public abstract class ShiftMapperBase
     /// other — the generator maps the union of what they declare, which is what someone writing
     /// it would expect — and without the path the runtime would construct them alternately
     /// forever.</para>
+    ///
+    /// <para><b>ONCE, FOR EVERY THREAD.</b> The fill runs under <see cref="_fill"/>, and the flag
+    /// that says it is done is set only after the last merge. A map on another thread that arrives
+    /// meanwhile waits for it and then reads the whole store; every map after that reads one
+    /// volatile flag and takes no lock.</para>
+    ///
+    /// <para><b>A CALL, NOT INLINED.</b> Generated code reads <see cref="Customizations"/> wherever a
+    /// map uses the store, and most of those places are the cold half of a delegate cached in a
+    /// field: inlined, this check would be copied into every one of them and grow each map method for
+    /// nothing. As a call it costs a load and a branch, because the fill is a method of its own.</para>
     /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
     private void EnsureIncluded(HashSet<Type>? visiting)
     {
+        // Every map but the first: the store is complete, and this is the whole cost of knowing it.
         if (_materialised)
             return;
 
-        // WHAT THE GENERATED MAPPER COMPOSES — every mapper and pack the generator folded into it —
-        // is written into its assembly as metadata, and read from there: one list, whether the
-        // instance came from DI, from Mapper.Create, or from a bare new. Before the flag below,
-        // because recording an include clears it.
-        foreach (Type composed in Composition.For(GetType()))
+        Fill(visiting);
+    }
+
+    /// <summary>The fill itself, kept out of <see cref="EnsureIncluded"/> so the check every map makes stays a load and a branch.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void Fill(HashSet<Type>? visiting)
+    {
+        lock (_fill)
         {
-            if (typeof(ShiftMapperConversions).IsAssignableFrom(composed))
-                AddConversions(composed);
-            else
-                IncludeMapper(composed);
-        }
+            // Filled by another thread while this one waited for the lock: nothing left to do.
+            //
+            // Or re-entered by THIS thread, from a constructor the fill below is running that reached
+            // back into this mapper. The lock lets its holder back in, so without the second test
+            // that call would build the same set again, forever. It gets the store as far as the
+            // fill has got, as it always has — on the thread doing the filling, and nowhere else.
+            if (_materialised || _filling)
+                return;
 
-        // Set FIRST. A constructor that reached back into this mapper would otherwise re-enter
-        // here and build the same set again, forever.
-        _materialised = true;
+            _filling = true;
 
-        visiting ??= new HashSet<Type>();
-        visiting.Add(GetType());
-        visiting.Add(DeclaringType);
-
-        if (_includedTypes is not null)
-        {
-            foreach (Type includedType in _includedTypes)
+            try
             {
-                if (visiting.Contains(includedType))
-                    continue;
+                // WHAT THE GENERATED MAPPER COMPOSES — every mapper and pack the generator folded
+                // into it — is written into its assembly as metadata, and read from there: one list,
+                // whether the instance came from DI, from Mapper.Create, or from a bare new.
+                foreach (Type composed in Composition.For(GetType()))
+                {
+                    if (typeof(ShiftMapperConversions).IsAssignableFrom(composed))
+                        AddConversions(composed);
+                    else
+                        IncludeMapper(composed);
+                }
 
-                var included = (ShiftMapperBase)Construct(includedType, "mapper");
+                visiting ??= new HashSet<Type>();
+                visiting.Add(GetType());
+                visiting.Add(DeclaringType);
 
-                // Hand the provider down so what IT includes can be resolved the same way.
-                if (included._services is null && _services is not null)
-                    included.SetServices(_services);
+                if (_includedTypes is not null)
+                {
+                    foreach (Type includedType in _includedTypes)
+                    {
+                        if (visiting.Contains(includedType))
+                            continue;
 
-                _customizations.MergeFrom(included.Materialised(visiting));
+                        var included = (ShiftMapperBase)Construct(includedType, "mapper");
+
+                        // Hand the provider down so what IT includes can be resolved the same way.
+                        if (included._services is null && _services is not null)
+                            included.SetServices(_services);
+
+                        _customizations.MergeFrom(included.Materialised(visiting));
+                    }
+                }
+
+                if (_packTypes is not null)
+                {
+                    foreach (Type packType in _packTypes)
+                        _customizations.MergeFrom(((ShiftMapperConversions)Construct(packType, "pack")).Customizations);
+                }
+
+                // AFTER everything else, so a conversion a constructor registered keeps its place:
+                // RegisterQueryConversion does not overwrite, and the generator resolves the pair by
+                // the same precedence. Near beats far, in both halves.
+                RegisterDeclaredConversions(_customizations);
             }
-        }
+            finally
+            {
+                _filling = false;
+            }
 
-        if (_packTypes is not null)
-        {
-            foreach (Type packType in _packTypes)
-                _customizations.MergeFrom(((ShiftMapperConversions)Construct(packType, "pack")).Customizations);
+            // PUBLISHED LAST, and only when the fill got this far. The store is shared from here on,
+            // so a later write to it copies rather than changing what other threads are reading;
+            // then the flag, whose volatile write is the release a reader's volatile read pairs
+            // with, so a thread that finds it set finds every merge above. A fill that threw sets
+            // neither, and the next map tries again — and fails the same way, naming what could not
+            // be built, rather than mapping on with whatever had been merged before it threw.
+            _customizations.Share();
+            _materialised = true;
         }
-
-        // AFTER everything else, so a conversion a constructor registered keeps its place:
-        // RegisterQueryConversion does not overwrite, and the generator resolves the pair by the
-        // same precedence. Near beats far, in both halves.
-        RegisterDeclaredConversions(_customizations);
     }
 
     /// <summary>

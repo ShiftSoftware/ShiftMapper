@@ -256,7 +256,9 @@ exist before anything can be set on it. So:
   Reading it before it is assigned throws an `InvalidOperationException` saying no service provider has been set on the mapper — the same message a mapper constructed by hand instead of through `AddShiftMapper` gets.
 - **Mapper classes and packs are materialised on first use, not at startup.** The generated
   mapper's metadata lists them; each is constructed the first time anything is actually mapped, by
-  which point DI is in place. That is what allows a mapper class to take dependencies at all.
+  which point DI is in place. That is what allows a mapper class to take dependencies at all. It
+  happens once, under a lock: on a singleton, first maps that arrive together wait for it and then
+  all see every class's registrations (up to 0.3.2 some of them could see only part of them).
 
 A mapper class with a dependency needs no registration of its own — it is built from the provider
 with its dependencies injected. This is the sample's `Program.cs`, and

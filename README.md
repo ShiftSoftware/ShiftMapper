@@ -704,6 +704,16 @@ Nothing needs registering: the generated mapper builds each mapper class from th
 first time anything is mapped, with its dependencies injected — not at startup, because the
 provider the generated mapper is given arrives after it is constructed.
 
+**Once, for every thread.** That first build runs under a lock, and the mapper counts as filled only
+when the last class and pack is folded in: a map that arrives on another thread meanwhile waits for
+it, and every map after it takes no lock at all. So a mapper registered as a singleton is safe from
+its first map, however many arrive together — a cold host whose timers all fire at once — and so is a
+configuration surface applied while other threads map. A first map that fails, because a class could
+not be built, is not remembered as a fill: the next map tries again and fails the same way. (Up to
+0.3.2 the fill took no lock and was marked done before it ran, so concurrent first maps of a singleton
+could read a half-filled store — "no custom mapping was registered for …" — or corrupt it for the life
+of the process.)
+
 The edge that follows is worth knowing: **one class taking dependencies makes the whole assembly's
 mapper DI-only.** Every class is built together on first use, so one that cannot be built fails the
 first map, including maps unrelated to it. Skipping it instead would leave its `MapFrom` members

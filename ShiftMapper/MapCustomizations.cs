@@ -40,43 +40,155 @@ namespace ShiftMapper;
 public sealed class MapCustomizations
 {
     /// <summary>
-    /// The trees as written, keyed by which map and which destination property they fill.
+    /// Everything registered here — the trees, the conditions and hooks, the inheritance links and
+    /// the type-pair conversions — as one object, read through this one reference.
     ///
-    /// Written only from the mapper's CONSTRUCTOR, which is single-threaded by definition — an
-    /// object cannot be shared before it exists — so a plain dictionary is right here.
+    /// <para><b>HOW THE STORE IS SHARED BETWEEN THREADS.</b> A store is written in two phases and
+    /// read in a third. The mapper's constructor, and the constructors of the mapper classes and
+    /// packs it is made of, write their own stores on one thread before anything can map. The first
+    /// map then FILLS the mapper's store — folds all of those in — under the mapper's fill lock,
+    /// while any other thread that wants to map waits for it. From then on the store is
+    /// <see cref="Share">SHARED</see>: any number of threads read it at once, and none of them takes
+    /// a lock to do so.</para>
+    ///
+    /// <para><b>SO A SHARED STORE IS NEVER CHANGED IN PLACE.</b> A write after that point — a
+    /// configuration surface applied at run time, a pack added late — copies the tables, changes the
+    /// copy, and publishes it with one volatile write to this field. A reader takes the reference
+    /// once and reads tables nobody is writing: the ones from before the write or the ones from
+    /// after it, never half of each. A surface copies even before the store is shared, because it may
+    /// arrive from any thread while another one is filling. Writes like these are rare, so the copy
+    /// is paid where one happens and nowhere else: every read stays a plain dictionary lookup, with
+    /// no lock and no concurrent collection in its way.</para>
     /// </summary>
-    private readonly Dictionary<CustomizationKey, LambdaExpression> _values = new();
+    private volatile Tables _tables = new();
 
     /// <summary>
-    /// The <c>Condition</c> predicates, kept apart from <see cref="_values"/> because they are a
-    /// different kind of thing.
-    ///
-    /// A <c>MapFrom</c> is an <see cref="Expression"/> because it has to reach a PROJECTION, where
-    /// it is spliced into a tree EF reads. A condition never reaches one — a member initializer
-    /// cannot leave a binding out per row — so it is an ordinary delegate, needs no compiling,
-    /// no compile cache and no sharing decision. Storing it here rather than in <c>_values</c> is
-    /// what keeps <see cref="Compose{TSource, TDestination}(Expression{Func{TSource, TDestination}}, NestedBinding[])"/> from ever seeing something it would try to bind.
-    ///
-    /// Written only from the mapper's CONSTRUCTOR, like <see cref="_values"/>, so a plain
-    /// dictionary is right.
+    /// Serialises the writes, so two writers copying the same tables cannot lose each other's
+    /// change. Nothing is called while it is held — it guards dictionary work and nothing else — so
+    /// it cannot take part in a deadlock.
     /// </summary>
-    private readonly Dictionary<CustomizationKey, Delegate> _conditions = new();
+    private readonly Lock _write = new();
+
+    /// <summary>Set by <see cref="Share"/> when the first fill is complete; every write after it copies. Guarded by <see cref="_write"/>.</summary>
+    private bool _shared;
 
     /// <summary>
-    /// Which map each map takes its inherited configuration from — what <c>IncludeBase</c>
-    /// records, in the order it was written.
-    ///
-    /// <para><b>WHY THIS HAS TO EXIST AT RUNTIME</b> and not only in the generator. Everything the
-    /// developer wrote is stored against the type pair it was written for: a <c>MapFrom</c> on
-    /// <c>EntityBase → EntityBaseDto</c> lives under THAT key. A derived map asking for it
-    /// under <c>Brand → BrandDTO</c> would find nothing — in memory AND in the projection,
-    /// where <c>Compose</c> collects by the same key. So the lookups walk this chain, and
-    /// the answer is the same on both paths rather than merely similar.
-    /// </para>
-    ///
-    /// Written only from the mapper's CONSTRUCTOR, like the two dictionaries above it.
+    /// The store's tables. Changed in place only while the store is private to the thread writing
+    /// it; once it is shared, a write builds a <see cref="Copy">copy</see> and publishes that.
     /// </summary>
-    private readonly Dictionary<(Type Source, Type Destination), List<(Type Source, Type Destination)>> _inherited = new();
+    private sealed class Tables
+    {
+        public Tables()
+        {
+            Values = new Dictionary<CustomizationKey, LambdaExpression>();
+            Conditions = new Dictionary<CustomizationKey, Delegate>();
+            Inherited = new Dictionary<(Type Source, Type Destination), List<(Type Source, Type Destination)>>();
+            TypeConversions = new Dictionary<Type, Dictionary<(Type Source, Type Destination), TypeConversion>>();
+        }
+
+        private Tables(Tables from)
+        {
+            Values = new Dictionary<CustomizationKey, LambdaExpression>(from.Values);
+            Conditions = new Dictionary<CustomizationKey, Delegate>(from.Conditions);
+
+            // The lists and the inner dictionaries are copied too: a write changes those in place,
+            // and the ones the old tables hold are still being read.
+            Inherited = new Dictionary<(Type Source, Type Destination), List<(Type Source, Type Destination)>>(from.Inherited.Count);
+
+            foreach (KeyValuePair<(Type Source, Type Destination), List<(Type Source, Type Destination)>> entry in from.Inherited)
+                Inherited[entry.Key] = new List<(Type Source, Type Destination)>(entry.Value);
+
+            TypeConversions = new Dictionary<Type, Dictionary<(Type Source, Type Destination), TypeConversion>>(from.TypeConversions.Count);
+
+            foreach (KeyValuePair<Type, Dictionary<(Type Source, Type Destination), TypeConversion>> scope in from.TypeConversions)
+                TypeConversions[scope.Key] = new Dictionary<(Type Source, Type Destination), TypeConversion>(scope.Value);
+        }
+
+        /// <summary>The trees as written, keyed by which map and which destination property they fill.</summary>
+        public Dictionary<CustomizationKey, LambdaExpression> Values { get; }
+
+        /// <summary>
+        /// The <c>Condition</c> predicates and the hooks, kept apart from <see cref="Values"/>
+        /// because they are a different kind of thing.
+        ///
+        /// A <c>MapFrom</c> is an <see cref="Expression"/> because it has to reach a PROJECTION, where
+        /// it is spliced into a tree EF reads. A condition never reaches one — a member initializer
+        /// cannot leave a binding out per row — so it is an ordinary delegate, needs no compiling,
+        /// no compile cache and no sharing decision. Storing it here rather than in <c>Values</c> is
+        /// what keeps <see cref="Compose{TSource, TDestination}(Expression{Func{TSource, TDestination}}, NestedBinding[])"/> from ever seeing something it would try to bind.
+        /// </summary>
+        public Dictionary<CustomizationKey, Delegate> Conditions { get; }
+
+        /// <summary>
+        /// Which map each map takes its inherited configuration from — what <c>IncludeBase</c>
+        /// records, in the order it was written.
+        ///
+        /// <para><b>WHY THIS HAS TO EXIST AT RUNTIME</b> and not only in the generator. Everything the
+        /// developer wrote is stored against the type pair it was written for: a <c>MapFrom</c> on
+        /// <c>EntityBase → EntityBaseDto</c> lives under THAT key. A derived map asking for it
+        /// under <c>Brand → BrandDTO</c> would find nothing — in memory AND in the projection,
+        /// where <c>Compose</c> collects by the same key. So the lookups walk this chain, and
+        /// the answer is the same on both paths rather than merely similar.
+        /// </para>
+        /// </summary>
+        public Dictionary<(Type Source, Type Destination), List<(Type Source, Type Destination)>> Inherited { get; }
+
+        /// <summary>
+        /// TYPE-PAIR CONVERSIONS — what <c>CreateConversion</c> registers — kept PER DECLARING SCOPE.
+        ///
+        /// <para>The outer key is the mapper or pack that DECLARED the conversion. A rule applies to the
+        /// maps of the mapper that wrote it, or to whatever a pack was added to; it never leaks into a
+        /// map that merely shares the store because one mapper included another. The generator works
+        /// out at compile time which scope answers for each member and writes that scope into the
+        /// generated call, so the lookup here is one dictionary, never a search through several.</para>
+        ///
+        /// <para>Inside a scope the key is the PAIR rather than a member, which is the whole point: a
+        /// rule written once for <c>string → List&lt;FileDTO&gt;</c> answers for every member of those
+        /// types in every map of that scope, including ones declared in code that has never heard of
+        /// it.</para>
+        ///
+        /// <para>Two forms, because the two backends are not the same place. The MEMORY form is a
+        /// delegate the generated map methods call. The QUERY form is an expression tree spliced into
+        /// the projection — and it is optional, because the usual in-memory form calls a helper no
+        /// database can run. A pair with no query form makes any map that uses it unprojectable, which
+        /// the BUILD says (SM0030) rather than the query engine discovering it.</para>
+        ///
+        /// <para>What a map reads on every call is not this but the resolved-conversion cache, which is
+        /// filled from it.</para>
+        /// </summary>
+        public Dictionary<Type, Dictionary<(Type Source, Type Destination), TypeConversion>> TypeConversions { get; }
+
+        public Tables Copy() => new(this);
+    }
+
+    /// <summary>
+    /// The tables a write may change: the live ones while the store is still private to the thread
+    /// writing it, and a copy once it is shared or when the writer asks for one. Called under
+    /// <see cref="_write"/>, and paired with <see cref="Publish"/>.
+    /// </summary>
+    private Tables Writable(bool copy = false) => copy || _shared ? _tables.Copy() : _tables;
+
+    /// <summary>
+    /// Makes the copy a write changed into the store's tables: one volatile write, the release that
+    /// a reader's volatile read of <see cref="_tables"/> pairs with, so whoever reads the new tables
+    /// reads them finished. Nothing to do when the write changed the live tables. Called under
+    /// <see cref="_write"/>.
+    /// </summary>
+    private void Publish(Tables tables)
+    {
+        if (!ReferenceEquals(tables, _tables))
+            _tables = tables;
+    }
+
+    /// <summary>
+    /// Marks the store shared: the mapper's first fill is complete and any thread may read it, so
+    /// from now on a write copies. Called by the mapper, before it publishes the fill.
+    /// </summary>
+    internal void Share()
+    {
+        lock (_write)
+            _shared = true;
+    }
 
     /// <summary>
     /// Compiled copies of the trees, kept for the life of the PROCESS and keyed by the mapper's
@@ -109,9 +221,24 @@ public sealed class MapCustomizations
     /// Created only when there is something to put in it, which for most mappers is never.
     ///
     /// Concurrent because, unlike registration, this IS read on the hot path: one mapper serving
-    /// several requests can reach it from more than one thread at once.
+    /// several requests can reach it from more than one thread at once. Each entry remembers the
+    /// tree it was compiled from — see <see cref="InstanceCompiledFrom"/> for why.
     /// </summary>
-    private ConcurrentDictionary<CustomizationKey, Delegate>? _instanceCompiled;
+    private ConcurrentDictionary<CustomizationKey, InstanceDelegate>? _instanceCompiled;
+
+    /// <summary>One per-instance compiled customization, and the tree it was compiled from.</summary>
+    private sealed class InstanceDelegate
+    {
+        public InstanceDelegate(LambdaExpression tree)
+        {
+            Tree = tree;
+            Compiled = tree.Compile();
+        }
+
+        public LambdaExpression Tree { get; }
+
+        public Delegate Compiled { get; }
+    }
 
     /// <summary>The mapper class these customizations belong to — the key everything is shared by.</summary>
     private readonly Type _owner;
@@ -123,35 +250,52 @@ public sealed class MapCustomizations
     internal MapCustomizations(Type owner) => _owner = owner;
 
     /// <summary>
-    /// TYPE-PAIR CONVERSIONS — what <c>CreateConversion</c> registers — kept PER DECLARING SCOPE.
+    /// Resolved <see cref="Conversion{TSource, TDestination}"/> answers, including the
+    /// assignability walk, so a pair costs that search once per mapper instance.
     ///
-    /// <para>The outer key is the mapper or pack that DECLARED the conversion. A rule applies to the
-    /// maps of the mapper that wrote it, or to whatever a pack was added to; it never leaks into a
-    /// map that merely shares the store because one mapper included another. The generator works
-    /// out at compile time which scope answers for each member and writes that scope into the
-    /// generated call, so the lookup here is one dictionary, never a search through several.</para>
+    /// <para><b>CONCURRENT, because it is written at MAP time.</b> A pair is resolved the first time
+    /// a map converts it, and on a mapper every thread shares that can be any thread, so two first
+    /// resolutions can land at once — which on a plain dictionary is the corruption a shared store
+    /// must never see. Reads take no lock, and a pair is resolved from the registrations alone, so
+    /// two threads resolving it together store one answer and both return it. Built on first use,
+    /// like the per-instance compile cache, with ONE lock for its writes: a pair is written once,
+    /// so writers never queue for long, and a single lock makes it the smallest concurrent dictionary
+    /// to allocate per mapper — which for a scoped mapper means per request.</para>
     ///
-    /// <para>Inside a scope the key is the PAIR rather than a member, which is the whole point: a
-    /// rule written once for <c>string → List&lt;FileDTO&gt;</c> answers for every member of those
-    /// types in every map of that scope, including ones declared in code that has never heard of
-    /// it.</para>
-    ///
-    /// <para>Two forms, because the two backends are not the same place. The MEMORY form is a
-    /// delegate the generated map methods call. The QUERY form is an expression tree spliced into
-    /// the projection — and it is optional, because the usual in-memory form calls a helper no
-    /// database can run. A pair with no query form makes any map that uses it unprojectable, which
-    /// the BUILD says (SM0030) rather than the query engine discovering it.</para>
-    ///
-    /// Written from constructors, like everything else here, so a plain dictionary is right.
+    /// <para>A write that changes a conversion drops the cache after it publishes its tables, and a
+    /// lookup takes the cache first and the tables second, so it never pairs a fresh cache with
+    /// tables older than it.</para>
     /// </summary>
-    private readonly Dictionary<Type, Dictionary<(Type Source, Type Destination), TypeConversion>> _typeConversions = new();
-
-    /// <summary>Resolved <see cref="Conversion{TSource, TDestination}"/> answers, including the
-    /// assignability walk, so a pair costs that search once per mapper instance.</summary>
-    private Dictionary<(Type Scope, Type Source, Type Destination), Delegate>? _resolvedConversions;
+    private ConcurrentDictionary<(Type Scope, Type Source, Type Destination), Delegate>? _resolvedConversions;
 
     /// <summary>The same cache for the two-argument form.</summary>
-    private Dictionary<(Type Scope, Type Source, Type Destination), Delegate>? _resolvedWithMapping;
+    private ConcurrentDictionary<(Type Scope, Type Source, Type Destination), Delegate>? _resolvedWithMapping;
+
+    private ConcurrentDictionary<(Type Scope, Type Source, Type Destination), Delegate> ResolvedConversions =>
+        Volatile.Read(ref _resolvedConversions) ?? Created(ref _resolvedConversions);
+
+    private ConcurrentDictionary<(Type Scope, Type Source, Type Destination), Delegate> ResolvedWithMapping =>
+        Volatile.Read(ref _resolvedWithMapping) ?? Created(ref _resolvedWithMapping);
+
+    /// <summary>
+    /// A resolved-conversion cache, installed if there is none yet. Two threads arriving together
+    /// end up with the SAME one — the loser of the exchange takes the winner's — or one of them would
+    /// cache into a copy nobody reads.
+    /// </summary>
+    private static ConcurrentDictionary<(Type Scope, Type Source, Type Destination), Delegate> Created(
+        ref ConcurrentDictionary<(Type Scope, Type Source, Type Destination), Delegate>? field)
+    {
+        var created = new ConcurrentDictionary<(Type Scope, Type Source, Type Destination), Delegate>(concurrencyLevel: 1, capacity: 4);
+
+        return Interlocked.CompareExchange(ref field, created, null) ?? created;
+    }
+
+    /// <summary>Drops both resolved-conversion caches, after a write that changed what they were resolved from.</summary>
+    private void ForgetResolvedConversions()
+    {
+        Volatile.Write(ref _resolvedConversions, null);
+        Volatile.Write(ref _resolvedWithMapping, null);
+    }
 
     /// <summary>One registered type-pair conversion.</summary>
     private readonly struct TypeConversion
@@ -182,9 +326,14 @@ public sealed class MapCustomizations
     /// </summary>
     internal void RegisterConversion(Type scope, Type source, Type destination, Delegate memory, LambdaExpression? query)
     {
-        Bucket(scope)[(source, destination)] = new TypeConversion(memory, query);
-        _resolvedConversions = null;
-        _resolvedWithMapping = null;
+        lock (_write)
+        {
+            Tables tables = Writable();
+            Bucket(tables, scope)[(source, destination)] = new TypeConversion(memory, query);
+            Publish(tables);
+
+            ForgetResolvedConversions();
+        }
     }
 
     /// <summary>
@@ -205,38 +354,44 @@ public sealed class MapCustomizations
         if (query is null)
             throw new ArgumentNullException(nameof(query));
 
-        // A conversion the scope's own constructor registered WINS over one arriving as metadata
-        // for the same scope; the generator resolves the pair by the same precedence, so the two
-        // halves cannot disagree about which one runs.
-        Dictionary<(Type, Type), TypeConversion> bucket = Bucket(scope);
+        lock (_write)
+        {
+            // A conversion the scope's own constructor registered WINS over one arriving as metadata
+            // for the same scope; the generator resolves the pair by the same precedence, so the two
+            // halves cannot disagree about which one runs. Asked before anything is copied, since a
+            // pair that is already here changes nothing.
+            if (_tables.TypeConversions.TryGetValue(scope, out Dictionary<(Type, Type), TypeConversion>? existing)
+                && existing.ContainsKey((source, destination)))
+            {
+                return;
+            }
 
-        if (!bucket.ContainsKey((source, destination)))
-            bucket[(source, destination)] = new TypeConversion(memory: null, query);
+            Tables tables = Writable();
+            Bucket(tables, scope)[(source, destination)] = new TypeConversion(memory: null, query);
+            Publish(tables);
 
-        _resolvedConversions = null;
+            ForgetResolvedConversions();
+        }
     }
 
-    private Dictionary<(Type Source, Type Destination), TypeConversion> Bucket(Type scope)
+    private static Dictionary<(Type Source, Type Destination), TypeConversion> Bucket(Tables tables, Type scope)
     {
-        if (!_typeConversions.TryGetValue(scope, out Dictionary<(Type, Type), TypeConversion>? bucket))
-            _typeConversions[scope] = bucket = new Dictionary<(Type, Type), TypeConversion>();
+        if (!tables.TypeConversions.TryGetValue(scope, out Dictionary<(Type, Type), TypeConversion>? bucket))
+            tables.TypeConversions[scope] = bucket = new Dictionary<(Type, Type), TypeConversion>();
 
         return bucket;
     }
 
     /// <summary>Whether any scope has registered a conversion — the cheap test before any walk.</summary>
-    private bool HasConversions
+    private static bool HasConversions(Tables tables)
     {
-        get
+        foreach (Dictionary<(Type, Type), TypeConversion> bucket in tables.TypeConversions.Values)
         {
-            foreach (Dictionary<(Type, Type), TypeConversion> bucket in _typeConversions.Values)
-            {
-                if (bucket.Count > 0)
-                    return true;
-            }
-
-            return false;
+            if (bucket.Count > 0)
+                return true;
         }
+
+        return false;
     }
 
     /// <summary>
@@ -265,12 +420,13 @@ public sealed class MapCustomizations
 
         (Type, Type, Type) key = (scope, typeof(TSource), typeof(TDestination));
 
-        _resolvedConversions ??= new Dictionary<(Type, Type, Type), Delegate>();
+        // The cache first, then the tables: see the cache for why that order.
+        ConcurrentDictionary<(Type, Type, Type), Delegate> resolved = ResolvedConversions;
 
-        if (_resolvedConversions.TryGetValue(key, out Delegate? cached))
+        if (resolved.TryGetValue(key, out Delegate? cached))
             return (Func<TSource, TDestination>)cached;
 
-        if (Registered(scope, typeof(TSource), typeof(TDestination))?.Memory is not { } memory)
+        if (Registered(_tables, scope, typeof(TSource), typeof(TDestination))?.Memory is not { } memory)
         {
             throw new InvalidOperationException(
                 $"ShiftMapper: no conversion is registered from '{typeof(TSource).Name}' to " +
@@ -289,9 +445,9 @@ public sealed class MapCustomizations
             ? value => withMapping(value, "")
             : (Func<TSource, TDestination>)memory;
 
-        _resolvedConversions[key] = typed;
-
-        return typed;
+        // Two threads resolving the pair together both get here; the first answer stored is the one
+        // both of them return.
+        return (Func<TSource, TDestination>)resolved.GetOrAdd(key, typed);
     }
 
     /// <summary>
@@ -306,12 +462,12 @@ public sealed class MapCustomizations
 
         (Type, Type, Type) key = (scope, typeof(TSource), typeof(TDestination));
 
-        _resolvedWithMapping ??= new Dictionary<(Type, Type, Type), Delegate>();
+        ConcurrentDictionary<(Type, Type, Type), Delegate> resolved = ResolvedWithMapping;
 
-        if (_resolvedWithMapping.TryGetValue(key, out Delegate? cached))
+        if (resolved.TryGetValue(key, out Delegate? cached))
             return (Func<TSource, string, TDestination>)cached;
 
-        if (Registered(scope, typeof(TSource), typeof(TDestination))?.Memory is not { } memory)
+        if (Registered(_tables, scope, typeof(TSource), typeof(TDestination))?.Memory is not { } memory)
         {
             throw new InvalidOperationException(
                 $"ShiftMapper: no conversion is registered from '{typeof(TSource).Name}' to " +
@@ -326,9 +482,7 @@ public sealed class MapCustomizations
             ? (value, _) => plain(value)
             : (Func<TSource, string, TDestination>)memory;
 
-        _resolvedWithMapping[key] = typed;
-
-        return typed;
+        return (Func<TSource, string, TDestination>)resolved.GetOrAdd(key, typed);
     }
 
     /// <summary>
@@ -339,9 +493,9 @@ public sealed class MapCustomizations
     /// base, which is the only ordering that lets a general rule be narrowed. Destination is
     /// matched exactly: a conversion's whole identity is what it produces.</para>
     /// </summary>
-    private TypeConversion? Registered(Type scope, Type source, Type destination)
+    private static TypeConversion? Registered(Tables tables, Type scope, Type source, Type destination)
     {
-        if (!_typeConversions.TryGetValue(scope, out Dictionary<(Type, Type), TypeConversion>? bucket))
+        if (!tables.TypeConversions.TryGetValue(scope, out Dictionary<(Type, Type), TypeConversion>? bucket))
             return null;
 
         if (bucket.TryGetValue((source, destination), out TypeConversion exact))
@@ -399,9 +553,10 @@ public sealed class MapCustomizations
     /// </summary>
     private sealed class SpliceRewriter : ExpressionVisitor
     {
-        private readonly MapCustomizations _owner;
+        /// <summary>The tables of the one <c>Compose</c> call this rewriter serves, read once by it.</summary>
+        private readonly Tables _tables;
 
-        public SpliceRewriter(MapCustomizations owner) => _owner = owner;
+        public SpliceRewriter(Tables tables) => _tables = tables;
 
         protected override Expression VisitMethodCall(MethodCallExpression node)
         {
@@ -426,7 +581,7 @@ public sealed class MapCustomizations
                     "projection was not produced by the ShiftMapper generator.");
             }
 
-            TypeConversion? found = _owner.Registered(scope, arguments[0], arguments[1]);
+            TypeConversion? found = Registered(_tables, scope, arguments[0], arguments[1]);
 
             if (found?.Query is not { } query)
             {
@@ -476,50 +631,76 @@ public sealed class MapCustomizations
     /// win. False for an included mapper or pack (what is already here wins, as above); true for a
     /// configuration surface, whose lambda is the customization of an implicit map and must be
     /// found by the generated code that was baked expecting it.
+    ///
+    /// <para>A surface's fold always works on a COPY, published whole when it is done, even before
+    /// the store is shared: a surface may be applied from any thread at any moment, including while
+    /// another thread is filling this store or mapping through it. An included mapper's or a pack's
+    /// fold runs inside the fill, and changes the tables in place until the store is shared.</para>
     /// </summary>
     internal void MergeFrom(MapCustomizations included, bool overriding)
     {
-        foreach (KeyValuePair<CustomizationKey, LambdaExpression> entry in included._values)
+        // Read once. What arrives is a pack's, a surface's or an included mapper's own store, and
+        // nothing writes those any more by the time they are being folded in.
+        Tables incoming = included._tables;
+
+        lock (_write)
         {
-            if (overriding || !_values.ContainsKey(entry.Key))
+            Tables tables = Writable(copy: overriding);
+            bool conversionsAdded = false;
+
+            foreach (KeyValuePair<CustomizationKey, LambdaExpression> entry in incoming.Values)
             {
-                _values[entry.Key] = entry.Value;
-
-                if (overriding)
-                    _instanceCompiled?.TryRemove(entry.Key, out _);
+                if (overriding || !tables.Values.ContainsKey(entry.Key))
+                    tables.Values[entry.Key] = entry.Value;
             }
-        }
 
-        foreach (KeyValuePair<CustomizationKey, Delegate> entry in included._conditions)
-        {
-            if (overriding || !_conditions.ContainsKey(entry.Key))
-                _conditions[entry.Key] = entry.Value;
-        }
-
-
-        foreach (KeyValuePair<Type, Dictionary<(Type Source, Type Destination), TypeConversion>> scope
-                 in included._typeConversions)
-        {
-            if (!_typeConversions.ContainsKey(scope.Key))
-                _typeConversions[scope.Key] = new Dictionary<(Type, Type), TypeConversion>(scope.Value);
-        }
-
-        _resolvedConversions = null;
-
-        foreach (KeyValuePair<(Type Source, Type Destination), List<(Type Source, Type Destination)>> entry
-                 in included._inherited)
-        {
-            // Lineages UNION rather than overwrite. A base declared in an included mapper and another
-            // declared on the mapper are both real, and dropping either would leave an inherited
-            // member resolving to nothing on one of the two backends.
-            if (!_inherited.TryGetValue(entry.Key, out List<(Type, Type)>? bases))
-                _inherited[entry.Key] = bases = new List<(Type, Type)>();
-
-            foreach ((Type, Type) baseKey in entry.Value)
+            foreach (KeyValuePair<CustomizationKey, Delegate> entry in incoming.Conditions)
             {
-                if (!bases.Contains(baseKey))
-                    bases.Add(baseKey);
+                if (overriding || !tables.Conditions.ContainsKey(entry.Key))
+                    tables.Conditions[entry.Key] = entry.Value;
             }
+
+            foreach (KeyValuePair<Type, Dictionary<(Type Source, Type Destination), TypeConversion>> scope
+                     in incoming.TypeConversions)
+            {
+                if (!tables.TypeConversions.ContainsKey(scope.Key))
+                {
+                    tables.TypeConversions[scope.Key] = new Dictionary<(Type, Type), TypeConversion>(scope.Value);
+                    conversionsAdded = true;
+                }
+            }
+
+            foreach (KeyValuePair<(Type Source, Type Destination), List<(Type Source, Type Destination)>> entry
+                     in incoming.Inherited)
+            {
+                // Lineages UNION rather than overwrite. A base declared in an included mapper and
+                // another declared on the mapper are both real, and dropping either would leave an
+                // inherited member resolving to nothing on one of the two backends.
+                if (!tables.Inherited.TryGetValue(entry.Key, out List<(Type, Type)>? bases))
+                    tables.Inherited[entry.Key] = bases = new List<(Type, Type)>();
+
+                foreach ((Type, Type) baseKey in entry.Value)
+                {
+                    if (!bases.Contains(baseKey))
+                        bases.Add(baseKey);
+                }
+            }
+
+            Publish(tables);
+
+            // Only when a scope arrived: a fold that brought no conversion leaves every answer the
+            // cache holds as true as it was.
+            if (conversionsAdded)
+                ForgetResolvedConversions();
+        }
+
+        // After the publish, so what is dropped is a delegate compiled from a tree the store no
+        // longer holds. Not needed for the answer to be right — each entry is checked against the
+        // tree it was compiled from — but a delegate nobody can reach should not stay alive.
+        if (overriding && _instanceCompiled is { } compiled)
+        {
+            foreach (CustomizationKey key in incoming.Values.Keys)
+                compiled.TryRemove(key, out _);
         }
     }
 
@@ -531,8 +712,15 @@ public sealed class MapCustomizations
     /// A later call for the same property wins, which makes a customization behave like an
     /// assignment rather than silently depending on declaration order.
     /// </summary>
-    internal void Register(Type source, Type destination, string member, LambdaExpression value) =>
-        _values[new CustomizationKey(source, destination, member)] = value;
+    internal void Register(Type source, Type destination, string member, LambdaExpression value)
+    {
+        lock (_write)
+        {
+            Tables tables = Writable();
+            tables.Values[new CustomizationKey(source, destination, member)] = value;
+            Publish(tables);
+        }
+    }
 
     /// <summary>
     /// Drops the customization for one property, if it had one. This is what
@@ -554,8 +742,14 @@ public sealed class MapCustomizations
     {
         CustomizationKey key = new(source, destination, member);
 
-        _values.Remove(key);
-        _conditions.Remove(key);
+        lock (_write)
+        {
+            Tables tables = Writable();
+            tables.Values.Remove(key);
+            tables.Conditions.Remove(key);
+            Publish(tables);
+        }
+
         _instanceCompiled?.TryRemove(key, out _);
 
         // Nothing is normally in the shared cache to remove — an Ignore runs during construction
@@ -649,7 +843,7 @@ public sealed class MapCustomizations
     /// </exception>
     public Expression<Func<TSource, TDestination>> ConverterExpression<TSource, TDestination>()
     {
-        if (!_values.TryGetValue(
+        if (!_tables.Values.TryGetValue(
                 new CustomizationKey(typeof(TSource), typeof(TDestination), ConverterMember),
                 out LambdaExpression? converter))
         {
@@ -692,7 +886,18 @@ public sealed class MapCustomizations
 
     /// <summary>Records a <c>BeforeMap</c> or <c>AfterMap</c> hook.</summary>
     internal void RegisterHook(Type source, Type destination, string member, Delegate hook) =>
-        _conditions[new CustomizationKey(source, destination, member)] = hook;
+        RegisterDelegate(new CustomizationKey(source, destination, member), hook);
+
+    /// <summary>What a hook and a condition both are to the store: a delegate under a key, in <see cref="Tables.Conditions"/>.</summary>
+    private void RegisterDelegate(CustomizationKey key, Delegate value)
+    {
+        lock (_write)
+        {
+            Tables tables = Writable();
+            tables.Conditions[key] = value;
+            Publish(tables);
+        }
+    }
 
     /// <summary>
     /// Runs the map's <c>BeforeMap</c> hook, if it has one.
@@ -711,7 +916,7 @@ public sealed class MapCustomizations
 
     private void Run<TSource, TDestination>(string member, TSource source, TDestination destination)
     {
-        if (_conditions.TryGetValue(
+        if (_tables.Conditions.TryGetValue(
                 new CustomizationKey(typeof(TSource), typeof(TDestination), member),
                 out Delegate? hook))
         {
@@ -725,7 +930,7 @@ public sealed class MapCustomizations
     /// <see cref="MemberOptions{TSource, TDestination, TProperty}.Condition"/>.
     /// </summary>
     internal void RegisterCondition(Type source, Type destination, string member, Delegate predicate) =>
-        _conditions[new CustomizationKey(source, destination, member)] = predicate;
+        RegisterDelegate(new CustomizationKey(source, destination, member), predicate);
 
     /// <summary>
     /// Asks one member's <c>Condition</c> whether the value about to be assigned should be.
@@ -777,22 +982,24 @@ public sealed class MapCustomizations
     {
         _ = current;
 
-        if (_conditions.TryGetValue(new CustomizationKey(typeof(TSource), typeof(TDestination), member), out Delegate? predicate))
+        Tables tables = _tables;
+
+        if (tables.Conditions.TryGetValue(new CustomizationKey(typeof(TSource), typeof(TDestination), member), out Delegate? predicate))
             return ((Func<TSource, TDestination, TProperty, bool>)predicate)(source, destination, candidate);
 
         // A base map's condition, taken over by IncludeBase. Its delegate is typed in the base
         // pair, and both of its object parameters are contravariant, so it accepts the derived
         // values unchanged.
-        foreach ((Type Source, Type Destination) ancestor in Lineage(typeof(TSource), typeof(TDestination)))
+        foreach ((Type Source, Type Destination) ancestor in Lineage(tables, typeof(TSource), typeof(TDestination)))
         {
-            if (_conditions.TryGetValue(new CustomizationKey(ancestor.Source, ancestor.Destination, member), out Delegate? inheritedPredicate))
+            if (tables.Conditions.TryGetValue(new CustomizationKey(ancestor.Source, ancestor.Destination, member), out Delegate? inheritedPredicate))
                 return ((Func<TSource, TDestination, TProperty, bool>)inheritedPredicate)(source, destination, candidate);
         }
 
         // A ForAllMembers condition, which is stored once under a wildcard rather than copied onto
         // every member. It is typed in OBJECT because it has to serve members of every type, so the
         // value is boxed on the way in — the one cost of saying a rule once instead of per member.
-        if (_conditions.TryGetValue(new CustomizationKey(typeof(TSource), typeof(TDestination), AllMembers), out Delegate? all))
+        if (tables.Conditions.TryGetValue(new CustomizationKey(typeof(TSource), typeof(TDestination), AllMembers), out Delegate? all))
             return ((Func<TSource, TDestination, object?, bool>)all)(source, destination, candidate);
 
         return true;
@@ -807,11 +1014,18 @@ public sealed class MapCustomizations
     {
         (Type, Type) key = (source, destination);
 
-        if (!_inherited.TryGetValue(key, out List<(Type, Type)>? bases))
-            _inherited[key] = bases = new List<(Type, Type)>();
+        lock (_write)
+        {
+            Tables tables = Writable();
 
-        if (!bases.Contains((baseSource, baseDestination)))
-            bases.Add((baseSource, baseDestination));
+            if (!tables.Inherited.TryGetValue(key, out List<(Type, Type)>? bases))
+                tables.Inherited[key] = bases = new List<(Type, Type)>();
+
+            if (!bases.Contains((baseSource, baseDestination)))
+                bases.Add((baseSource, baseDestination));
+
+            Publish(tables);
+        }
     }
 
     /// <summary>
@@ -822,13 +1036,13 @@ public sealed class MapCustomizations
     /// two derived maps inheriting the same base member must share one compiled delegate rather
     /// than compiling the base's expression once each.
     /// </summary>
-    private (CustomizationKey Key, LambdaExpression Expression)? Inherited(Type source, Type destination, string member)
+    private static (CustomizationKey Key, LambdaExpression Expression)? Inherited(Tables tables, Type source, Type destination, string member)
     {
-        foreach ((Type Source, Type Destination) ancestor in Lineage(source, destination))
+        foreach ((Type Source, Type Destination) ancestor in Lineage(tables, source, destination))
         {
             CustomizationKey key = new(ancestor.Source, ancestor.Destination, member);
 
-            if (_values.TryGetValue(key, out LambdaExpression? expression))
+            if (tables.Values.TryGetValue(key, out LambdaExpression? expression))
                 return (key, expression);
         }
 
@@ -843,13 +1057,13 @@ public sealed class MapCustomizations
     /// member is the one used. A loop is walked once and dropped rather than followed, so a
     /// mapper that includes itself in a circle still starts up.
     /// </summary>
-    private List<(Type Source, Type Destination)> Lineage(Type source, Type destination)
+    private static List<(Type Source, Type Destination)> Lineage(Tables tables, Type source, Type destination)
     {
         var lineage = new List<(Type Source, Type Destination)> { (source, destination) };
 
         for (int i = 0; i < lineage.Count && i < 32; i++)
         {
-            if (!_inherited.TryGetValue(lineage[i], out List<(Type, Type)>? bases))
+            if (!tables.Inherited.TryGetValue(lineage[i], out List<(Type, Type)>? bases))
                 continue;
 
             foreach ((Type, Type) next in bases)
@@ -868,7 +1082,7 @@ public sealed class MapCustomizations
     /// than for the generated code to branch on.
     /// </summary>
     public bool Has(Type source, Type destination, string member) =>
-        _values.ContainsKey(new CustomizationKey(source, destination, member));
+        _tables.Values.ContainsKey(new CustomizationKey(source, destination, member));
 
     /// <summary>
     /// The customization for one property as a callable delegate, for the in-memory <c>Map</c>
@@ -910,7 +1124,11 @@ public sealed class MapCustomizations
     {
         CustomizationKey key = new(typeof(TSource), typeof(TDestination), member);
 
-        if (!_values.ContainsKey(key) && (ConfiguratorPull is null || !ConfiguratorPull(configuredBy) || !_values.ContainsKey(key)))
+        // The tables are read again after the pull, on purpose: the surface it applies arrives as
+        // new tables, published by the time the pull returns. Several threads can pull at once —
+        // each finds the member missing and has the configuring type built — and each surface is
+        // folded in whole, one at a time, while the maps on other threads read on undisturbed.
+        if (!_tables.Values.ContainsKey(key) && (ConfiguratorPull is null || !ConfiguratorPull(configuredBy) || !_tables.Values.ContainsKey(key)))
         {
             throw new InvalidOperationException(
                 $"ShiftMapper: '{typeof(TDestination).Name}.{member}' is customized by the Mapping(...) configuration " +
@@ -945,7 +1163,8 @@ public sealed class MapCustomizations
         {
             CustomizationKey key = new(typeof(TSource), typeof(TDestination), member);
 
-            if (!_values.ContainsKey(key) && (ConfiguratorPull is null || !ConfiguratorPull(configuredBy) || !_values.ContainsKey(key)))
+            // Read again after the pull, as Value does and for the same reason.
+            if (!_tables.Values.ContainsKey(key) && (ConfiguratorPull is null || !ConfiguratorPull(configuredBy) || !_tables.Values.ContainsKey(key)))
             {
                 throw new InvalidOperationException(
                     $"ShiftMapper: '{typeof(TDestination).Name}.{member}' is customized by the Mapping(...) configuration " +
@@ -962,14 +1181,15 @@ public sealed class MapCustomizations
     public Func<TSource, TProperty> Value<TSource, TDestination, TProperty>(string member)
     {
         CustomizationKey key = new(typeof(TSource), typeof(TDestination), member);
+        Tables tables = _tables;
 
-        if (!_values.TryGetValue(key, out LambdaExpression? expression))
+        if (!tables.Values.TryGetValue(key, out LambdaExpression? expression))
         {
             // Not this map's own — so it may be a base map's, taken over by IncludeBase. The
             // delegate that comes back is typed in the BASE source, and handing it a derived value
             // is exactly what Func's contravariance is for, so the cast below is a reference
             // conversion rather than a hope.
-            if (Inherited(typeof(TSource), typeof(TDestination), member) is { } fromBase)
+            if (Inherited(tables, typeof(TSource), typeof(TDestination), member) is { } fromBase)
             {
                 key = fromBase.Key;
                 expression = fromBase.Expression;
@@ -991,8 +1211,32 @@ public sealed class MapCustomizations
                 shared, static (_, tree) => tree.Compile(), expression);
         }
 
-        return (Func<TSource, TProperty>)InstanceCompiled.GetOrAdd(
-            key, static (_, tree) => tree.Compile(), expression);
+        return (Func<TSource, TProperty>)InstanceCompiledFrom(key, expression);
+    }
+
+    /// <summary>
+    /// The per-instance compiled form of <paramref name="tree"/>, compiled on first use.
+    ///
+    /// <para><b>CHECKED AGAINST THE TREE</b>, not only looked up by the member. A configuration
+    /// surface applied while another thread was compiling replaces the tree; without the check, a
+    /// delegate compiled from the tree it replaced could land under the member's key after the
+    /// surface had cleared it, and be handed out for the new tree from then on. So an entry is used
+    /// only for the tree it was compiled from, and a stale one is replaced the first time it is
+    /// asked for. Two threads compiling the same tree at once both compile, and the first one stored
+    /// is the one both return.</para>
+    /// </summary>
+    private Delegate InstanceCompiledFrom(CustomizationKey key, LambdaExpression tree)
+    {
+        ConcurrentDictionary<CustomizationKey, InstanceDelegate> compiled = InstanceCompiled;
+
+        if (compiled.TryGetValue(key, out InstanceDelegate? found) && ReferenceEquals(found.Tree, tree))
+            return found.Compiled;
+
+        return compiled.AddOrUpdate(
+            key,
+            static (_, fresh) => fresh,
+            static (_, existing, fresh) => ReferenceEquals(existing.Tree, fresh.Tree) ? existing : fresh,
+            new InstanceDelegate(tree)).Compiled;
     }
 
     /// <summary>
@@ -1000,17 +1244,17 @@ public sealed class MapCustomizations
     /// ConcurrentDictionary per mapper per request is exactly the sort of allocation the caching
     /// exists to remove.
     /// </summary>
-    private ConcurrentDictionary<CustomizationKey, Delegate> InstanceCompiled
+    private ConcurrentDictionary<CustomizationKey, InstanceDelegate> InstanceCompiled
     {
         get
         {
-            ConcurrentDictionary<CustomizationKey, Delegate>? existing = _instanceCompiled;
+            ConcurrentDictionary<CustomizationKey, InstanceDelegate>? existing = _instanceCompiled;
             if (existing is not null)
                 return existing;
 
             // Two threads reaching here together must end up using the SAME dictionary, or one
             // of them would cache into a copy nobody reads and recompile on every call.
-            Interlocked.CompareExchange(ref _instanceCompiled, new ConcurrentDictionary<CustomizationKey, Delegate>(), null);
+            Interlocked.CompareExchange(ref _instanceCompiled, new ConcurrentDictionary<CustomizationKey, InstanceDelegate>(), null);
 
             return _instanceCompiled;
         }
@@ -1170,12 +1414,16 @@ public sealed class MapCustomizations
         if (conversions is null)
             throw new ArgumentNullException(nameof(conversions));
 
+        // One set of tables for the whole composition, so the splices and the bindings below come
+        // from the same version of the store.
+        Tables tables = _tables;
+
         // TYPE-PAIR CONVERSIONS FIRST, and before the early return below: a map may use one and
         // have no customizations of its own, and the markers still have to become real expressions.
-        if (HasConversions)
+        if (HasConversions(tables))
         {
             conventions = (Expression<Func<TSource, TDestination>>)
-                new SpliceRewriter(this).Visit(conventions)!;
+                new SpliceRewriter(tables).Visit(conventions)!;
         }
 
         // The ConstructUsing factory lives in the same dictionary under a name no property can
@@ -1187,9 +1435,9 @@ public sealed class MapCustomizations
         var applicable = new List<KeyValuePair<CustomizationKey, LambdaExpression>>();
         var claimed = new HashSet<string>(StringComparer.Ordinal);
 
-        foreach ((Type Source, Type Destination) ancestor in Lineage(typeof(TSource), typeof(TDestination)))
+        foreach ((Type Source, Type Destination) ancestor in Lineage(tables, typeof(TSource), typeof(TDestination)))
         {
-            foreach (KeyValuePair<CustomizationKey, LambdaExpression> entry in _values)
+            foreach (KeyValuePair<CustomizationKey, LambdaExpression> entry in tables.Values)
             {
                 if (entry.Key.Source != ancestor.Source
                     || entry.Key.Destination != ancestor.Destination

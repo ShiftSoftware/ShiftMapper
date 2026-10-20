@@ -153,21 +153,40 @@ public sealed class Mapper : IMapper
         if (_byType.TryGetValue(typeof(TGenerated), out ShiftMapperBase? known))
             return (TGenerated)known;
 
-        return (TGenerated)_byType.GetOrAdd(typeof(TGenerated), _ =>
+        return Build<TGenerated>();
+    }
+
+    /// <summary>
+    /// Builds a generated mapper nothing registered, the first time it is asked for.
+    ///
+    /// <para>Built, configured and published under the lock <see cref="IMapper.Configure"/> takes,
+    /// so a surface handed to Configure meanwhile reaches the new mapper one way or the other: it is
+    /// already in the list applied here, or the mapper is published by the time Configure walks the
+    /// mappers. Built outside the lock, the mapper could take the list before the surface joined it
+    /// and be published after Configure had walked past — configured by neither, and silently.
+    /// Nothing runs under the lock but this: the generated constructor registers nothing, and
+    /// applying a surface is the store's own copy.</para>
+    /// </summary>
+    private TGenerated Build<TGenerated>()
+        where TGenerated : ShiftMapperBase, new()
+    {
+        lock (_surfaces)
         {
+            if (_byType.TryGetValue(typeof(TGenerated), out ShiftMapperBase? known))
+                return (TGenerated)known;
+
             var built = new TGenerated();
 
             if (_services is not null)
                 built.SetServices(_services);
 
-            lock (_surfaces)
-            {
-                foreach (ShiftMapperConfigurationSurface surface in _surfaces)
-                    built.ApplyConfiguration(surface);
-            }
+            foreach (ShiftMapperConfigurationSurface surface in _surfaces)
+                built.ApplyConfiguration(surface);
+
+            _byType[typeof(TGenerated)] = built;
 
             return built;
-        });
+        }
     }
 
     /// <inheritdoc/>
@@ -254,17 +273,21 @@ public sealed class Mapper : IMapper
 
         // Every generated mapper, registered or built on demand: the pair the surface customizes may
         // be generated in the application's mapper AND in the package's, and whichever answers the
-        // map must find the expression. Remembered, too, for the ones not built yet.
+        // map must find the expression. Remembered, too, for the ones not built yet — under the lock
+        // Build takes, so a mapper built meanwhile is either among the ones walked here or built
+        // with this surface in its list (see Build).
         lock (_surfaces)
+        {
             _surfaces.Add(surface);
 
-        foreach (ShiftMapperBase mapper in _registered)
-            mapper.ApplyConfiguration(surface);
-
-        foreach (ShiftMapperBase mapper in _byType.Values)
-        {
-            if (Array.IndexOf(_registered, mapper) < 0)
+            foreach (ShiftMapperBase mapper in _registered)
                 mapper.ApplyConfiguration(surface);
+
+            foreach (ShiftMapperBase mapper in _byType.Values)
+            {
+                if (Array.IndexOf(_registered, mapper) < 0)
+                    mapper.ApplyConfiguration(surface);
+            }
         }
     }
 
