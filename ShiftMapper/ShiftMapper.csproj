@@ -47,7 +47,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.13" />
   </ItemGroup>
 
   <!-- ================= Carrying the generator ====================================== -->
@@ -59,10 +59,7 @@
       PrivateAssets="all" keeps it out of the package's dependency list, which matters because
       it is not a package at all - it is a file we copy in below.
     -->
-    <ProjectReference Include="..\ShiftMapper.Generator\ShiftMapper.Generator.csproj"
-                      OutputItemType="Analyzer"
-                      ReferenceOutputAssembly="false"
-                      PrivateAssets="all" />
+    <ProjectReference Include="..\ShiftMapper.Generator\ShiftMapper.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" PrivateAssets="all" />
 
     <!--
       The code fixes ride along the same way. They are a SEPARATE assembly because fixes need
@@ -70,10 +67,7 @@
       referencing it would fail to load during a command-line build and take every SM#### rule
       with it. Only the IDE loads this one.
     -->
-    <ProjectReference Include="..\ShiftMapper.CodeFixes\ShiftMapper.CodeFixes.csproj"
-                      OutputItemType="Analyzer"
-                      ReferenceOutputAssembly="false"
-                      PrivateAssets="all" />
+    <ProjectReference Include="..\ShiftMapper.CodeFixes\ShiftMapper.CodeFixes.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" PrivateAssets="all" />
   </ItemGroup>
 
   <PropertyGroup>
@@ -99,15 +93,13 @@
       A package that quietly lost its generator would still restore, still compile, and produce
       no Map methods at all - a failure that looks like a mapping bug. Cheaper to fail here.
     -->
-    <Error Condition="'@(_ShiftMapperGenerator)' == ''"
-           Text="ShiftMapper.Generator.dll was not found among the resolved analyzers, so the package would ship without its source generator." />
+    <Error Condition="'@(_ShiftMapperGenerator)' == ''" Text="ShiftMapper.Generator.dll was not found among the resolved analyzers, so the package would ship without its source generator." />
 
     <!--
       The fixes fail quietly rather than loudly - no lightbulb, no error - so the same guard
       applies. A package that lost them would look completely normal.
     -->
-    <Error Condition="'@(_ShiftMapperCodeFixes)' == ''"
-           Text="ShiftMapper.CodeFixes.dll was not found among the resolved analyzers, so the package would ship without its code fixes." />
+    <Error Condition="'@(_ShiftMapperCodeFixes)' == ''" Text="ShiftMapper.CodeFixes.dll was not found among the resolved analyzers, so the package would ship without its code fixes." />
   </Target>
 
 </Project>
